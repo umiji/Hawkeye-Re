@@ -1,0 +1,106 @@
+"""Indicator computation and CandidateBrief assembly.
+
+Pure functions over daily bars — no network, fully unit-testable. The
+snapshot feeds the entry gates and the tribunal; the CLI can override any
+field for offline/manual runs.
+"""
+from __future__ import annotations
+
+from datetime import date
+from typing import Optional
+
+from hawkeye.contracts.models import (
+    CandidateBrief,
+    Catalyst,
+    MarketSnapshot,
+)
+from hawkeye.marketdata.base import Bar, MarketDataProvider
+
+
+def avg_dollar_volume(bars: list[Bar], n: int = 20) -> Optional[float]:
+    window = bars[-n:]
+    if not window:
+        return None
+    return sum(b.close * b.volume for b in window) / len(window)
+
+
+def atr_pct(bars: list[Bar], n: int = 14) -> Optional[float]:
+    if len(bars) < n + 1:
+        return None
+    trs = []
+    for prev, cur in zip(bars[-(n + 1):-1], bars[-n:]):
+        tr = max(cur.high - cur.low,
+                 abs(cur.high - prev.close),
+                 abs(cur.low - prev.close))
+        trs.append(tr)
+    last_close = bars[-1].close
+    if last_close <= 0:
+        return None
+    return (sum(trs) / len(trs)) / last_close * 100.0
+
+
+def event_stats(bars: list[Bar], event_date: date
+                ) -> tuple[Optional[float], Optional[float], Optional[int]]:
+    """(gap_on_event_pct, change_since_event_pct, trading_days_since_event).
+
+    The event-day move is measured close-to-close on the first trading day
+    on or after ``event_date`` (after-hours announcements reprice next day).
+    """
+    idx = next((i for i, b in enumerate(bars) if b.day >= event_date), None)
+    if idx is None or idx == 0:
+        return None, None, None
+    prev_close = bars[idx - 1].close
+    event_close = bars[idx].close
+    last_close = bars[-1].close
+    gap = (event_close / prev_close - 1.0) * 100.0 if prev_close > 0 else None
+    change = (last_close / event_close - 1.0) * 100.0 if event_close > 0 else None
+    days_since = len(bars) - 1 - idx
+    return gap, change, days_since
+
+
+def build_snapshot(ticker: str, bars: list[Bar], profile: dict,
+                   event_date: Optional[date] = None,
+                   overrides: Optional[dict] = None) -> MarketSnapshot:
+    if not bars:
+        raise ValueError(f"no price history available for {ticker}")
+    last = bars[-1]
+    gap = change = None
+    days_since = None
+    if event_date is not None:
+        gap, change, days_since = event_stats(bars, event_date)
+    year = bars[-252:]
+    snapshot = MarketSnapshot(
+        ticker=ticker,
+        price=last.close,
+        prev_close=bars[-2].close if len(bars) >= 2 else None,
+        market_cap=profile.get("market_cap"),
+        avg_dollar_volume_20d=avg_dollar_volume(bars),
+        atr_pct_14d=atr_pct(bars),
+        gap_on_event_pct=gap,
+        change_since_event_pct=change,
+        days_since_event=days_since,
+        next_earnings_date=profile.get("next_earnings_date"),
+        high_52w=max(b.high for b in year),
+        low_52w=min(b.low for b in year),
+    )
+    if overrides:
+        snapshot = snapshot.model_copy(update={
+            k: v for k, v in overrides.items() if v is not None})
+    return snapshot
+
+
+def build_brief(ticker: str, catalyst: Catalyst, provider: MarketDataProvider,
+                notes: str = "", overrides: Optional[dict] = None) -> CandidateBrief:
+    bars = provider.daily_history(ticker)
+    profile = provider.profile(ticker)
+    snapshot = build_snapshot(ticker, bars, profile,
+                              event_date=catalyst.event_date, overrides=overrides)
+    return CandidateBrief(
+        ticker=ticker,
+        company_name=profile.get("name", ""),
+        sector=profile.get("sector", ""),
+        snapshot=snapshot,
+        catalyst=catalyst,
+        news=provider.news(ticker),
+        notes=notes,
+    )

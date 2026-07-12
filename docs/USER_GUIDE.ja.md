@@ -1,0 +1,114 @@
+# Hawkeye ユーザーガイド
+
+Hawkeyeは「投資アイデアを徹底的に反証にかけ、生き残ったものだけを提案する」システムです。
+あなたの役割は **提案を読んで Yes/No を決め、発注を自分で行うこと** だけです。
+システムが勝手に売買することはありません。
+
+## セットアップ
+
+```bash
+pip install -e ".[llm]"
+export ANTHROPIC_API_KEY=...   # 必須(evaluateのみ)
+export FINNHUB_API_KEY=...     # 任意(無料キー。時価総額・ニュース・決算日が充実します)
+```
+
+データベースはカレントディレクトリの `hawkeye.db` に作られます
+(`HAWKEYE_DB` 環境変数で変更可)。
+
+## 基本の流れ(1銘柄1サイクル)
+
+### 1. 検証にかける
+
+気になるカタリスト(決算など)が出たら:
+
+```bash
+hawkeye evaluate NVDA \
+  --catalyst earnings_beat_raise \
+  --description "Q2決算ビート、通期ガイダンス8%引き上げ" \
+  --event-date 2026-07-08 \
+  --nav 100000        # 運用資産額(ポジションサイズ計算に使用)
+```
+
+内部で「入口ゲート → ブル(推進役)→ アドバーサリー(反証役)→ ジャッジ(裁定役)→
+リスク管理役」が順に走り、**投資提案(BUY)** か **理由付き見送り(PASS)** が
+日本語レポートで出力され、台帳に記録されます。
+
+カタリスト種別: `earnings_beat_raise` `guidance_raise` `earnings_overreaction`
+`product_launch` `insider_buying` `index_inclusion` `spinoff_restructuring`
+`merger_acquisition` `regulatory_approval` `other`
+
+データ取得に失敗した場合は `--price` `--market-cap` `--adv` などで手動指定できます。
+
+### 2. Yes/No を決める
+
+```bash
+hawkeye decide rec_xxxx --yes          # 実行する場合
+hawkeye decide rec_xxxx --no --note "セクター環境が不安"   # 見送る場合
+```
+
+### 3. 約定を記録する(Yesの場合)
+
+証券会社で発注したら、その約定を記録します:
+
+```bash
+hawkeye record-entry rec_xxxx --price 182.50 --shares 40 --date 2026-07-14
+```
+
+### 4. 日次チェック
+
+```bash
+hawkeye check
+```
+
+保有中の全ポジションについて、**事前に登録したルール**(損切りライン・タイムストップ・
+目標到達・クレーム期限・決算接近)だけを機械的に照合します。
+🔴売り推奨 / 🟡要レビュー のシグナルが出たら対応してください。
+価格取得に失敗する銘柄は `--price NVDA=185.20` のように手動指定できます。
+
+### 5. クローズと検証
+
+```bash
+hawkeye close rec_xxxx --price 205.00 --date 2026-08-02
+
+# 事前登録された「主張」を答え合わせ
+hawkeye claims rec_xxxx                       # 主張の一覧とID確認
+hawkeye resolve-claim rec_xxxx clm_yyyy --true --note "アナリスト12/14人が上方修正"
+hawkeye resolve-claim rec_xxxx clm_zzzz --false
+
+# 損益と「実力か運か」の帰属を確定
+hawkeye outcome rec_xxxx
+```
+
+帰属は4象限で判定されます:
+
+| | 利益 | 損失 |
+|---|---|---|
+| **仮説的中** | 実力による勝ち ✅ | 運による負け(許容) |
+| **仮説外れ** | 運による勝ち ⚠️ | プロセスの負け ⚠️ 要因分析 |
+
+**運による勝ちは祝わない**のがこのシステムの根幹です。プロセスが間違っていたのに
+儲かったケースこそ、次の大負けの種です。
+
+## 定期レビュー
+
+```bash
+hawkeye calibration   # 申告確率と実際の的中率のズレ(Brierスコア)、4象限の集計
+hawkeye list          # 全記録の一覧
+hawkeye show rec_xxxx # 過去レポートの再表示
+hawkeye verify        # 台帳が改ざんされていないかの検証
+```
+
+- **週次**: `calibration` と `list` で、ゲートが厳しすぎ/緩すぎないか、
+  反証役が機能しているか(BUYばかり/PASSばかりになっていないか)を確認。
+- **月次**: 保有銘柄それぞれについて「今日この価格で新規に買うか?」を自問。
+  迷ったら同じ銘柄をもう一度 `evaluate` にかけて、保有バイアス抜きの判定と比較。
+
+## 大事な約束事
+
+1. **キル基準に触れたら降りるのがデフォルト。** 保有継続には書面の理由が必要です。
+   逆(売る理由を探す)ではありません。
+2. **提案の中身は後から書き換えられません。** 台帳は追記専用+ハッシュチェーンです。
+   「あの時ああ思っていた」を改変できないことが、このシステムの価値です。
+3. **PASSは失敗ではありません。** 明日も候補は来ます。BUYには根拠が要りますが、
+   PASSには要りません。
+4. 本システムの出力は投資助言ではなく、あなた自身の判断を補助する検証記録です。

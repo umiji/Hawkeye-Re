@@ -1,0 +1,27 @@
+[project]
+name = "hawkeye"
+version = "0.1.0"
+description = "Hawkeye — adversarial-verification investment decision system (catalyst-driven US equities MVP)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.40"]
+dev = ["pytest>=8", "anthropic>=0.40"]
+
+[project.scripts]
+hawkeye = "hawkeye.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hawkeye"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
