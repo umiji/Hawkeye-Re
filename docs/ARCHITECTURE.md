@@ -83,6 +83,24 @@ stateless calls make the debate structural rather than performative.
   `hawkeye verify` detects any rewrite of history.
 - The `status` column is a queryable projection; the journal is truth.
 
+## Two LLM drivers, one deterministic tail
+
+```
+API mode:      run_tribunal()  ── AnthropicLLM (metered key) ──┐
+                                                               ├─ assemble_recommendation()
+Session mode:  casefile (case open/step/submit CLI)            │   parsers → judge-rule check
+               driven by /hawkeye-run in Claude Code ──────────┘   → risk veto → ledger
+```
+
+Session mode exists so the system runs on a Claude subscription with no API
+key: the Claude Code session orchestrates, spawning one fresh subagent per
+role. Separation is preserved mechanically — `casefile.write_package()` is
+the single choke point deciding what each role may see (it reuses the same
+renderers as API mode), and `case submit` re-validates every payload with
+the same parsers before anything reaches the ledger. Records carry
+`model="claude-code-session"` so the two engines' track records can be
+compared cohort-style later.
+
 ## LLM usage
 
 - Model: `claude-opus-4-8` (override with `HAWKEYE_MODEL`), adaptive thinking,

@@ -4,16 +4,39 @@ Hawkeyeは「投資アイデアを徹底的に反証にかけ、生き残った�
 あなたの役割は **提案を読んで Yes/No を決め、発注を自分で行うこと** だけです。
 システムが勝手に売買することはありません。
 
-## セットアップ
+## 使い方は2通り
+
+### A. セッションモード(推奨・APIキー不要)
+
+Claude Codeのサブスク範囲内でLLMを駆動します。このリポジトリをClaude Codeで
+開いて:
+
+```
+/hawkeye-run
+```
+
+これだけで「保有チェック → スカウト → 3役の審理(それぞれ独立サブエージェント)
+→ 日本語レポート → あなたのYes/No記録」まで一気に進みます。
+必要なのは `FINNHUB_API_KEY`(無料)だけです。
+
+内部では `hawkeye case open/step/submit` というCLIが進行を管理しており、
+**各役割が見てよい情報だけ**をファイルとして出力します。オーケストレーター
+(Claude Code)は情報を運ぶだけで、論証の中身に手を入れられない構造です。
+ルール強制・リスク拒否権・台帳記録はAPIモードと完全に同一のコードが実行します。
+
+### B. APIモード(スタンドアロンCLI)
 
 ```bash
 pip install -e ".[llm]"
-export ANTHROPIC_API_KEY=...   # 必須(evaluateのみ)
-export FINNHUB_API_KEY=...     # 任意(無料キー。時価総額・ニュース・決算日が充実します)
+export ANTHROPIC_API_KEY=...   # 従量課金キー(または ant auth login)
+hawkeye evaluate ...           # / hawkeye scout --evaluate N
 ```
 
+cron等でClaude Codeを介さず回したい場合(Phase 1以降)はこちら。
+
 データベースはカレントディレクトリの `hawkeye.db` に作られます
-(`HAWKEYE_DB` 環境変数で変更可)。
+(`HAWKEYE_DB` 環境変数で変更可)。ケースファイルは `cases/`
+(`HAWKEYE_CASES` で変更可)。
 
 ## 基本の流れ
 

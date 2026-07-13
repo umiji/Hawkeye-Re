@@ -76,8 +76,14 @@ Each item starts only when the ledger shows the weakness it fixes:
 - Automated claim verification for machine-checkable claim types
 - Backtest harness over historical catalysts (deterministic layers replayed;
   LLM layers evaluated on frozen dossiers)
-- Additional catalyst detectors beyond earnings surprise (guidance language,
-  insider clusters, index events)
+- Additional catalyst detectors beyond earnings surprise — insider clusters
+  (Finnhub insider-transactions, free), news triage (an LLM screen over the
+  news feed; near-zero marginal cost in session mode), guidance language,
+  index events. Note: the earnings-only scout going quiet between seasons is
+  acceptable — even desirable — during Phase 0: a catalyst strategy that
+  cannot find a catalyst should sit in cash, not manufacture trades. Detector
+  breadth is a Phase 2 investment, justified only after the Phase 0
+  viability verdict.
 
 ## Phase 3 — Scale judgment (statistics phase)
 

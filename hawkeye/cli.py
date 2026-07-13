@@ -43,7 +43,12 @@ from hawkeye.reports.render_ja import (
 from hawkeye.scout.benchmark import cohort_of, cohort_stats, forward_return
 from hawkeye.scout.scout import run_scout
 from hawkeye.sentinel.monitor import check_position
-from hawkeye.tribunal.pipeline import run_tribunal
+from hawkeye.tribunal import casefile
+from hawkeye.tribunal.pipeline import (
+    gate_only_recommendation,
+    run_tribunal,
+)
+from hawkeye.gates.entry_gates import run_entry_gates
 
 
 def _provider() -> CompositeProvider:
@@ -89,6 +94,112 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_step(case: "casefile.Case") -> None:
+    if case.recommendation_id is not None:
+        print(f"case: {case.id}  status: complete  "
+              f"recommendation: {case.recommendation_id}")
+        print(f"view with: hawkeye show {case.recommendation_id}")
+        return
+    package = casefile.write_package(case)
+    print(f"case: {case.id}  ticker: {case.brief.ticker}")
+    print(f"next_role: {package['role']}")
+    print(f"system: {package['system']}")
+    print(f"input: {package['input']}")
+    print(f"schema: {package['schema']}")
+    print(f"write_reply_to: {package['output']}")
+    print(f"submit_with: hawkeye case submit {case.id} --file {package['output']}")
+
+
+def cmd_case_open(args: argparse.Namespace) -> int:
+    config = HawkeyeConfig.from_env()
+    catalyst = Catalyst(
+        type=CatalystType(args.catalyst),
+        description=args.description,
+        event_date=date.fromisoformat(args.event_date),
+        source=args.source or "manual",
+    )
+    overrides = {
+        "price": args.price,
+        "market_cap": args.market_cap,
+        "avg_dollar_volume_20d": args.adv,
+        "atr_pct_14d": args.atr_pct,
+        "gap_on_event_pct": args.gap_pct,
+        "days_since_event": args.days_since_event,
+    }
+    brief = build_brief(args.ticker.upper(), catalyst, _provider(),
+                        notes=args.notes or "", overrides=overrides)
+    gates = run_entry_gates(brief.snapshot, catalyst, config)
+    ledger = _ledger()
+    if not gates.ok:
+        rec = gate_only_recommendation(brief, gates)
+        ledger.record_recommendation(rec, RecommendationStatus.SYSTEM_PASS)
+        print(render_recommendation_ja(rec))
+        print(f"\n(ゲートで却下 — LLM不要。記録済み: {rec.id})")
+        return 0
+    case = casefile.open_case(brief, gates, nav=args.nav,
+                              open_position_count=len(ledger.open_positions()))
+    _print_step(case)
+    return 0
+
+
+def cmd_case_step(args: argparse.Namespace) -> int:
+    try:
+        case = casefile.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    _print_step(case)
+    return 0
+
+
+def cmd_case_submit(args: argparse.Namespace) -> int:
+    import json as _json
+    try:
+        case = casefile.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    try:
+        payload = _json.loads(open(args.file).read())
+    except (OSError, _json.JSONDecodeError) as exc:
+        print(f"cannot read JSON from {args.file}: {exc}", file=sys.stderr)
+        return 1
+    config = HawkeyeConfig.from_env()
+    try:
+        role = casefile.submit(case, payload)
+    except (ValueError, KeyError, TypeError) as exc:
+        print(f"submission rejected ({exc}) — fix the JSON and resubmit",
+              file=sys.stderr)
+        return 1
+    print(f"accepted: {role}")
+    if casefile.next_role(case) is None:
+        rec = casefile.finalize(case, config)
+        ledger = _ledger()
+        status = (RecommendationStatus.PROPOSED
+                  if rec.verdict.decision == DecisionType.BUY
+                  else RecommendationStatus.SYSTEM_PASS)
+        ledger.record_recommendation(rec, status)
+        print()
+        print(render_recommendation_ja(rec))
+        print(f"\n(記録済み: {rec.id} / status={status.value})")
+    else:
+        _print_step(case)
+    return 0
+
+
+def cmd_case_list(args: argparse.Namespace) -> int:
+    cases = casefile.list_cases()
+    if not cases:
+        print("(ケースなし)")
+        return 0
+    for c in cases:
+        state = (f"complete -> {c.recommendation_id}"
+                 if c.recommendation_id else
+                 f"awaiting {casefile.next_role(c)}")
+        print(f"{c.id}  {c.brief.ticker:<6}  {state}")
+    return 0
+
+
 def cmd_scout(args: argparse.Namespace) -> int:
     config = HawkeyeConfig.from_env()
     finnhub = FinnhubProvider()
@@ -107,6 +218,16 @@ def cmd_scout(args: argparse.Namespace) -> int:
         enriched=result.enriched, gate_passed=len(result.passed),
         tickers=[c.ticker for c in result.passed])
     print(render_scout_ja(result))
+
+    if args.open_cases and result.passed:
+        print("\n## セッションモード用ケース(/hawkeye-run が処理します)")
+        open_count = len(ledger.open_positions())
+        for candidate in result.passed[:args.open_cases]:
+            case = casefile.open_case(candidate.brief, candidate.gate_report,
+                                      nav=args.nav,
+                                      open_position_count=open_count)
+            print(f"- {case.id}  {candidate.ticker}  (score {candidate.score})")
+        print("次: hawkeye case step <case_id>")
 
     if args.evaluate and result.passed:
         from hawkeye.tribunal.llm import AnthropicLLM
@@ -432,9 +553,46 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--days", type=int, default=None,
                     help="scan window in days (default: config)")
     sc.add_argument("--evaluate", type=int, default=0, metavar="N",
-                    help="run the tribunal on the top N candidates (uses LLM)")
+                    help="run the tribunal on the top N candidates (API mode)")
+    sc.add_argument("--open-cases", type=int, default=0, metavar="N",
+                    help="open session-mode cases for the top N candidates "
+                         "(no API key; driven by /hawkeye-run)")
     sc.add_argument("--nav", type=float, default=100_000.0)
     sc.set_defaults(func=cmd_scout)
+
+    # session-mode case workflow (LLM driven by Claude Code, no API key)
+    ca_p = sub.add_parser("case",
+                          help="stepwise tribunal for session mode (no API key)")
+    ca_sub = ca_p.add_subparsers(dest="case_command", required=True)
+
+    co = ca_sub.add_parser("open", help="run gates and open a case")
+    co.add_argument("ticker")
+    co.add_argument("--catalyst", required=True,
+                    choices=[c.value for c in CatalystType])
+    co.add_argument("--description", required=True)
+    co.add_argument("--event-date", required=True, help="YYYY-MM-DD")
+    co.add_argument("--source", default="")
+    co.add_argument("--notes", default="")
+    co.add_argument("--nav", type=float, default=100_000.0)
+    co.add_argument("--price", type=float, default=None)
+    co.add_argument("--market-cap", type=float, default=None)
+    co.add_argument("--adv", type=float, default=None)
+    co.add_argument("--atr-pct", type=float, default=None)
+    co.add_argument("--gap-pct", type=float, default=None)
+    co.add_argument("--days-since-event", type=int, default=None)
+    co.set_defaults(func=cmd_case_open)
+
+    cs = ca_sub.add_parser("step", help="emit the next role's prompt package")
+    cs.add_argument("case_id")
+    cs.set_defaults(func=cmd_case_step)
+
+    cu = ca_sub.add_parser("submit", help="submit a role's JSON output")
+    cu.add_argument("case_id")
+    cu.add_argument("--file", required=True)
+    cu.set_defaults(func=cmd_case_submit)
+
+    cl_ = ca_sub.add_parser("list", help="list cases and their state")
+    cl_.set_defaults(func=cmd_case_list)
 
     bm = sub.add_parser("benchmark",
                         help="forward returns: BUY vs PASS vs gate-reject cohorts")

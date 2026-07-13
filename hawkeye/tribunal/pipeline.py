@@ -160,37 +160,34 @@ def _stop_and_target(thesis: Thesis, entry_price: float) -> tuple[float, float]:
     return stop, target
 
 
-def run_tribunal(
+def gate_only_recommendation(brief: CandidateBrief,
+                             gates: GateReport) -> Recommendation:
+    reasons = "; ".join(
+        f"{g.name} (value={g.value}, threshold={g.threshold})"
+        for g in gates.hard_failures)
+    return Recommendation(
+        ticker=brief.ticker, brief=brief, gate_report=gates,
+        verdict=Verdict(decision=DecisionType.PASS, conviction=0.0,
+                        rationale=f"Hard entry-gate failure: {reasons}"),
+        model="(gates only)")
+
+
+def assemble_recommendation(
     brief: CandidateBrief,
-    llm: LLMClient,
+    gates: GateReport,
+    thesis_raw: dict,
+    attack_raw: dict,
+    verdict_raw: dict,
     config: HawkeyeConfig,
-    nav: float = 100_000.0,
-    open_position_count: int = 0,
+    nav: float,
+    open_position_count: int,
+    model: str,
 ) -> Recommendation:
-    gates: GateReport = run_entry_gates(brief.snapshot, brief.catalyst, config)
-
-    if not gates.ok:
-        reasons = "; ".join(
-            f"{g.name} (value={g.value}, threshold={g.threshold})"
-            for g in gates.hard_failures)
-        return Recommendation(
-            ticker=brief.ticker, brief=brief, gate_report=gates,
-            verdict=Verdict(decision=DecisionType.PASS, conviction=0.0,
-                            rationale=f"Hard entry-gate failure: {reasons}"),
-            model="(gates only)")
-
-    thesis_raw = llm.complete_json(
-        BULL_SYSTEM, render_bull_input(brief, gates), THESIS_SCHEMA)
+    """Deterministic tail of the tribunal: parsing, rule enforcement, risk
+    officer, final record. Shared by the API driver (run_tribunal) and the
+    session driver (casefile) so both modes produce identical records."""
     thesis = parse_thesis(thesis_raw)
-
-    attack_raw = llm.complete_json(
-        ADVERSARY_SYSTEM, render_adversary_input(brief, gates, thesis_raw),
-        ATTACK_SCHEMA)
     attacks = parse_attack_report(attack_raw)
-
-    verdict_raw = llm.complete_json(
-        JUDGE_SYSTEM, render_judge_input(brief, gates, thesis_raw, attack_raw),
-        VERDICT_SCHEMA)
     verdict = parse_verdict(verdict_raw)
 
     entry_price = brief.snapshot.price
@@ -219,7 +216,32 @@ def run_tribunal(
             verdict.rationale += (
                 "\n[RISK OFFICER VETO] " + "; ".join(plan.vetoes))
 
-    model_name = getattr(llm, "model", type(llm).__name__)
     return Recommendation(
         ticker=brief.ticker, brief=brief, gate_report=gates, thesis=thesis,
-        attack_report=attacks, verdict=verdict, plan=plan, model=model_name)
+        attack_report=attacks, verdict=verdict, plan=plan, model=model)
+
+
+def run_tribunal(
+    brief: CandidateBrief,
+    llm: LLMClient,
+    config: HawkeyeConfig,
+    nav: float = 100_000.0,
+    open_position_count: int = 0,
+) -> Recommendation:
+    gates: GateReport = run_entry_gates(brief.snapshot, brief.catalyst, config)
+    if not gates.ok:
+        return gate_only_recommendation(brief, gates)
+
+    thesis_raw = llm.complete_json(
+        BULL_SYSTEM, render_bull_input(brief, gates), THESIS_SCHEMA)
+    attack_raw = llm.complete_json(
+        ADVERSARY_SYSTEM, render_adversary_input(brief, gates, thesis_raw),
+        ATTACK_SCHEMA)
+    verdict_raw = llm.complete_json(
+        JUDGE_SYSTEM, render_judge_input(brief, gates, thesis_raw, attack_raw),
+        VERDICT_SCHEMA)
+
+    return assemble_recommendation(
+        brief, gates, thesis_raw, attack_raw, verdict_raw, config,
+        nav=nav, open_position_count=open_position_count,
+        model=getattr(llm, "model", type(llm).__name__))
