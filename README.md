@@ -44,7 +44,30 @@ market data ──> CandidateBrief (facts only)
 
 Hawkeye never places orders. It recommends, records, and audits.
 
-## Quickstart
+## Two ways to drive the LLM roles
+
+| Mode | LLM engine | Cost | How |
+|---|---|---|---|
+| **Session mode** (recommended) | Your Claude Code session — Bull/Adversary/Judge run as isolated subagents | Claude subscription, no API key | Open this repo in Claude Code and run `/hawkeye-run` |
+| API mode | Anthropic API (`claude-opus-4-8`) | Metered API key | `hawkeye evaluate` / `hawkeye scout --evaluate N` |
+
+Both modes share the identical deterministic tail (parsers → judge-rule
+enforcement → risk-officer veto → ledger), implemented once in
+`assemble_recommendation()` — the records they produce are directly
+comparable, and the `model` field says which engine argued the case.
+In session mode the CLI's `case step` command is the information-separation
+boundary: it emits only what the next role is allowed to see, so the
+orchestrating session cannot leak the attacks to the Bull even by accident.
+
+## Quickstart (session mode)
+
+```bash
+export FINNHUB_API_KEY=...       # free key; needed by scout
+# open this repo in Claude Code, then:
+/hawkeye-run
+```
+
+## Quickstart (API mode / standalone CLI)
 
 ```bash
 pip install -e ".[llm]"          # or: uv pip install -e ".[llm]"

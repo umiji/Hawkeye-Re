@@ -13,6 +13,7 @@ from hawkeye.contracts.models import (
 from hawkeye.sentinel.monitor import Signal
 
 _CATALYST_JA = {
+    "earnings_beat": "決算ビート(EPS/売上サプライズ)",
     "earnings_beat_raise": "決算ビート+ガイダンス引き上げ",
     "guidance_raise": "ガイダンス引き上げ",
     "earnings_overreaction": "決算への過剰反応",
@@ -158,6 +159,46 @@ def render_recommendation_ja(rec: Recommendation) -> str:
     lines.append("---")
     lines.append("実行(Yes)/見送り(No)の最終判断と発注はユーザー自身が行ってください。"
                  "本レポートは投資助言ではなく、システムの検証記録です。")
+    return "\n".join(lines)
+
+
+def render_scout_ja(result) -> str:
+    """ScoutResult -> Japanese shortlist report."""
+    lines = [f"# 🔭 スカウト結果 ({result.scan_start} 〜 {result.scan_end})", ""]
+    f = result.funnel()
+    lines.append(f"ファネル: 決算イベント {f['scanned']}件 → サプライズ選別 "
+                 f"{f['screened']}件 → 詳細取得 {f['enriched']}件 → "
+                 f"ゲート通過 {f['gate_passed']}件")
+    lines.append("")
+    if result.passed:
+        lines.append("## 候補ショートリスト(スコア順)")
+        lines.append("| 順位 | ティッカー | イベント日 | EPSサプライズ | 売上サプライズ | 当日反応 | スコア |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for i, c in enumerate(result.passed, 1):
+            gap = (f"{c.brief.snapshot.gap_on_event_pct:+.1f}%"
+                   if c.brief and c.brief.snapshot.gap_on_event_pct is not None
+                   else "不明")
+            rev = (f"{c.revenue_surprise_pct:+.1f}%"
+                   if c.revenue_surprise_pct is not None else "-")
+            lines.append(f"| {i} | **{c.ticker}** | {c.event_date} | "
+                         f"{c.eps_surprise_pct:+.1f}% | {rev} | {gap} | {c.score} |")
+        lines.append("")
+        lines.append("次の一手(検証にかける):")
+        top = result.passed[0]
+        lines.append("```")
+        lines.append(f"hawkeye evaluate {top.ticker} --catalyst earnings_beat "
+                     f"--event-date {top.event_date} \\")
+        lines.append(f"  --description \"{top.brief.catalyst.description if top.brief else 'EPS surprise'}\"")
+        lines.append("```")
+        lines.append("(または `hawkeye scout --evaluate N` で上位N件を自動で審理にかけられます)")
+    else:
+        lines.append("ゲートを通過した候補はありませんでした。")
+    if result.rejected:
+        lines.append("")
+        lines.append("## 却下された候補")
+        for c in result.rejected:
+            lines.append(f"- {c.ticker} ({c.event_date}, EPS {c.eps_surprise_pct:+.1f}%): "
+                         f"{c.reject_reason}")
     return "\n".join(lines)
 
 

@@ -64,6 +64,17 @@ class FinnhubProvider:
             pass
         return out
 
+    def earnings_calendar(self, start: date, end: date) -> list[dict]:
+        """Raw earnings-calendar entries (all symbols) for a date range."""
+        if not self.available:
+            return []
+        try:
+            cal = self._get("calendar/earnings",
+                            **{"from": start.isoformat(), "to": end.isoformat()})
+        except httpx.HTTPError:
+            return []
+        return cal.get("earningsCalendar", []) if isinstance(cal, dict) else []
+
     def news(self, ticker: str, limit: int = 10) -> list[NewsItem]:
         if not self.available:
             return []
