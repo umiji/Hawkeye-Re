@@ -35,7 +35,13 @@ from hawkeye.ledger.store import Ledger
 from hawkeye.marketdata.finnhub import CompositeProvider, FinnhubProvider
 from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
-from hawkeye.reports.render_ja import render_recommendation_ja, render_signals_ja
+from hawkeye.reports.render_ja import (
+    render_recommendation_ja,
+    render_scout_ja,
+    render_signals_ja,
+)
+from hawkeye.scout.benchmark import cohort_of, cohort_stats, forward_return
+from hawkeye.scout.scout import run_scout
 from hawkeye.sentinel.monitor import check_position
 from hawkeye.tribunal.pipeline import run_tribunal
 
@@ -80,6 +86,93 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     ledger.record_recommendation(rec, status)
     print(render_recommendation_ja(rec))
     print(f"\n(記録済み: {rec.id} / status={status.value} / DB={db_path()})")
+    return 0
+
+
+def cmd_scout(args: argparse.Namespace) -> int:
+    config = HawkeyeConfig.from_env()
+    finnhub = FinnhubProvider()
+    if not finnhub.available:
+        print("scout には FINNHUB_API_KEY が必要です(無料キー: finnhub.io)",
+              file=sys.stderr)
+        return 1
+    provider = CompositeProvider(YahooProvider(), finnhub)
+    result = run_scout(finnhub, provider, config, days_back=args.days)
+
+    ledger = _ledger()
+    ledger.record_scan(
+        params={"days_back": args.days or config.scout_days_back,
+                "min_eps_surprise": config.scout_min_eps_surprise_pct},
+        scanned=result.scanned, screened=result.screened,
+        enriched=result.enriched, gate_passed=len(result.passed),
+        tickers=[c.ticker for c in result.passed])
+    print(render_scout_ja(result))
+
+    if args.evaluate and result.passed:
+        from hawkeye.tribunal.llm import AnthropicLLM
+        llm = AnthropicLLM(model=config.model)
+        open_count = len(ledger.open_positions())
+        for candidate in result.passed[:args.evaluate]:
+            print(f"\n{'=' * 70}\n審理中: {candidate.ticker} ...\n")
+            rec = run_tribunal(candidate.brief, llm, config, nav=args.nav,
+                               open_position_count=open_count)
+            status = (RecommendationStatus.PROPOSED
+                      if rec.verdict.decision == DecisionType.BUY
+                      else RecommendationStatus.SYSTEM_PASS)
+            ledger.record_recommendation(rec, status)
+            print(render_recommendation_ja(rec))
+            print(f"\n(記録済み: {rec.id} / status={status.value})")
+    return 0
+
+
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    ledger = _ledger()
+    provider = _provider()
+    today = date.today()
+    samples: list[tuple[str, float]] = []
+    skipped = 0
+    for row in ledger.list():
+        rec = ledger.get(row["id"])
+        if rec is None:
+            continue
+        eval_day = rec.created_at.date()
+        if (today - eval_day).days < args.horizon:
+            skipped += 1
+            continue
+        try:
+            bars = provider.daily_history(rec.ticker, days=400)
+        except Exception:
+            skipped += 1
+            continue
+        ret = forward_return(bars, eval_day, args.horizon)
+        if ret is None:
+            skipped += 1
+            continue
+        samples.append((cohort_of(rec), ret))
+
+    print(f"# 📊 コホート・ベンチマーク(評価日から{args.horizon}日後のリターン)\n")
+    if not samples:
+        print(f"対象データなし(評価から{args.horizon}日経過した記録がまだありません)")
+        return 0
+    stats = cohort_stats(samples)
+    label = {"BUY": "🟢 BUY(推奨)", "TRIBUNAL_PASS": "⚪ 審理で見送り",
+             "GATE_REJECT": "🚧 ゲートで却下"}
+    print("| コホート | 件数 | 平均 | 中央値 | 勝率 |")
+    print("|---|---|---|---|---|")
+    for cohort in ("BUY", "TRIBUNAL_PASS", "GATE_REJECT"):
+        s = stats[cohort]
+        if s["n"] == 0:
+            print(f"| {label[cohort]} | 0 | - | - | - |")
+        else:
+            print(f"| {label[cohort]} | {s['n']} | {s['mean']:+.2f}% | "
+                  f"{s['median']:+.2f}% | {s['win_rate']:.0%} |")
+    buy, pas = stats["BUY"], stats["TRIBUNAL_PASS"]
+    if buy["n"] > 0 and pas["n"] > 0:
+        spread = buy["mean"] - pas["mean"]
+        print(f"\nBUY − 見送り スプレッド: {spread:+.2f}%ポイント "
+              f"({'✅ 絞り込みが価値を生んでいる方向' if spread > 0 else '⚠️ 絞り込みが価値を生んでいない — ロジック要見直し'})")
+    if skipped:
+        print(f"\n(スキップ: {skipped}件 — 期間未達またはデータ取得失敗)")
     return 0
 
 
@@ -334,6 +427,20 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--gap-pct", type=float, default=None)
     ev.add_argument("--days-since-event", type=int, default=None)
     ev.set_defaults(func=cmd_evaluate)
+
+    sc = sub.add_parser("scout", help="scan earnings surprises for candidates")
+    sc.add_argument("--days", type=int, default=None,
+                    help="scan window in days (default: config)")
+    sc.add_argument("--evaluate", type=int, default=0, metavar="N",
+                    help="run the tribunal on the top N candidates (uses LLM)")
+    sc.add_argument("--nav", type=float, default=100_000.0)
+    sc.set_defaults(func=cmd_scout)
+
+    bm = sub.add_parser("benchmark",
+                        help="forward returns: BUY vs PASS vs gate-reject cohorts")
+    bm.add_argument("--horizon", type=int, default=30,
+                    help="days after evaluation (default 30)")
+    bm.set_defaults(func=cmd_benchmark)
 
     sh = sub.add_parser("show", help="re-render a stored recommendation")
     sh.add_argument("rec_id")

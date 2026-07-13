@@ -29,6 +29,13 @@ class HawkeyeConfig:
     min_expected_value_pct: float = 5.0     # scenario-weighted expected return
     max_holding_days: int = 45              # time stop for catalyst trades
 
+    # --- Scout (candidate discovery screen) ---
+    scout_days_back: int = 7                # scan window for earnings events
+    scout_min_eps_surprise_pct: float = 5.0
+    scout_min_revenue_surprise_pct: float = 0.0
+    scout_max_enrich: int = 15              # candidates enriched with price data
+                                            # (bounds free-tier API usage)
+
     # --- Attribution ---
     thesis_accuracy_threshold: float = 0.6  # >= this fraction of claims true = "thesis right"
 

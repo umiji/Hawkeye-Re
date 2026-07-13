@@ -29,6 +29,7 @@ def utcnow() -> datetime:
 # ---------------------------------------------------------------------------
 
 class CatalystType(str, Enum):
+    EARNINGS_BEAT = "earnings_beat"          # machine-detected EPS/revenue surprise
     EARNINGS_BEAT_RAISE = "earnings_beat_raise"
     GUIDANCE_RAISE = "guidance_raise"
     EARNINGS_OVERREACTION = "earnings_overreaction"

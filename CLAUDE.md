@@ -49,6 +49,15 @@ through a parser, never straight into a contract model.
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-07-13** Reprioritized on user direction: the full funnel (scout →
+  tribunal → monitor → attribution) must be validated BEFORE any automation.
+  Added `scout` (Finnhub earnings-calendar surprise screen → gates → ranked
+  shortlist, funnel counts persisted in `scans`) and `benchmark` (forward
+  returns of BUY vs tribunal-PASS vs gate-reject cohorts — the Phase 0
+  viability metric; BUYs must beat the reject pile). ROADMAP.md rewritten
+  with measurable phase gates + a project-level kill criterion. Manual
+  `evaluate` candidates stay a separate cohort (catalyst.source) so human
+  picks never contaminate system-validation stats.
 - **2026-07-12** Initial build: contracts, gates, tribunal (Bull/Adversary/
   Judge with rule enforcement), risk officer, hash-chained ledger,
   sentinel, JA reports, CLI, 44 offline tests. Doctrine v1: risk 0.75%/pos,

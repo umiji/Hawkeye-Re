@@ -19,6 +19,7 @@
 |---|---|---|
 | `hawkeye.contracts` | Shared data models (the wire format) | schema registry |
 | `hawkeye.marketdata` | Yahoo/Finnhub clients, indicators, CandidateBrief assembly | ingest service |
+| `hawkeye.scout` | Mechanical candidate discovery (earnings-surprise screen, ranking) + cohort benchmark | scout service |
 | `hawkeye.gates` | Deterministic entry gates (pre-LLM) | part of tribunal svc |
 | `hawkeye.tribunal` | Bull / Adversary / Judge LLM roles + orchestration | tribunal service |
 | `hawkeye.risk` | Position sizing, portfolio limits, veto | risk service |
@@ -30,9 +31,13 @@
 ## Data flow
 
 ```
+Finnhub earnings calendar ─► scout: surprise screen ─► ranked shortlist
+                                      │ (funnel counts recorded per scan)
+                                      ▼
 YahooProvider ─┐
                ├─ CompositeProvider ─ build_brief() ─► CandidateBrief
-FinnhubProvider┘                                          │
+FinnhubProvider┘   (scout candidates and manual entries both land here)
+                                                          │
                                                           ▼
                                             run_entry_gates()  ── hard fail ──► Recommendation(PASS)
                                                           │

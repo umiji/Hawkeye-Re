@@ -45,6 +45,16 @@ CREATE TABLE IF NOT EXISTS journal (
     hash       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_journal_rec ON journal (rec_id);
+CREATE TABLE IF NOT EXISTS scans (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT NOT NULL,
+    params      TEXT NOT NULL,
+    scanned     INTEGER NOT NULL,
+    screened    INTEGER NOT NULL,
+    enriched    INTEGER NOT NULL,
+    gate_passed INTEGER NOT NULL,
+    tickers     TEXT NOT NULL
+);
 """
 
 _GENESIS = "0" * 64
@@ -208,6 +218,28 @@ class Ledger:
     def outcome(self, rec_id: str) -> Optional[Outcome]:
         evs = self.events(rec_id, kind="outcome")
         return Outcome.model_validate(evs[-1]["payload"]) if evs else None
+
+    # -- scout scans (funnel audit trail) ------------------------------------
+
+    def record_scan(self, params: dict, scanned: int, screened: int,
+                    enriched: int, gate_passed: int,
+                    tickers: list[str]) -> None:
+        self._conn.execute(
+            "INSERT INTO scans (ts, params, scanned, screened, enriched,"
+            " gate_passed, tickers) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (utcnow().isoformat(), json.dumps(params, default=str),
+             scanned, screened, enriched, gate_passed, json.dumps(tickers)))
+        self._conn.commit()
+
+    def list_scans(self) -> list[dict]:
+        return [
+            {"ts": r[0], "params": json.loads(r[1]), "scanned": r[2],
+             "screened": r[3], "enriched": r[4], "gate_passed": r[5],
+             "tickers": json.loads(r[6])}
+            for r in self._conn.execute(
+                "SELECT ts, params, scanned, screened, enriched, gate_passed,"
+                " tickers FROM scans ORDER BY id").fetchall()
+        ]
 
     # -- cross-recommendation analytics --------------------------------------
 
