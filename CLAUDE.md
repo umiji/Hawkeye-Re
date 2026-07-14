@@ -53,11 +53,35 @@ apply doubly here: `casefile.write_package()` is the only place deciding
 what a role sees, and `case submit` runs the same parsers/rule checks as
 API mode. Never have the orchestrating session author or edit role JSON.
 
+## Governance (added 2026-07-14)
+
+Before any new feature or design change (not small bugfixes/typos), update
+`docs/MASTER_OVERVIEW.ja.md` §4 (As-Is) and §5 (gap table) — or draft a
+short design note — and get user approval BEFORE implementing. This
+document was requested after the user flagged that prior sessions
+implemented features unilaterally without ever presenting the full
+picture (To-Be architecture, As-Is gap, and *why* the design should work)
+in one place. Keep §4/§5 current as capabilities land.
+
 ## Session hand-off log
 
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-07-14(b)** User flagged that development had proceeded feature-by-
+  feature with no single presentation of the full picture (To-Be
+  architecture, As-Is gap, investment principle, data model, user
+  workflows) — described feeling unable to oversee direction. Wrote
+  `docs/MASTER_OVERVIEW.ja.md`: requirements recap, honest explanation of
+  *why* the design should improve returns (bias removal via role
+  separation, asymmetric R:R enforcement, EV hurdle separating "good
+  story" from "good trade", mechanical candidate sourcing, calibration/
+  skill-vs-luck as the real compounding edge — explicitly framed as "a
+  system that promises a guaranteed return is a red flag, not a feature"),
+  full To-Be vs As-Is gap table, ER diagram, two sequence diagrams, and
+  per-task user workflows (candidate selection / holding / post-sale /
+  system improvement / retrospective). Published as an artifact too.
+  Added the governance rule above per the user's explicit request.
 - **2026-07-14** First real (non-synthetic) session-mode run: 3/3 scouted
   candidates PASSed, all via Judge rule enforcement (unaddressed severity-5
   attacks / sucker-test failures) — a healthy outcome, but user correctly
