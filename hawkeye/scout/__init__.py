@@ -6,4 +6,9 @@ from hawkeye.scout.earnings import (  # noqa: F401
     screen_events,
 )
 from hawkeye.scout.scout import ScoutCandidate, ScoutResult, run_scout  # noqa: F401
-from hawkeye.scout.benchmark import cohort_stats, forward_return  # noqa: F401
+from hawkeye.scout.benchmark import (  # noqa: F401
+    cohort_of,
+    cohort_stats,
+    forward_return,
+    reason_snippet,
+)

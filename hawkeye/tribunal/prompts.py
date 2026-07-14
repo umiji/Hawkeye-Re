@@ -161,6 +161,14 @@ Base rates you must respect (do not reason as if this trade is special):
   comes from asymmetry and discipline, not hit rate.
 - A story that requires the market to be "missing" something obvious in a
   liquid large-cap is usually wrong; someone selling knows something too.
+
+Data note: the dossier may include structured `eps_surprise_pct` /
+`revenue_surprise_pct` (machine-computed from reported actuals vs.
+consensus estimates — trust these over any number only implied by prose in
+the catalyst description or news text), and `insider_activity` /
+`analyst_trend` when available. A null value on these fields means
+unverified/unavailable, NOT "no activity" or "zero surprise" — never treat
+a missing field as evidence of anything.
 """
 
 BULL_SYSTEM = _SHARED_DOCTRINE + """
@@ -211,6 +219,9 @@ Attack systematically across the taxonomy (use the listed categories):
 - base_rate: does the claimed upside violate the historical base rates above?
 - timing: is the window already closed? days since event, gap size.
 - governance_accounting: management credibility, dilution, insider selling.
+  If `insider_activity` shows net selling into the move (or an analyst
+  downgrade trend in `analyst_trend`), that is direct sucker-test evidence
+  for the "informed sellers" argument — use it, don't just gesture at it.
 
 Mandatory tests:
 1. The sucker test: the Bull claims to know who is wrongly selling. Argue the

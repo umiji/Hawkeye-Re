@@ -9,6 +9,9 @@ Daily rhythm (docs/USER_GUIDE.ja.md):
   resolve-claim resolve a pre-registered claim TRUE/FALSE
   outcome       compute P&L + skill-vs-luck attribution for a closed trade
   calibration   book-level Brier / quadrant statistics
+  benchmark     aggregate forward-return stats: BUY vs PASS vs gate-reject
+  review-passes individual postmortem: which specific PASS/DECLINE calls
+                moved a lot afterward (complements benchmark's averages)
 """
 from __future__ import annotations
 
@@ -40,7 +43,12 @@ from hawkeye.reports.render_ja import (
     render_scout_ja,
     render_signals_ja,
 )
-from hawkeye.scout.benchmark import cohort_of, cohort_stats, forward_return
+from hawkeye.scout.benchmark import (
+    cohort_of,
+    cohort_stats,
+    forward_return,
+    reason_snippet,
+)
 from hawkeye.scout.scout import run_scout
 from hawkeye.sentinel.monitor import check_position
 from hawkeye.tribunal import casefile
@@ -74,6 +82,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         "atr_pct_14d": args.atr_pct,
         "gap_on_event_pct": args.gap_pct,
         "days_since_event": args.days_since_event,
+        "eps_surprise_pct": args.eps_surprise_pct,
+        "revenue_surprise_pct": args.revenue_surprise_pct,
     }
     brief = build_brief(args.ticker.upper(), catalyst, _provider(),
                         notes=args.notes or "", overrides=overrides)
@@ -125,6 +135,8 @@ def cmd_case_open(args: argparse.Namespace) -> int:
         "atr_pct_14d": args.atr_pct,
         "gap_on_event_pct": args.gap_pct,
         "days_since_event": args.days_since_event,
+        "eps_surprise_pct": args.eps_surprise_pct,
+        "revenue_surprise_pct": args.revenue_surprise_pct,
     }
     brief = build_brief(args.ticker.upper(), catalyst, _provider(),
                         notes=args.notes or "", overrides=overrides)
@@ -292,6 +304,66 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
         spread = buy["mean"] - pas["mean"]
         print(f"\nBUY − 見送り スプレッド: {spread:+.2f}%ポイント "
               f"({'✅ 絞り込みが価値を生んでいる方向' if spread > 0 else '⚠️ 絞り込みが価値を生んでいない — ロジック要見直し'})")
+    if skipped:
+        print(f"\n(スキップ: {skipped}件 — 期間未達またはデータ取得失敗)")
+    return 0
+
+
+def cmd_review_passes(args: argparse.Namespace) -> int:
+    """Individual postmortem: which specific PASS/DECLINE calls look, in
+    hindsight, like mistakes — vs. `benchmark`'s aggregate cohort view."""
+    ledger = _ledger()
+    provider = _provider()
+    today = date.today()
+    flagged: list[dict] = []
+    skipped = 0
+    review_statuses = {RecommendationStatus.SYSTEM_PASS.value,
+                       RecommendationStatus.DECLINED.value}
+    for row in ledger.list():
+        if row["status"] not in review_statuses:
+            continue
+        rec = ledger.get(row["id"])
+        if rec is None:
+            continue
+        eval_day = rec.created_at.date()
+        if (today - eval_day).days < args.horizon:
+            skipped += 1
+            continue
+        try:
+            bars = provider.daily_history(rec.ticker, days=400)
+        except Exception:
+            skipped += 1
+            continue
+        ret = forward_return(bars, eval_day, args.horizon)
+        if ret is None:
+            skipped += 1
+            continue
+        if abs(ret) >= args.threshold:
+            flagged.append({"rec": rec, "return_pct": round(ret, 2),
+                            "status": row["status"]})
+
+    flagged.sort(key=lambda d: -abs(d["return_pct"]))
+    print(f"# 🔍 見送り案件の事後レビュー(評価から{args.horizon}日後、"
+         f"±{args.threshold:.0f}%以上動いた銘柄)\n")
+    if not flagged:
+        print(f"該当なし(閾値{args.threshold:.0f}%を超えて動いた見送り銘柄はありません)")
+        if skipped:
+            print(f"(スキップ: {skipped}件 — 期間未達またはデータ取得失敗)")
+        return 0
+    for item in flagged:
+        rec, ret = item["rec"], item["return_pct"]
+        arrow = "📈" if ret > 0 else "📉"
+        tag = ("見送り(判断ミスの可能性 — 上昇)" if ret > 0
+              else "見送り(結果的に正しかった可能性 — 下落)")
+        print(f"## {arrow} {rec.ticker}  {ret:+.1f}%  [{tag}]")
+        print(f"- 提案ID: {rec.id}  評価日: {rec.created_at.date()}")
+        print(f"- 理由: {reason_snippet(rec, item['status'])}")
+        print(f"- 詳細: hawkeye show {rec.id}")
+        print()
+    print("注意: 上昇していても「判断ミス」とは限りません。見送り後に新しい好材料が"
+         "出た可能性もあります。`hawkeye show` で当時の反証内容を確認した上で、"
+         "プロセス(ゲート閾値・反証の甘さ等)に起因するのか、単なる後知恵バイアスかを"
+         "判断してください。")
     if skipped:
         print(f"\n(スキップ: {skipped}件 — 期間未達またはデータ取得失敗)")
     return 0
@@ -547,6 +619,10 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--atr-pct", type=float, default=None)
     ev.add_argument("--gap-pct", type=float, default=None)
     ev.add_argument("--days-since-event", type=int, default=None)
+    ev.add_argument("--eps-surprise-pct", type=float, default=None,
+                    help="structured EPS surprise %% (if known)")
+    ev.add_argument("--revenue-surprise-pct", type=float, default=None,
+                    help="structured revenue surprise %% (if known)")
     ev.set_defaults(func=cmd_evaluate)
 
     sc = sub.add_parser("scout", help="scan earnings surprises for candidates")
@@ -580,6 +656,8 @@ def build_parser() -> argparse.ArgumentParser:
     co.add_argument("--atr-pct", type=float, default=None)
     co.add_argument("--gap-pct", type=float, default=None)
     co.add_argument("--days-since-event", type=int, default=None)
+    co.add_argument("--eps-surprise-pct", type=float, default=None)
+    co.add_argument("--revenue-surprise-pct", type=float, default=None)
     co.set_defaults(func=cmd_case_open)
 
     cs = ca_sub.add_parser("step", help="emit the next role's prompt package")
@@ -599,6 +677,15 @@ def build_parser() -> argparse.ArgumentParser:
     bm.add_argument("--horizon", type=int, default=30,
                     help="days after evaluation (default 30)")
     bm.set_defaults(func=cmd_benchmark)
+
+    rp = sub.add_parser("review-passes",
+                        help="flag individual PASS/DECLINE calls that moved "
+                             "a lot afterward (postmortem, not aggregate stats)")
+    rp.add_argument("--horizon", type=int, default=30,
+                    help="days after evaluation (default 30)")
+    rp.add_argument("--threshold", type=float, default=15.0,
+                    help="flag moves at or beyond this %% magnitude (default 15)")
+    rp.set_defaults(func=cmd_review_passes)
 
     sh = sub.add_parser("show", help="re-render a stored recommendation")
     sh.add_argument("rec_id")

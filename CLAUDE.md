@@ -58,6 +58,29 @@ API mode. Never have the orchestrating session author or edit role JSON.
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-07-14** First real (non-synthetic) session-mode run: 3/3 scouted
+  candidates PASSed, all via Judge rule enforcement (unaddressed severity-5
+  attacks / sucker-test failures) — a healthy outcome, but user correctly
+  flagged that Bull/Adversary were arguing over news headlines+summaries
+  only, with no structured fundamentals. Risk: can't distinguish "process
+  correctly rejecting weak setups" from "process structurally incapable of
+  ever producing BUY because inputs are too thin" — exactly the H1/H2
+  ambiguity the Phase 0 kill criterion exists to catch. Response:
+  (1) wired scout's computed eps/revenue surprise into MarketSnapshot as
+  structured fields (previously only in catalyst.description prose);
+  (2) added InsiderActivity (net open-market buy/sell, Finnhub
+  insider-transactions) and AnalystTrend (recommendation counts,
+  Finnhub recommendation) to CandidateBrief, wired via duck-typed
+  provider.insider_activity()/analyst_trend() (optional — Yahoo-only
+  providers degrade to None, never raise); both may require a paid
+  Finnhub tier, undocumented which — code treats absence as unverified,
+  not "no activity". Prompts updated to cite these fields and to trust
+  structured surprise numbers over prose-implied ones. (3) Added
+  `hawkeye review-passes` — individual postmortem flagging PASSed/declined
+  tickers that moved >= threshold afterward, distinct from `benchmark`'s
+  aggregate cohort stats; a big rally on a PASSed name is a signal the
+  PASS call may have been wrong (or new info emerged after — check
+  `hawkeye show` before concluding either way). 14 new tests (72 total).
 - **2026-07-13(b)** Session mode: user runs Hawkeye inside Claude Code on
   subscription (no metered API key). Added `casefile` (case open/step/submit
   CLI) + `/hawkeye-run` skill; API and session drivers share

@@ -1,9 +1,11 @@
 from datetime import date, timedelta
 
+from hawkeye.contracts.models import AnalystTrend, Catalyst, CatalystType, InsiderActivity
 from hawkeye.marketdata.base import Bar, StaticProvider
 from hawkeye.marketdata.snapshot import (
     atr_pct,
     avg_dollar_volume,
+    build_brief,
     build_snapshot,
     event_stats,
 )
@@ -53,3 +55,60 @@ def test_build_snapshot_with_overrides():
     assert snap.market_cap == 1e9       # None override ignored
     assert snap.avg_dollar_volume_20d is not None
     assert snap.high_52w is not None
+
+
+def test_build_snapshot_carries_structured_surprise_overrides():
+    bars = make_bars(300)
+    snap = build_snapshot("TEST", bars, {},
+                          overrides={"eps_surprise_pct": 22.5,
+                                    "revenue_surprise_pct": None})
+    assert snap.eps_surprise_pct == 22.5
+    assert snap.revenue_surprise_pct is None   # None override ignored, stays None
+
+
+def test_build_brief_enriches_insider_and_analyst_when_provider_supports_it():
+    bars = make_bars(300)
+    insider = InsiderActivity(window_days=90, net_shares=-5000, buyers=1, sellers=3)
+    analyst = AnalystTrend(period=date(2026, 7, 1), strong_buy=5, buy=10,
+                           hold=3, sell=1, strong_sell=0)
+    provider = StaticProvider(bars=bars, insider=insider, analyst=analyst)
+    catalyst = Catalyst(type=CatalystType.EARNINGS_BEAT, description="beat",
+                        event_date=date.today() - timedelta(days=3))
+    brief = build_brief("TEST", catalyst, provider)
+    assert brief.insider_activity == insider
+    assert brief.analyst_trend == analyst
+
+
+def test_build_brief_omits_enrichment_when_provider_lacks_it():
+    """Yahoo-only providers don't implement insider_activity/analyst_trend —
+    the fields must come back None, never raise."""
+    bars = make_bars(300)
+
+    class BareProvider:
+        def daily_history(self, ticker, days=365):
+            return bars
+
+        def profile(self, ticker):
+            return {}
+
+        def news(self, ticker, limit=10):
+            return []
+
+    catalyst = Catalyst(type=CatalystType.EARNINGS_BEAT, description="beat",
+                        event_date=date.today() - timedelta(days=3))
+    brief = build_brief("TEST", catalyst, BareProvider())
+    assert brief.insider_activity is None
+    assert brief.analyst_trend is None
+
+
+def test_build_brief_survives_enrichment_call_raising():
+    bars = make_bars(300)
+
+    class FlakyProvider(StaticProvider):
+        def insider_activity(self, ticker):
+            raise RuntimeError("finnhub 403")
+
+    catalyst = Catalyst(type=CatalystType.EARNINGS_BEAT, description="beat",
+                        event_date=date.today() - timedelta(days=3))
+    brief = build_brief("TEST", catalyst, FlakyProvider(bars=bars))
+    assert brief.insider_activity is None  # degraded, not raised

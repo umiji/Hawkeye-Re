@@ -71,6 +71,37 @@ class MarketSnapshot(BaseModel):
     next_earnings_date: Optional[date] = None
     high_52w: Optional[float] = None
     low_52w: Optional[float] = None
+    eps_surprise_pct: Optional[float] = None       # structured, not just prose
+    revenue_surprise_pct: Optional[float] = None
+
+
+class InsiderActivity(BaseModel):
+    """Net insider open-market buying/selling over a trailing window.
+
+    Only transaction codes P (open-market purchase) and S (open-market
+    sale) are counted — option exercises, grants, and tax withholding are
+    noise for the sucker test ("who is selling to us, and why").
+    """
+    window_days: int
+    net_shares: float          # positive = net insider buying
+    buyers: int                # distinct insiders with net purchases
+    sellers: int                # distinct insiders with net sales
+
+
+class AnalystTrend(BaseModel):
+    """Analyst recommendation counts, latest period vs. the prior one."""
+    period: date
+    strong_buy: int
+    buy: int
+    hold: int
+    sell: int
+    strong_sell: int
+    prior_period: Optional[date] = None
+    prior_strong_buy: Optional[int] = None
+    prior_buy: Optional[int] = None
+    prior_hold: Optional[int] = None
+    prior_sell: Optional[int] = None
+    prior_strong_sell: Optional[int] = None
 
 
 class CandidateBrief(BaseModel):
@@ -82,6 +113,8 @@ class CandidateBrief(BaseModel):
     snapshot: MarketSnapshot
     catalyst: Catalyst
     news: list[NewsItem] = Field(default_factory=list)
+    insider_activity: Optional[InsiderActivity] = None
+    analyst_trend: Optional[AnalystTrend] = None
     notes: str = ""
 
 

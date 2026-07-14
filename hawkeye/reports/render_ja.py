@@ -65,6 +65,19 @@ def render_recommendation_ja(rec: Recommendation) -> str:
         lines.append(f"- イベント当日の値動き: {s.gap_on_event_pct:+.1f}%  "
                      f"イベント後の推移: {_fmt(s.change_since_event_pct, '%', 1)}  "
                      f"経過: {s.days_since_event}営業日")
+    if s.eps_surprise_pct is not None or s.revenue_surprise_pct is not None:
+        lines.append(f"- EPSサプライズ: {_fmt(s.eps_surprise_pct, '%', 1)}  "
+                     f"売上サプライズ: {_fmt(s.revenue_surprise_pct, '%', 1)}"
+                     f"(コンセンサス予想比、機械計算)")
+    ia = rec.brief.insider_activity
+    if ia is not None:
+        lines.append(f"- インサイダー動向({ia.window_days}日): "
+                     f"買い{ia.buyers}名 / 売り{ia.sellers}名  "
+                     f"純株数{ia.net_shares:+,.0f}株")
+    at = rec.brief.analyst_trend
+    if at is not None:
+        cur = f"強気{at.strong_buy}/買い{at.buy}/中立{at.hold}/売り{at.sell}/強気売り{at.strong_sell}"
+        lines.append(f"- アナリスト格付け({at.period}): {cur}")
     lines.append("")
 
     # Gates

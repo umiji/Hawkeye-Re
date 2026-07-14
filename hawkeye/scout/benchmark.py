@@ -15,7 +15,11 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Optional
 
-from hawkeye.contracts.models import DecisionType, Recommendation
+from hawkeye.contracts.models import (
+    DecisionType,
+    Recommendation,
+    RecommendationStatus,
+)
 from hawkeye.marketdata.base import Bar
 
 
@@ -37,6 +41,15 @@ def cohort_of(rec: Recommendation) -> str:
     if rec.thesis is None:
         return "GATE_REJECT"
     return "TRIBUNAL_PASS"
+
+
+def reason_snippet(rec: Recommendation, status: str, max_len: int = 160) -> str:
+    """One-line reason a candidate was NOT bought, for individual postmortem
+    review (as opposed to cohort_stats' aggregate view)."""
+    if status == RecommendationStatus.DECLINED.value:
+        return "ユーザーが見送りを選択(システムはBUYを提案していた)"
+    text = rec.verdict.rationale.strip().splitlines()[0] if rec.verdict.rationale else ""
+    return text[:max_len]
 
 
 def cohort_stats(samples: list[tuple[str, float]]) -> dict[str, dict]:

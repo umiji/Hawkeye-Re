@@ -1,7 +1,14 @@
 from datetime import date, timedelta
 
+from hawkeye.contracts.models import (
+    DecisionType,
+    GateReport,
+    Recommendation,
+    RecommendationStatus,
+    Verdict,
+)
 from hawkeye.marketdata.base import StaticProvider
-from hawkeye.scout.benchmark import cohort_stats, forward_return
+from hawkeye.scout.benchmark import cohort_stats, forward_return, reason_snippet
 from hawkeye.scout.earnings import (
     EarningsEvent,
     eps_surprise_pct,
@@ -9,7 +16,7 @@ from hawkeye.scout.earnings import (
     screen_events,
 )
 from hawkeye.scout.scout import run_scout, score_candidate
-from tests.conftest import make_bars
+from tests.conftest import make_bars, make_brief
 
 
 def ev(ticker="AAA", day=None, eps_a=1.10, eps_e=1.00,
@@ -152,3 +159,40 @@ def test_cohort_stats():
     assert stats["BUY"]["win_rate"] == 0.5
     assert stats["TRIBUNAL_PASS"]["median"] == 0.0
     assert stats["GATE_REJECT"]["n"] == 1
+
+
+# --- individual postmortem (review-passes) ----------------------------------
+
+def gate_reject_rec() -> Recommendation:
+    return Recommendation(
+        ticker="TEST", brief=make_brief(), gate_report=GateReport(),
+        verdict=Verdict(decision=DecisionType.PASS, conviction=0.0,
+                        rationale="Hard entry-gate failure: min_price"))
+
+
+def buy_rec() -> Recommendation:
+    return Recommendation(
+        ticker="TEST", brief=make_brief(), gate_report=GateReport(),
+        verdict=Verdict(decision=DecisionType.BUY, conviction=0.7,
+                        rationale="Edge survives attack; sizing per plan."))
+
+
+def test_reason_snippet_declined_ignores_stale_buy_rationale():
+    # a DECLINED rec's verdict.rationale is the original BUY case, not a
+    # PASS reason — the snippet must not present it as if it were one
+    text = reason_snippet(buy_rec(), RecommendationStatus.DECLINED.value)
+    assert "BUY" in text or "システムはBUY" in text
+    assert "Edge survives attack" not in text
+
+
+def test_reason_snippet_system_pass_uses_first_rationale_line():
+    rec = gate_reject_rec()
+    text = reason_snippet(rec, RecommendationStatus.SYSTEM_PASS.value)
+    assert text.startswith("Hard entry-gate failure")
+
+
+def test_reason_snippet_truncates_long_rationale():
+    rec = buy_rec()
+    rec.verdict.rationale = "x" * 500
+    text = reason_snippet(rec, RecommendationStatus.SYSTEM_PASS.value, max_len=50)
+    assert len(text) == 50

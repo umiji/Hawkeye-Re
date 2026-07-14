@@ -11,8 +11,10 @@ from typing import Optional
 
 import httpx
 
-from hawkeye.contracts.models import NewsItem
+from hawkeye.contracts.models import AnalystTrend, InsiderActivity, NewsItem
 from hawkeye.marketdata.base import Bar
+
+_INSIDER_BUY_SELL_CODES = {"P", "S"}  # open-market purchase / sale only
 
 _BASE = "https://finnhub.io/api/v1"
 
@@ -75,6 +77,83 @@ class FinnhubProvider:
             return []
         return cal.get("earningsCalendar", []) if isinstance(cal, dict) else []
 
+    def insider_activity(self, ticker: str,
+                         window_days: int = 90) -> Optional[InsiderActivity]:
+        """Net open-market insider buying/selling over the trailing window.
+
+        Requires a Finnhub tier with insider-transactions access; returns
+        None (never a silent zero) if the endpoint is unavailable so the
+        tribunal sees "unverified", not "no insider activity".
+        """
+        if not self.available:
+            return None
+        today = date.today()
+        try:
+            data = self._get("stock/insider-transactions", symbol=ticker,
+                             **{"from": (today - timedelta(days=window_days)).isoformat(),
+                                "to": today.isoformat()})
+        except httpx.HTTPError:
+            return None
+        rows = data.get("data", []) if isinstance(data, dict) else []
+        if not rows:
+            return None
+        net_by_insider: dict[str, float] = {}
+        for row in rows:
+            code = row.get("transactionCode")
+            change = row.get("change")
+            name = row.get("name", "?")
+            if code not in _INSIDER_BUY_SELL_CODES or change is None:
+                continue
+            net_by_insider[name] = net_by_insider.get(name, 0.0) + float(change)
+        if not net_by_insider:
+            return None
+        return InsiderActivity(
+            window_days=window_days,
+            net_shares=sum(net_by_insider.values()),
+            buyers=sum(1 for v in net_by_insider.values() if v > 0),
+            sellers=sum(1 for v in net_by_insider.values() if v < 0))
+
+    def analyst_trend(self, ticker: str) -> Optional[AnalystTrend]:
+        """Latest analyst recommendation counts vs. the prior period.
+
+        Requires a Finnhub tier with recommendation-trends access; returns
+        None if unavailable.
+        """
+        if not self.available:
+            return None
+        try:
+            rows = self._get("stock/recommendation", symbol=ticker)
+        except httpx.HTTPError:
+            return None
+        if not isinstance(rows, list) or not rows:
+            return None
+        rows = sorted(rows, key=lambda r: r.get("period", ""), reverse=True)
+        latest = rows[0]
+        try:
+            period = date.fromisoformat(latest["period"])
+        except (KeyError, ValueError):
+            return None
+        prior = rows[1] if len(rows) > 1 else None
+        prior_period = None
+        if prior is not None:
+            try:
+                prior_period = date.fromisoformat(prior["period"])
+            except (KeyError, ValueError):
+                prior = None
+        return AnalystTrend(
+            period=period,
+            strong_buy=int(latest.get("strongBuy", 0)),
+            buy=int(latest.get("buy", 0)),
+            hold=int(latest.get("hold", 0)),
+            sell=int(latest.get("sell", 0)),
+            strong_sell=int(latest.get("strongSell", 0)),
+            prior_period=prior_period,
+            prior_strong_buy=prior.get("strongBuy") if prior else None,
+            prior_buy=prior.get("buy") if prior else None,
+            prior_hold=prior.get("hold") if prior else None,
+            prior_sell=prior.get("sell") if prior else None,
+            prior_strong_sell=prior.get("strongSell") if prior else None)
+
     def news(self, ticker: str, limit: int = 10) -> list[NewsItem]:
         if not self.available:
             return []
@@ -115,3 +194,11 @@ class CompositeProvider:
     def news(self, ticker: str, limit: int = 10) -> list[NewsItem]:
         items = self._finnhub.news(ticker, limit) if self._finnhub.available else []
         return items or self._yahoo.news(ticker, limit)
+
+    def insider_activity(self, ticker: str) -> Optional[InsiderActivity]:
+        return (self._finnhub.insider_activity(ticker)
+                if self._finnhub.available else None)
+
+    def analyst_trend(self, ticker: str) -> Optional[AnalystTrend]:
+        return (self._finnhub.analyst_trend(ticker)
+                if self._finnhub.available else None)

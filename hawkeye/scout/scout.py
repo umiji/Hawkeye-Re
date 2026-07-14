@@ -110,7 +110,11 @@ def run_scout(calendar_source, provider, config: HawkeyeConfig,
                          + " (guidance not machine-verified — check news)"),
             event_date=event.day, source="scout/finnhub-earnings-calendar")
         try:
-            brief = build_brief(candidate.ticker, catalyst, provider)
+            brief = build_brief(
+                candidate.ticker, catalyst, provider,
+                overrides={"eps_surprise_pct": round(eps_s, 1),
+                          "revenue_surprise_pct": (round(rev_s, 1)
+                                                   if rev_s is not None else None)})
         except Exception as exc:  # enrichment failure = rejection, visibly
             candidate.reject_reason = f"enrichment failed: {exc}"
             rejected.append(candidate)

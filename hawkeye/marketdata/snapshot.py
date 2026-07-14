@@ -89,6 +89,23 @@ def build_snapshot(ticker: str, bars: list[Bar], profile: dict,
     return snapshot
 
 
+def _optional_call(provider: MarketDataProvider, method: str, ticker: str):
+    """Duck-typed enrichment: call provider.<method>(ticker) if it exists.
+
+    Not every provider implements insider_activity/analyst_trend (Yahoo
+    doesn't). Missing capability or a failed call both yield None — the
+    tribunal then sees the field absent, same as any other unverified data,
+    never a silent zero.
+    """
+    fn = getattr(provider, method, None)
+    if not callable(fn):
+        return None
+    try:
+        return fn(ticker)
+    except Exception:
+        return None
+
+
 def build_brief(ticker: str, catalyst: Catalyst, provider: MarketDataProvider,
                 notes: str = "", overrides: Optional[dict] = None) -> CandidateBrief:
     bars = provider.daily_history(ticker)
@@ -102,5 +119,7 @@ def build_brief(ticker: str, catalyst: Catalyst, provider: MarketDataProvider,
         snapshot=snapshot,
         catalyst=catalyst,
         news=provider.news(ticker),
+        insider_activity=_optional_call(provider, "insider_activity", ticker),
+        analyst_trend=_optional_call(provider, "analyst_trend", ticker),
         notes=notes,
     )
