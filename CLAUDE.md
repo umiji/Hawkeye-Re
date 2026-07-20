@@ -58,6 +58,13 @@ API mode. Never have the orchestrating session author or edit role JSON.
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-07-20** Non-Hawkeye addition (kept out of the `hawkeye` package):
+  `plugins/cortexlab-dup-guard/` + root `.claude-plugin/marketplace.json` — a
+  Claude Code plugin for the user's separate CortexLab project. It detects
+  duplicate development across Linear backlog and GitHub branches
+  (duplicate-detector agent, /dup-check //backlog-add //start-task commands,
+  PreToolUse hook gating Linear issue creation on a recorded check). No
+  imports into Hawkeye code; Hawkeye invariants untouched.
 - **2026-07-13(b)** Session mode: user runs Hawkeye inside Claude Code on
   subscription (no metered API key). Added `casefile` (case open/step/submit
   CLI) + `/hawkeye-run` skill; API and session drivers share

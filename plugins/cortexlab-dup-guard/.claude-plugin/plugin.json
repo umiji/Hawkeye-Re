@@ -1,0 +1,12 @@
+{
+  "name": "cortexlab-dup-guard",
+  "displayName": "CortexLab Dup Guard",
+  "version": "0.1.0",
+  "description": "Detects duplicate or overlapping development work across the Linear backlog and GitHub branches/PRs. Adds /dup-check, /backlog-add and /start-task commands, a duplicate-detector agent, and a hook that blocks Linear issue creation until a duplicate check has been run.",
+  "author": {
+    "name": "CortexLab"
+  },
+  "license": "MIT",
+  "keywords": ["linear", "github", "duplicate-detection", "backlog", "team-workflow"],
+  "hooks": "./hooks/hooks.json"
+}

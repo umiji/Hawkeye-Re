@@ -1,0 +1,14 @@
+{
+  "name": "cortexlab-tools",
+  "description": "Shared Claude Code plugins for CortexLab collaborative development.",
+  "owner": {
+    "name": "CortexLab"
+  },
+  "plugins": [
+    {
+      "name": "cortexlab-dup-guard",
+      "source": "./plugins/cortexlab-dup-guard",
+      "description": "Duplicate-development guard for CortexLab: checks the Linear backlog and GitHub branches/PRs for overlapping work before you register a backlog item or start a task."
+    }
+  ]
+}
