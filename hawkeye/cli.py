@@ -172,7 +172,7 @@ def cmd_case_submit(args: argparse.Namespace) -> int:
         print(f"case not found: {args.case_id}", file=sys.stderr)
         return 1
     try:
-        payload = _json.loads(open(args.file).read())
+        payload = _json.loads(open(args.file, encoding="utf-8").read())
     except (OSError, _json.JSONDecodeError) as exc:
         print(f"cannot read JSON from {args.file}: {exc}", file=sys.stderr)
         return 1

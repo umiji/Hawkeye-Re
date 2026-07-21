@@ -79,11 +79,11 @@ def _case_path(case_id: str) -> Path:
 
 def save_case(case: Case) -> None:
     cases_dir().mkdir(parents=True, exist_ok=True)
-    _case_path(case.id).write_text(case.model_dump_json(indent=2))
+    _case_path(case.id).write_text(case.model_dump_json(indent=2), encoding="utf-8")
 
 
 def load_case(case_id: str) -> Case:
-    return Case.model_validate_json(_case_path(case_id).read_text())
+    return Case.model_validate_json(_case_path(case_id).read_text(encoding="utf-8"))
 
 
 def list_cases() -> list[Case]:
@@ -92,7 +92,7 @@ def list_cases() -> list[Case]:
     out = []
     for p in sorted(cases_dir().glob("case_*.json")):
         try:
-            out.append(Case.model_validate_json(p.read_text()))
+            out.append(Case.model_validate_json(p.read_text(encoding="utf-8")))
         except Exception:
             continue
     return out
@@ -153,9 +153,9 @@ def write_package(case: Case) -> Optional[dict]:
         "schema": role_dir / f"{role}.schema.json",
         "output": role_dir / f"{role}.out.json",   # where to write the reply
     }
-    paths["system"].write_text(system)
-    paths["input"].write_text(user)
-    paths["schema"].write_text(json.dumps(schema, indent=2))
+    paths["system"].write_text(system, encoding="utf-8")
+    paths["input"].write_text(user, encoding="utf-8")
+    paths["schema"].write_text(json.dumps(schema, indent=2), encoding="utf-8")
     return {"role": role, **{k: str(v) for k, v in paths.items()}}
 
 
