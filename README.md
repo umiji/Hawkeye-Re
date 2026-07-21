@@ -106,6 +106,7 @@ the deterministic core are fully offline.
 | Doc | Contents |
 |---|---|
 | [docs/MASTER_OVERVIEW.ja.md](docs/MASTER_OVERVIEW.ja.md) | **起点はここから。** To-Be全体像・As-Is差分・投資原則・ER図・シーケンス・Userワークフロー(日本語) |
+| [docs/STRATEGY_BACKLOG.ja.md](docs/STRATEGY_BACKLOG.ja.md) | 「50%必達」観点での戦略・戦術レビューと優先順位付きバックログ(日本語) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Service decomposition, contracts, data flow |
 | [docs/INVESTMENT_DOCTRINE.md](docs/INVESTMENT_DOCTRINE.md) | Strategy, gates, sizing, base rates — every number pre-registered |
 | [docs/VERIFICATION_PROTOCOL.md](docs/VERIFICATION_PROTOCOL.md) | The adversarial process spec and its bias-elimination mechanisms |

@@ -68,6 +68,28 @@ in one place. Keep §4/§5 current as capabilities land.
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-07-14(c)** User asked for a "50%必達" strategy/tactics audit against
+  `MASTER_OVERVIEW.ja.md`. Verdict: current design is a strong bias-removal
+  experiment but the return math doesn't close — modeled ceiling ~+47%/yr
+  under aggressive assumptions (p=0.55, 8 slots fully turning), realistic
+  case ~+13.5%/yr once occupancy (~70%) and profit-taking-at-target (no
+  trailing/runner logic, avg realized ~1.3R not 2R+) are modeled. Missing
+  levers identified: trade-count (single detector = zero candidates in
+  earnings off-season), right-tail capture (target hit = review, not
+  partial-exit-and-trail), and a pre-registered path to raise risk_pct
+  (currently ~1/43 of full Kelly at p=0.55/2:1 payout — literal numbers
+  belong to the reader's own priors, not a forecast). Also flagged missing
+  defenses: no portfolio-level drawdown circuit breaker, no regime filter,
+  no sector-concentration cap. Wrote `docs/STRATEGY_BACKLOG.ja.md`: full
+  review + 12-item backlog (BL-01..12) tiered by cost/measurement-impact
+  and sequenced against current dev state (Phase 0 has 0 open positions,
+  3 evaluated candidates — cheapest possible time to make small
+  risk-officer logic changes before cohort samples accumulate). Explicitly
+  preserved the existing Phase-0 kill-criterion discipline: detector
+  diversification and primary-source deep-reading (the two biggest
+  offense levers) stay gated behind the 50-evaluated-candidates checkpoint
+  already in ROADMAP.md — this audit does not override that. Nothing in
+  the backlog has been implemented; awaiting user go-ahead per tier.
 - **2026-07-14(b)** User flagged that development had proceeded feature-by-
   feature with no single presentation of the full picture (To-Be
   architecture, As-Is gap, investment principle, data model, user
