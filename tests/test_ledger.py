@@ -1,3 +1,4 @@
+import threading
 from datetime import date
 
 from hawkeye.contracts.models import (
@@ -74,6 +75,41 @@ def test_hash_chain_detects_tampering(tmp_path):
         ('{"approved": true, "note": ""}',))
     ledger._conn.commit()
     assert not ledger.verify_chain()
+
+
+def test_append_event_atomic_under_concurrent_writers(tmp_path):
+    """Two processes appending to the same journal must not corrupt the
+    hash chain. append_event's read-prev-hash-then-insert used to be two
+    separate statements; two connections could both read the same prev_hash
+    and each insert a row claiming it, breaking verify_chain() with no way
+    to recover the true order after the fact."""
+    path = str(tmp_path / "test.db")
+    Ledger(path)  # create schema once, up front
+
+    n_threads, events_per_thread = 6, 15
+    errors: list[Exception] = []
+
+    def worker(worker_id: int) -> None:
+        try:
+            ledger = Ledger(path)
+            for i in range(events_per_thread):
+                ledger.append_event(f"rec-{worker_id}", "sentinel_signal",
+                                    {"worker": worker_id, "seq": i})
+            ledger.close()
+        except Exception as exc:  # pragma: no cover - surfaced via errors list
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(w,)) for w in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    verifier = Ledger(path)
+    assert verifier.verify_chain()
+    total_events = sum(len(verifier.events(f"rec-{w}")) for w in range(n_threads))
+    assert total_events == n_threads * events_per_thread
 
 
 def test_all_resolved_claims_aggregation(tmp_path):

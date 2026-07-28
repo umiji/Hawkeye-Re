@@ -71,6 +71,9 @@ class Ledger:
     def __init__(self, path: str):
         self.path = path
         self._conn = sqlite3.connect(path)
+        # Wait for other processes' write locks instead of failing instantly
+        # (append_event below holds one across a read+insert).
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
@@ -128,17 +131,27 @@ class Ledger:
     # -- journal (append-only, hash-chained) --------------------------------
 
     def append_event(self, rec_id: str, kind: str, payload: dict[str, Any]) -> str:
-        prev = self._conn.execute(
-            "SELECT hash FROM journal ORDER BY seq DESC LIMIT 1").fetchone()
-        prev_hash = prev[0] if prev else _GENESIS
-        ts = utcnow().isoformat()
-        body = json.dumps(payload, sort_keys=True, default=str)
-        h = _sha(prev_hash, ts, rec_id, kind, body)
-        self._conn.execute(
-            "INSERT INTO journal (rec_id, ts, kind, payload, prev_hash, hash)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (rec_id, ts, kind, body, prev_hash, h))
-        self._conn.commit()
+        # BEGIN IMMEDIATE takes the write lock before the read, so the
+        # read-prev-hash + insert-next-row pair is atomic against other
+        # writers. Without this, two processes could both read the same
+        # prev_hash and each insert a row claiming it, corrupting the chain
+        # (a break verify_chain() can only detect after the fact, not undo).
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            prev = self._conn.execute(
+                "SELECT hash FROM journal ORDER BY seq DESC LIMIT 1").fetchone()
+            prev_hash = prev[0] if prev else _GENESIS
+            ts = utcnow().isoformat()
+            body = json.dumps(payload, sort_keys=True, default=str)
+            h = _sha(prev_hash, ts, rec_id, kind, body)
+            self._conn.execute(
+                "INSERT INTO journal (rec_id, ts, kind, payload, prev_hash, hash)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (rec_id, ts, kind, body, prev_hash, h))
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
         return h
 
     def events(self, rec_id: str, kind: Optional[str] = None) -> list[dict]:

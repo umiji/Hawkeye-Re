@@ -94,3 +94,15 @@ def test_list_cases(config):
     case = open_test_case(config)
     ids = [c.id for c in casefile.list_cases()]
     assert case.id in ids
+
+
+def test_list_cases_skips_unreadable_file_with_warning(config, capsys):
+    case = open_test_case(config)
+    broken = casefile.cases_dir() / "case_broken.json"
+    broken.write_text("{not valid json", encoding="utf-8")
+
+    ids = [c.id for c in casefile.list_cases()]
+
+    assert case.id in ids                    # good case still loads
+    assert "case_broken.json" not in str(ids)  # broken one silently excluded
+    assert "case_broken.json" in capsys.readouterr().err  # but visibly warned

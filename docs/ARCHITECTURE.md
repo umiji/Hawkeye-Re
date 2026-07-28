@@ -120,12 +120,24 @@ Session mode:  casefile (case open/step/submit CLI)            │   parsers →
 
 Session mode exists so the system runs on a Claude subscription with no API
 key: the Claude Code session orchestrates, spawning one fresh subagent per
-role. Separation is preserved mechanically — `casefile.write_package()` is
-the single choke point deciding what each role may see (it reuses the same
-renderers as API mode), and `case submit` re-validates every payload with
-the same parsers before anything reaches the ledger. Records carry
-`model="claude-code-session"` so the two engines' track records can be
-compared cohort-style later.
+role. Separation is preserved mechanically for the *content* each role's
+subagent receives — `casefile.write_package()` is the single choke point
+deciding what each role may see (it reuses the same renderers as API mode),
+and `case submit` re-validates every payload with the same parsers before
+anything reaches the ledger. Records carry `model="claude-code-session"` so
+the two engines' track records can be compared cohort-style later.
+
+**Known limitation (accepted 2026-07-28, not fixed):** unlike API mode's
+three genuinely separate stateless calls, the session-mode orchestrator (the
+top-level Claude Code session) has raw filesystem read access to every
+role's file in the case directory — nothing in code stops it from reading
+`adversary.out.json` before spawning the Bull subagent. The boundary that
+matters at that layer is operational discipline documented in
+`.claude/skills/hawkeye-run/SKILL.md` ("never author or edit role JSON"),
+not a code-enforced sandbox. True technical isolation isn't achievable
+within this architecture (a subagent is always spawned by, and inherits the
+trust of, its parent session), so this is disclosed rather than "fixed".
+Use API mode when strict technical separation matters.
 
 ## LLM usage
 

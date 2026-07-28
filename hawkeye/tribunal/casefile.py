@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -93,7 +94,9 @@ def list_cases() -> list[Case]:
     for p in sorted(cases_dir().glob("case_*.json")):
         try:
             out.append(Case.model_validate_json(p.read_text(encoding="utf-8")))
-        except Exception:
+        except Exception as exc:
+            print(f"warning: skipping unreadable case file {p}: {exc}",
+                  file=sys.stderr)
             continue
     return out
 

@@ -52,7 +52,15 @@ behavior descriptions, review summaries, everything.
    correct BUYs).
 4. **Information separation**: Bull never sees attacks; Adversary sees only
    the written thesis; Judge sees only the record. Keep the three LLM calls
-   stateless and separate.
+   stateless and separate. In API mode this is a real technical boundary
+   (three independent stateless calls). In session mode it's mechanical only
+   for *what each role's input file contains* (`casefile.write_package()`);
+   the orchestrating Claude Code session itself has raw filesystem access to
+   every role's file and nothing in code stops it from reading ahead — that
+   boundary is operational discipline (SKILL.md), not a sandbox, and isn't
+   fixable within this architecture (accepted 2026-07-28, see
+   `docs/MASTER_OVERVIEW.ja.md` §4 and `docs/ARCHITECTURE.md`). Don't claim
+   session mode has the same technical guarantee API mode does.
 5. **No autonomous trading.** The system recommends and records; the user
    executes. Don't add order placement.
 6. **Missing data is `unverified`, never a silent pass** (gates). On a hard
@@ -87,7 +95,9 @@ The tribunal can be driven by a Claude Code session instead of the API:
 open/step/submit`, spawning one fresh subagent per role. Invariants 3/4
 apply doubly here: `casefile.write_package()` is the only place deciding
 what a role sees, and `case submit` runs the same parsers/rule checks as
-API mode. Never have the orchestrating session author or edit role JSON.
+API mode. Never have the orchestrating session author or edit role JSON —
+this instruction, not code, is what keeps you (the orchestrator) from
+peeking at another role's raw file; see invariant 4's caveat.
 
 ## Governance (added 2026-07-14)
 
@@ -103,6 +113,50 @@ in one place. Keep §4/§5 current as capabilities land.
 
 Record decisions and insights at the end of each working session
 (newest first).
+
+- **2026-07-28(b)** Follow-up to the same-day review below: worked through
+  the leftover findings that were only summarized (not saved verbatim —
+  the transcript that produced the full 21-item architecture list and
+  doc-vs-code drift catalog had already ended, so only this log's summary
+  survived). Fixed two concrete, scoped bugs directly (no design decision
+  needed — both restore an already-documented invariant rather than change
+  behavior): (1) `casefile.list_cases()` silently skipped unreadable case
+  files (`except Exception: continue`); now prints a warning to stderr with
+  the file path before skipping, so a corrupted case doesn't just quietly
+  vanish from `hawkeye case list`. (2) `Ledger.append_event()`'s
+  read-prev-hash-then-insert was two separate statements with no shared
+  transaction; two processes appending concurrently could both read the
+  same `prev_hash` and each insert a row claiming it, corrupting the hash
+  chain in a way `verify_chain()` can only detect after the fact, never
+  undo. Fixed with an explicit `BEGIN IMMEDIATE` transaction around the
+  read+insert (plus `PRAGMA busy_timeout=5000` so a second writer waits
+  instead of erroring). New regression test spawns 6 threads × 15 events
+  each against one SQLite file and asserts the chain still verifies.
+  Two further findings were architecture-level and taken to the user per
+  the governance rule above instead of being fixed unilaterally: (a)
+  portfolio-cap (`max_positions`) is checked in `build_position_plan()`
+  against an `open_position_count` snapshotted once when a case opens, not
+  re-checked when the position is actually entered — concurrent evaluations
+  could each see "one slot free" and jointly exceed the cap once both are
+  manually entered. User's call: leave as-is — invariant 5 (no autonomous
+  trading, user always executes) makes `hawkeye positions` a sufficient
+  manual backstop; not worth a fail-closed recheck at `record-entry` time.
+  (b) Session-mode role separation (`write_package()`) is code-enforced only
+  for *what's written into each role's input file* — nothing stops the
+  orchestrating Claude Code session itself (which has full filesystem
+  access to the case directory) from reading another role's raw output
+  before spawning the next subagent; the real boundary is the SKILL.md
+  instruction not to. User's call: this can't be fixed within the
+  architecture (a subagent always inherits its parent session's access), so
+  disclose it honestly rather than pretend otherwise — documented in
+  `docs/MASTER_OVERVIEW.ja.md` §4, `docs/ARCHITECTURE.md`, and invariant 4
+  above. 81/81 offline tests green (79 prior + 2 new; `test_llm_auth.py`
+  still excluded, pre-existing unrelated collection failure, still
+  out of scope). The remaining ~19 architecture findings and the
+  doc-vs-code drift catalog from the original 2026-07-28 review are still
+  unrecovered (never saved outside that ended conversation) — if a future
+  session needs them, they must be re-derived by re-running a review, not
+  looked up.
 
 - **2026-07-28** User asked for an architecture/design/code review to
   confirm the system can actually deliver on its stated goal. Ran 4
