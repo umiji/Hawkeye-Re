@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from hawkeye.contracts.models import (
     DecisionType,
@@ -8,7 +8,12 @@ from hawkeye.contracts.models import (
     Verdict,
 )
 from hawkeye.marketdata.base import StaticProvider
-from hawkeye.scout.benchmark import cohort_stats, forward_return, reason_snippet
+from hawkeye.scout.benchmark import (
+    cohort_stats,
+    collect_samples,
+    forward_return,
+    reason_snippet,
+)
 from hawkeye.scout.earnings import (
     EarningsEvent,
     eps_surprise_pct,
@@ -159,6 +164,78 @@ def test_cohort_stats():
     assert stats["BUY"]["win_rate"] == 0.5
     assert stats["TRIBUNAL_PASS"]["median"] == 0.0
     assert stats["GATE_REJECT"]["n"] == 1
+
+
+def scan_rec(source="scout/finnhub-earnings-calendar", ticker="TEST",
+            days_ago=40, decision=DecisionType.PASS,
+            thesis=None) -> Recommendation:
+    brief = make_brief()
+    brief.catalyst.source = source
+    return Recommendation(
+        ticker=ticker, brief=brief, gate_report=GateReport(), thesis=thesis,
+        verdict=Verdict(decision=decision, conviction=0.6, rationale="test"),
+        created_at=datetime.now(timezone.utc) - timedelta(days=days_ago))
+
+
+class FailingProvider(StaticProvider):
+    def daily_history(self, ticker, days=365):
+        raise RuntimeError("network down")
+
+
+def test_collect_samples_excludes_manual_entries_by_default():
+    # ROADMAP.md: manual `evaluate` picks must never enter viability stats.
+    scout_rec = scan_rec(source="scout/finnhub-earnings-calendar")
+    manual_rec = scan_rec(source="manual")
+    bars = make_bars(60, start_price=100.0, daily_move=0.01)
+    provider = StaticProvider(bars=bars)
+
+    samples, pending, censored = collect_samples(
+        [scout_rec, manual_rec], provider, today=date.today(),
+        horizon_days=30, source="scout")
+
+    assert len(samples) == 1
+    assert pending == 0 and sum(censored.values()) == 0
+
+
+def test_collect_samples_source_all_includes_both():
+    scout_rec = scan_rec(source="scout/finnhub-earnings-calendar")
+    manual_rec = scan_rec(source="manual")
+    bars = make_bars(60, start_price=100.0, daily_move=0.01)
+    provider = StaticProvider(bars=bars)
+
+    samples, _, _ = collect_samples(
+        [scout_rec, manual_rec], provider, today=date.today(),
+        horizon_days=30, source="all")
+
+    assert len(samples) == 2
+
+
+def test_collect_samples_pending_does_not_count_as_censored():
+    fresh_rec = scan_rec(days_ago=5)  # horizon (30d) hasn't elapsed
+    bars = make_bars(60, start_price=100.0, daily_move=0.01)
+    provider = StaticProvider(bars=bars)
+
+    samples, pending, censored = collect_samples(
+        [fresh_rec], provider, today=date.today(),
+        horizon_days=30, source="scout")
+
+    assert samples == [] and pending == 1
+    assert sum(censored.values()) == 0
+
+
+def test_collect_samples_fetch_failure_is_censored_not_silently_dropped():
+    # A ticker whose price history can't be fetched (delisted, acquired,
+    # API outage) must not just vanish — it has to be visible as censored,
+    # per cohort, so survivorship bias in the comparison isn't hidden.
+    buy_rec = scan_rec(decision=DecisionType.BUY)
+
+    samples, pending, censored = collect_samples(
+        [buy_rec], FailingProvider(), today=date.today(),
+        horizon_days=30, source="scout")
+
+    assert samples == [] and pending == 0
+    assert censored["BUY"] == 1
+    assert censored["TRIBUNAL_PASS"] == 0 and censored["GATE_REJECT"] == 0
 
 
 # --- individual postmortem (review-passes) ----------------------------------

@@ -14,6 +14,8 @@ corrupts the pre-registered record.
 """
 from __future__ import annotations
 
+import hashlib
+
 from hawkeye.config import HawkeyeConfig
 from hawkeye.contracts.models import (
     AddressedAttack,
@@ -59,6 +61,20 @@ def _enum_or(enum_cls, value, fallback):
         return fallback
 
 
+def _content_id(prefix: str, *parts: str) -> str:
+    """Deterministic id from content, not randomness.
+
+    An attack's raw dict is parsed twice per run — once to bake ids into the
+    view rendered to the Judge, once inside assemble_recommendation() to
+    build the final record — and both parses must agree on the same id for
+    the same attack. Content-hashing (rather than uuid4) makes that
+    automatic, and lets tests predict an id without inspecting pipeline
+    internals.
+    """
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}_{digest}"
+
+
 def parse_thesis(raw: dict) -> Thesis:
     scenarios = [
         Scenario(name=s["name"], probability=_clamp01(s["probability"]),
@@ -98,7 +114,10 @@ def parse_thesis(raw: dict) -> Thesis:
 def parse_attack_report(raw: dict) -> AttackReport:
     return AttackReport(
         attacks=[
-            Attack(category=_enum_or(AttackCategory, a.get("category"),
+            Attack(id=a.get("id") or _content_id(
+                       "atk", str(a.get("category", "")), a["statement"],
+                       a.get("evidence", "")),
+                   category=_enum_or(AttackCategory, a.get("category"),
                                      AttackCategory.THESIS_LOGIC),
                    severity=max(1, min(5, int(a["severity"]))),
                    statement=a["statement"],
@@ -118,6 +137,7 @@ def parse_verdict(raw: dict) -> Verdict:
         rationale=raw.get("rationale", ""),
         addressed=[
             AddressedAttack(
+                attack_id=a.get("attack_id", ""),
                 attack_statement=a.get("attack_statement", ""),
                 response=a.get("response", ""),
                 converted_to_kill_criterion=bool(
@@ -136,10 +156,9 @@ def _judge_rule_check(verdict: Verdict, attacks: AttackReport) -> list[str]:
     violations: list[str] = []
     if verdict.decision != DecisionType.BUY:
         return violations
-    addressed_texts = " ".join(a.attack_statement for a in verdict.addressed).lower()
+    addressed_ids = {a.attack_id for a in verdict.addressed if a.attack_id}
     for attack in attacks.severe:
-        probe = attack.statement[:60].lower()
-        if probe and probe not in addressed_texts:
+        if attack.id not in addressed_ids:
             violations.append(
                 f"severity-{attack.severity} attack not addressed: "
                 f"{attack.statement[:120]}")
@@ -163,7 +182,8 @@ def _stop_and_target(thesis: Thesis, entry_price: float) -> tuple[float, float]:
 def gate_only_recommendation(brief: CandidateBrief,
                              gates: GateReport) -> Recommendation:
     reasons = "; ".join(
-        f"{g.name} (value={g.value}, threshold={g.threshold})"
+        f"{g.name} (value={g.value}, threshold={g.threshold}"
+        + (f", {g.note}" if g.note else "") + ")"
         for g in gates.hard_failures)
     return Recommendation(
         ticker=brief.ticker, brief=brief, gate_report=gates,
@@ -237,8 +257,13 @@ def run_tribunal(
     attack_raw = llm.complete_json(
         ADVERSARY_SYSTEM, render_adversary_input(brief, gates, thesis_raw),
         ATTACK_SCHEMA)
+    # Parse once so the Judge sees the same attack ids assemble_recommendation
+    # will later match `addressed[].attack_id` against (parse_attack_report
+    # is deterministic — a second parse of attack_raw agrees on the same ids).
+    attacks_for_judge = parse_attack_report(attack_raw).model_dump(mode="json")
     verdict_raw = llm.complete_json(
-        JUDGE_SYSTEM, render_judge_input(brief, gates, thesis_raw, attack_raw),
+        JUDGE_SYSTEM,
+        render_judge_input(brief, gates, thesis_raw, attacks_for_judge),
         VERDICT_SCHEMA)
 
     return assemble_recommendation(

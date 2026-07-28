@@ -139,10 +139,15 @@ def write_package(case: Case) -> Optional[dict]:
                                    case.thesis_raw),
             ATTACK_SCHEMA)
     else:
+        # Parse once so the Judge sees the same attack ids finalize() will
+        # later match `addressed[].attack_id` against (parse_attack_report
+        # is deterministic — re-parsing case.attack_raw agrees on the ids).
+        attacks_for_judge = parse_attack_report(case.attack_raw).model_dump(
+            mode="json")
         system, user, schema = (
             JUDGE_SYSTEM,
             render_judge_input(case.brief, case.gate_report,
-                               case.thesis_raw, case.attack_raw),
+                               case.thesis_raw, attacks_for_judge),
             VERDICT_SCHEMA)
 
     role_dir = cases_dir() / case.id

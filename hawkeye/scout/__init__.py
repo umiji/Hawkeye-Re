@@ -9,6 +9,7 @@ from hawkeye.scout.scout import ScoutCandidate, ScoutResult, run_scout  # noqa: 
 from hawkeye.scout.benchmark import (  # noqa: F401
     cohort_of,
     cohort_stats,
+    collect_samples,
     forward_return,
     reason_snippet,
 )

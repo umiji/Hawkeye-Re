@@ -2,8 +2,11 @@
 
 These run BEFORE any LLM is invoked. A hard failure kills the candidate for
 free — no narrative, however good, can argue its way past a liquidity or
-freshness gate. Missing data never silently passes: it is flagged
-``unverified`` so the judge and the user both see the hole.
+freshness gate. Missing data never silently passes: on a hard gate it is
+flagged ``unverified`` and fails closed (GateReport.hard_failures treats
+unverified the same as failed — see docs/MASTER_OVERVIEW.ja.md, 2026-07-28);
+on a soft gate it is flagged ``unverified`` but does not block, since only
+the judge is meant to weigh it.
 """
 from __future__ import annotations
 

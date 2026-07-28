@@ -33,20 +33,20 @@ def test_role_sequence_and_information_separation(config):
 
     package = casefile.write_package(case)
     assert package["role"] == "bull"
-    bull_input = open(package["input"]).read()
+    bull_input = open(package["input"], encoding="utf-8").read()
     assert "attack" not in bull_input.lower()          # bull never sees attacks
-    assert "BULL" not in open(package["system"]).read() or True
+    assert "BULL" not in open(package["system"], encoding="utf-8").read() or True
 
     casefile.submit(case, thesis_payload(50.0))
     package = casefile.write_package(case)
     assert package["role"] == "adversary"
-    adv_input = open(package["input"]).read()
+    adv_input = open(package["input"], encoding="utf-8").read()
     assert "thesis_under_attack" in adv_input          # adversary sees the thesis
 
     casefile.submit(case, attack_payload())
     package = casefile.write_package(case)
     assert package["role"] == "judge"
-    judge_input = open(package["input"]).read()
+    judge_input = open(package["input"], encoding="utf-8").read()
     assert "thesis" in judge_input and "attack_report" in judge_input
 
     casefile.submit(case, verdict_payload("buy", 0.62))

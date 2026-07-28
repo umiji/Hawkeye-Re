@@ -2,7 +2,7 @@
 from hawkeye.contracts.models import DecisionType
 from hawkeye.reports.render_ja import render_recommendation_ja
 from hawkeye.tribunal.llm import ScriptedLLM
-from hawkeye.tribunal.pipeline import run_tribunal
+from hawkeye.tribunal.pipeline import parse_attack_report, run_tribunal
 from tests.conftest import (
     attack_payload,
     make_brief,
@@ -46,7 +46,9 @@ def test_unaddressed_severe_attack_overturns_buy(config):
 def test_addressed_severe_attack_keeps_buy(config):
     brief = make_brief(price=50.0)
     severe = attack_payload(severe=True)
+    kill_shot_id = parse_attack_report(severe).attacks[-1].id
     addressed = [{
+        "attack_id": kill_shot_id,
         "attack_statement": severe["attacks"][-1]["statement"],
         "response": "10-Q shows the beat is operating income; tax rate flat.",
         "converted_to_kill_criterion": False,
@@ -55,6 +57,46 @@ def test_addressed_severe_attack_keeps_buy(config):
                        verdict_payload("buy", 0.62, addressed=addressed)])
     rec = run_tribunal(brief, llm, config)
     assert rec.verdict.decision == DecisionType.BUY
+
+
+def test_addressed_attack_with_paraphrased_statement_keeps_buy(config):
+    # Regression test for the substring-matching bug: a real judge
+    # paraphrases the attack instead of quoting it verbatim. Only the
+    # attack_id must matter — matching on statement text would wrongly
+    # overturn this BUY even though the severe attack genuinely was
+    # addressed.
+    brief = make_brief(price=50.0)
+    severe = attack_payload(severe=True)
+    kill_shot_id = parse_attack_report(severe).attacks[-1].id
+    addressed = [{
+        "attack_id": kill_shot_id,
+        "attack_statement": "The one-time-tax-benefit concern (paraphrased "
+                            "in my own words, not quoted)",
+        "response": "10-Q shows the beat is operating income; tax rate flat.",
+        "converted_to_kill_criterion": False,
+    }]
+    llm = ScriptedLLM([thesis_payload(50.0), severe,
+                       verdict_payload("buy", 0.62, addressed=addressed)])
+    rec = run_tribunal(brief, llm, config)
+    assert rec.verdict.decision == DecisionType.BUY
+
+
+def test_addressed_attack_with_wrong_id_still_overturns_buy(config):
+    # The inverse: a matching statement text but a WRONG/missing attack_id
+    # must not save the BUY — id is the only thing that counts now.
+    brief = make_brief(price=50.0)
+    severe = attack_payload(severe=True)
+    addressed = [{
+        "attack_id": "atk_does_not_exist",
+        "attack_statement": severe["attacks"][-1]["statement"],
+        "response": "10-Q shows the beat is operating income; tax rate flat.",
+        "converted_to_kill_criterion": False,
+    }]
+    llm = ScriptedLLM([thesis_payload(50.0), severe,
+                       verdict_payload("buy", 0.62, addressed=addressed)])
+    rec = run_tribunal(brief, llm, config)
+    assert rec.verdict.decision == DecisionType.PASS
+    assert "RULE ENFORCEMENT" in rec.verdict.rationale
 
 
 def test_low_conviction_buy_overturned(config):

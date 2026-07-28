@@ -31,7 +31,8 @@
 ## Data flow
 
 ```
-Finnhub earnings calendar ─► scout: surprise screen ─► ranked shortlist
+Finnhub earnings calendar ─► scout: surprise screen ──┬─► survivors[:scout_max_enrich]
+                                      │               └─► beyond the cap: DROPPED*
                                       │ (funnel counts recorded per scan)
                                       ▼
 YahooProvider ─┐
@@ -39,9 +40,14 @@ YahooProvider ─┐
 FinnhubProvider┘   (scout candidates and manual entries both land here)
                                                           │
                                                           ▼
-                                            run_entry_gates()  ── hard fail ──► Recommendation(PASS)
-                                                          │
-                                                          ▼
+                                            run_entry_gates()
+                                             │        └── hard fail ──┬─ manual `evaluate`:
+                                             │                        │    gate_only_recommendation()
+                                             │                        │    ─► Recommendation(PASS)
+                                             │                        └─ scout path: DROPPED*
+                                             ▼
+                                            ranked shortlist ──┬─► top N ─► tribunal
+                                                               └─► below the cutoff: DROPPED*
                      Bull ──Thesis──► Adversary ──AttackReport──► Judge ──Verdict
                       (sees brief+gates)   (sees +thesis)          (sees whole record)
                                                           │
@@ -55,6 +61,19 @@ FinnhubProvider┘   (scout candidates and manual entries both land here)
                                                           ▼
                                             render_recommendation_ja() ─► user
 ```
+
+`*` **DROPPED** = nothing survives per ticker today — only the aggregate funnel
+counts in the `scans` table. This is a known gap, not a design choice: the
+Phase 0 kill criterion ("BUYs must beat the reject pile", `docs/ROADMAP.md`) is
+not measurable while most of the reject pile is unrecorded, and a missed winner
+is invisible by construction. Note the asymmetry — a bad buy is bounded by the
+stop; a missed winner is unbounded *and* silent. Recording every scanned
+candidate, plus a market/beta baseline so cohort returns can be split into alpha
+and beta, is a pending design: `docs/MASTER_OVERVIEW.ja.md` §5.1 (not yet
+implemented). The comparison over what *is* recorded had its own bugs until
+2026-07-28: manual `evaluate` picks leaked into the viability cohorts, and a
+failed price-history fetch was silently dropped rather than counted as
+censored — both fixed in `hawkeye/scout/benchmark.py`.
 
 Post-trade lifecycle (all journal events referencing the recommendation):
 
@@ -74,6 +93,13 @@ Each role gets a different, minimal view of the record:
 A single conversation would let agreement leak across roles (the model
 softening its own attack because it "knows" it wants to buy). Separate
 stateless calls make the debate structural rather than performative.
+
+The Judge's obligation to address every severity>=4 attack is mechanically
+checked (`_judge_rule_check`), not just requested in the prompt — matching
+is by `Attack.id` (content-hashed, assigned by `parse_attack_report`), not
+text similarity. Before 2026-07-28 this matched on a 60-character substring
+of the attack's wording, which a paraphrased judge response would fail even
+when it genuinely addressed the attack, silently overturning correct BUYs.
 
 ## Integrity model
 

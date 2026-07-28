@@ -137,7 +137,12 @@ class GateReport(BaseModel):
 
     @property
     def hard_failures(self) -> list[GateResult]:
-        return [r for r in self.results if r.hard and not r.passed]
+        # Fail closed: an unverified hard gate is data we don't have, not
+        # data that cleared the bar. Letting it through would silently trade
+        # away the liquidity/size/freshness floor the hard gate exists to
+        # enforce (see docs/MASTER_OVERVIEW.ja.md, "入口ゲート「未検証」の
+        # 実質素通り" fix, 2026-07-28).
+        return [r for r in self.results if r.hard and (not r.passed or r.unverified)]
 
     @property
     def warnings(self) -> list[GateResult]:
@@ -230,6 +235,8 @@ class AttackCategory(str, Enum):
 
 
 class Attack(BaseModel):
+    id: str                             # stable, content-derived — set by
+                                         # parse_attack_report(), never by the LLM
     category: AttackCategory
     severity: int = Field(ge=1, le=5)   # 5 = thesis-fatal if true
     statement: str
@@ -257,6 +264,8 @@ class DecisionType(str, Enum):
 
 
 class AddressedAttack(BaseModel):
+    attack_id: str = ""       # matches Attack.id — "" only for pre-2026-07-28
+                              # ledger rows recorded before this field existed
     attack_statement: str
     response: str
     converted_to_kill_criterion: bool = False

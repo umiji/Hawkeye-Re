@@ -43,6 +43,55 @@ def cohort_of(rec: Recommendation) -> str:
     return "TRIBUNAL_PASS"
 
 
+def collect_samples(
+    records: list[Recommendation],
+    provider,
+    today: date,
+    horizon_days: int,
+    source: str = "scout",
+) -> tuple[list[tuple[str, float]], int, dict[str, int]]:
+    """Turn ledger records into (cohort, forward_return) samples for
+    cohort_stats(), plus the two ways a record can fail to become a sample:
+
+    - `pending`: the horizon hasn't elapsed yet. Expected, not a bug.
+    - `censored` (per cohort): the price history fetch failed or returned no
+      usable bars (delisting, ticker change, acquisition, API outage). A
+      silently-dropped ticker is disproportionately likely to be the worst
+      performer in its cohort, so treating this the same as `pending` would
+      hide survivorship bias in the comparison instead of surfacing it.
+
+    `source` restricts which cohort of records is included: "scout" (the
+    default — per docs/ROADMAP.md, manually-picked `evaluate` candidates are
+    a separate cohort and must never be mixed into viability stats),
+    "manual", or "all".
+    """
+    samples: list[tuple[str, float]] = []
+    pending = 0
+    censored = {"BUY": 0, "TRIBUNAL_PASS": 0, "GATE_REJECT": 0}
+    for rec in records:
+        is_scout = rec.brief.catalyst.source.startswith("scout")
+        if source == "scout" and not is_scout:
+            continue
+        if source == "manual" and is_scout:
+            continue
+        cohort = cohort_of(rec)
+        eval_day = rec.created_at.date()
+        if (today - eval_day).days < horizon_days:
+            pending += 1
+            continue
+        try:
+            bars = provider.daily_history(rec.ticker, days=400)
+        except Exception:
+            censored[cohort] += 1
+            continue
+        ret = forward_return(bars, eval_day, horizon_days)
+        if ret is None:
+            censored[cohort] += 1
+            continue
+        samples.append((cohort, ret))
+    return samples, pending, censored
+
+
 def reason_snippet(rec: Recommendation, status: str, max_len: int = 160) -> str:
     """One-line reason a candidate was NOT bought, for individual postmortem
     review (as opposed to cohort_stats' aggregate view)."""

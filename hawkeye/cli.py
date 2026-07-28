@@ -44,8 +44,8 @@ from hawkeye.reports.render_ja import (
     render_signals_ja,
 )
 from hawkeye.scout.benchmark import (
-    cohort_of,
     cohort_stats,
+    collect_samples,
     forward_return,
     reason_snippet,
 )
@@ -262,50 +262,43 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     ledger = _ledger()
     provider = _provider()
     today = date.today()
-    samples: list[tuple[str, float]] = []
-    skipped = 0
-    for row in ledger.list():
-        rec = ledger.get(row["id"])
-        if rec is None:
-            continue
-        eval_day = rec.created_at.date()
-        if (today - eval_day).days < args.horizon:
-            skipped += 1
-            continue
-        try:
-            bars = provider.daily_history(rec.ticker, days=400)
-        except Exception:
-            skipped += 1
-            continue
-        ret = forward_return(bars, eval_day, args.horizon)
-        if ret is None:
-            skipped += 1
-            continue
-        samples.append((cohort_of(rec), ret))
+    records = [ledger.get(row["id"]) for row in ledger.list()]
+    records = [r for r in records if r is not None]
+    samples, pending, censored = collect_samples(
+        records, provider, today, args.horizon, source=args.source)
 
-    print(f"# 📊 コホート・ベンチマーク(評価日から{args.horizon}日後のリターン)\n")
+    print(f"# 📊 コホート・ベンチマーク(評価日から{args.horizon}日後のリターン、"
+          f"対象コホート: {args.source})\n")
     if not samples:
         print(f"対象データなし(評価から{args.horizon}日経過した記録がまだありません)")
         return 0
     stats = cohort_stats(samples)
     label = {"BUY": "🟢 BUY(推奨)", "TRIBUNAL_PASS": "⚪ 審理で見送り",
              "GATE_REJECT": "🚧 ゲートで却下"}
-    print("| コホート | 件数 | 平均 | 中央値 | 勝率 |")
-    print("|---|---|---|---|---|")
+    print("| コホート | 件数 | 平均 | 中央値 | 勝率 | 打ち切り |")
+    print("|---|---|---|---|---|---|")
     for cohort in ("BUY", "TRIBUNAL_PASS", "GATE_REJECT"):
         s = stats[cohort]
+        c = censored[cohort]
         if s["n"] == 0:
-            print(f"| {label[cohort]} | 0 | - | - | - |")
+            print(f"| {label[cohort]} | 0 | - | - | - | {c} |")
         else:
             print(f"| {label[cohort]} | {s['n']} | {s['mean']:+.2f}% | "
-                  f"{s['median']:+.2f}% | {s['win_rate']:.0%} |")
+                  f"{s['median']:+.2f}% | {s['win_rate']:.0%} | {c} |")
+    total_censored = sum(censored.values())
+    if total_censored:
+        print(f"\n⚠️ 打ち切り(株価取得失敗)が{total_censored}件あります。上場廃止・"
+              f"銘柄コード変更・買収・API障害などで価格が取得できなかった銘柄は集計"
+              f"から除外されており、往々にして最悪の結果を出した銘柄である可能性が"
+              f"高いため、各群の平均は実態より良く見えている可能性があります"
+              f"(生存者バイアス)。")
     buy, pas = stats["BUY"], stats["TRIBUNAL_PASS"]
     if buy["n"] > 0 and pas["n"] > 0:
         spread = buy["mean"] - pas["mean"]
         print(f"\nBUY − 見送り スプレッド: {spread:+.2f}%ポイント "
               f"({'✅ 絞り込みが価値を生んでいる方向' if spread > 0 else '⚠️ 絞り込みが価値を生んでいない — ロジック要見直し'})")
-    if skipped:
-        print(f"\n(スキップ: {skipped}件 — 期間未達またはデータ取得失敗)")
+    if pending:
+        print(f"\n(未経過: {pending}件 — まだ{args.horizon}日経過していません)")
     return 0
 
 
@@ -316,7 +309,8 @@ def cmd_review_passes(args: argparse.Namespace) -> int:
     provider = _provider()
     today = date.today()
     flagged: list[dict] = []
-    skipped = 0
+    pending = 0
+    censored = 0
     review_statuses = {RecommendationStatus.SYSTEM_PASS.value,
                        RecommendationStatus.DECLINED.value}
     for row in ledger.list():
@@ -327,16 +321,16 @@ def cmd_review_passes(args: argparse.Namespace) -> int:
             continue
         eval_day = rec.created_at.date()
         if (today - eval_day).days < args.horizon:
-            skipped += 1
+            pending += 1
             continue
         try:
             bars = provider.daily_history(rec.ticker, days=400)
         except Exception:
-            skipped += 1
+            censored += 1
             continue
         ret = forward_return(bars, eval_day, args.horizon)
         if ret is None:
-            skipped += 1
+            censored += 1
             continue
         if abs(ret) >= args.threshold:
             flagged.append({"rec": rec, "return_pct": round(ret, 2),
@@ -347,8 +341,11 @@ def cmd_review_passes(args: argparse.Namespace) -> int:
          f"±{args.threshold:.0f}%以上動いた銘柄)\n")
     if not flagged:
         print(f"該当なし(閾値{args.threshold:.0f}%を超えて動いた見送り銘柄はありません)")
-        if skipped:
-            print(f"(スキップ: {skipped}件 — 期間未達またはデータ取得失敗)")
+        if censored:
+            print(f"⚠️ 打ち切り(株価取得失敗): {censored}件 — "
+                 f"上場廃止・買収・API障害などの可能性")
+        if pending:
+            print(f"(未経過: {pending}件 — まだ{args.horizon}日経過していません)")
         return 0
     for item in flagged:
         rec, ret = item["rec"], item["return_pct"]
@@ -364,8 +361,11 @@ def cmd_review_passes(args: argparse.Namespace) -> int:
          "出た可能性もあります。`hawkeye show` で当時の反証内容を確認した上で、"
          "プロセス(ゲート閾値・反証の甘さ等)に起因するのか、単なる後知恵バイアスかを"
          "判断してください。")
-    if skipped:
-        print(f"\n(スキップ: {skipped}件 — 期間未達またはデータ取得失敗)")
+    if censored:
+        print(f"\n⚠️ 打ち切り(株価取得失敗): {censored}件 — "
+             f"上場廃止・買収・API障害などの可能性")
+    if pending:
+        print(f"(未経過: {pending}件 — まだ{args.horizon}日経過していません)")
     return 0
 
 
@@ -676,6 +676,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="forward returns: BUY vs PASS vs gate-reject cohorts")
     bm.add_argument("--horizon", type=int, default=30,
                     help="days after evaluation (default 30)")
+    bm.add_argument("--source", choices=["scout", "manual", "all"],
+                    default="scout",
+                    help="cohort source filter (default: scout-only. Per "
+                         "docs/ROADMAP.md, manually-picked `evaluate` "
+                         "candidates are a separate cohort and must not "
+                         "enter viability stats)")
     bm.set_defaults(func=cmd_benchmark)
 
     rp = sub.add_parser("review-passes",
