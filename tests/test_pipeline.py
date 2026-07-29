@@ -1,4 +1,6 @@
 """End-to-end tribunal runs with a scripted LLM (fully offline)."""
+import json
+
 from hawkeye.contracts.models import DecisionType
 from hawkeye.reports.render_ja import render_recommendation_ja
 from hawkeye.tribunal.llm import ScriptedLLM
@@ -128,6 +130,27 @@ def test_scenario_probabilities_normalized(config):
     llm = ScriptedLLM([thesis, attack_payload(), verdict_payload("buy", 0.62)])
     rec = run_tribunal(brief, llm, config)
     assert abs(sum(s.probability for s in rec.thesis.scenarios) - 1.0) < 1e-9
+
+
+def test_adversary_and_judge_see_normalized_thesis_not_raw(config):
+    """Adversary/Judge must argue over the same clamped/renormalized numbers
+    that end up in the stored record, not the Bull's un-normalized raw
+    output — otherwise the debated record and the stored record disagree."""
+    brief = make_brief(price=50.0)
+    thesis = thesis_payload(50.0)
+    for s in thesis["scenarios"]:
+        s["probability"] = s["probability"] * 2  # sums to 2.0, un-normalized
+    llm = ScriptedLLM([thesis, attack_payload(), verdict_payload("buy", 0.62)])
+    run_tribunal(brief, llm, config)
+
+    adversary_payload = json.loads(llm.calls[1][1].split("\n\n", 1)[1])
+    judge_payload = json.loads(llm.calls[2][1].split("\n\n", 1)[1])
+    adv_probs = [s["probability"]
+                for s in adversary_payload["thesis_under_attack"]["scenarios"]]
+    judge_probs = [s["probability"]
+                  for s in judge_payload["thesis"]["scenarios"]]
+    assert abs(sum(adv_probs) - 1.0) < 1e-9
+    assert abs(sum(judge_probs) - 1.0) < 1e-9
 
 
 def test_japanese_report_renders_both_outcomes(config):

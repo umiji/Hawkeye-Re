@@ -1,3 +1,4 @@
+import hashlib
 import threading
 from datetime import date
 
@@ -110,6 +111,28 @@ def test_append_event_atomic_under_concurrent_writers(tmp_path):
     assert verifier.verify_chain()
     total_events = sum(len(verifier.events(f"rec-{w}")) for w in range(n_threads))
     assert total_events == n_threads * events_per_thread
+
+
+def test_verify_chain_detects_rewritten_recommendation_row(tmp_path):
+    """A tamperer who rewrites recommendations.payload directly via SQL and
+    updates its own `hash` column to match (so that column looks internally
+    consistent) must still be caught — only the journal's payload_hash,
+    itself protected by the hash chain, is a trustworthy reference."""
+    path = str(tmp_path / "test.db")
+    ledger = Ledger(path)
+    rec = make_rec()
+    ledger.record_recommendation(rec, RecommendationStatus.PROPOSED)
+    assert ledger.verify_chain()
+
+    tampered_payload = rec.model_copy(update={"ticker": "EVIL"}).model_dump_json()
+    ledger._conn.execute(
+        "UPDATE recommendations SET payload = ?, hash = ? WHERE id = ?",
+        (tampered_payload,
+         hashlib.sha256(tampered_payload.encode("utf-8")).hexdigest(),
+         rec.id))
+    ledger._conn.commit()
+
+    assert not ledger.verify_chain()
 
 
 def test_all_resolved_claims_aggregation(tmp_path):

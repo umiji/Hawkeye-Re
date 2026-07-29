@@ -254,8 +254,14 @@ def run_tribunal(
 
     thesis_raw = llm.complete_json(
         BULL_SYSTEM, render_bull_input(brief, gates), THESIS_SCHEMA)
+    # Parse once so the Adversary/Judge argue over the same normalized
+    # numbers (clamped probabilities, renormalized scenario weights) that
+    # end up in the stored record — parse_thesis is deterministic, so this
+    # and assemble_recommendation's later re-parse of thesis_raw agree.
+    thesis_for_render = parse_thesis(thesis_raw).model_dump(mode="json")
     attack_raw = llm.complete_json(
-        ADVERSARY_SYSTEM, render_adversary_input(brief, gates, thesis_raw),
+        ADVERSARY_SYSTEM,
+        render_adversary_input(brief, gates, thesis_for_render),
         ATTACK_SCHEMA)
     # Parse once so the Judge sees the same attack ids assemble_recommendation
     # will later match `addressed[].attack_id` against (parse_attack_report
@@ -263,7 +269,7 @@ def run_tribunal(
     attacks_for_judge = parse_attack_report(attack_raw).model_dump(mode="json")
     verdict_raw = llm.complete_json(
         JUDGE_SYSTEM,
-        render_judge_input(brief, gates, thesis_raw, attacks_for_judge),
+        render_judge_input(brief, gates, thesis_for_render, attacks_for_judge),
         VERDICT_SCHEMA)
 
     return assemble_recommendation(

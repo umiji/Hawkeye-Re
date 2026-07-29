@@ -167,6 +167,14 @@ class Ledger:
         ]
 
     def verify_chain(self) -> bool:
+        """Verify the journal's hash chain AND that every recorded
+        recommendation's current payload still matches the payload hash
+        captured in its (tamper-evident) `recommendation_recorded` journal
+        event. Without the second check, rewriting `recommendations.payload`
+        directly via SQL — and updating its own `hash` column to match —
+        would pass unnoticed, since that column isn't chained to anything;
+        only the journal event's `payload_hash` is protected by the chain.
+        """
         prev_hash = _GENESIS
         for seq, rec_id, ts, kind, payload, stored_prev, stored_hash in self._conn.execute(
                 "SELECT seq, rec_id, ts, kind, payload, prev_hash, hash"
@@ -176,6 +184,13 @@ class Ledger:
             if _sha(stored_prev, ts, rec_id, kind, payload) != stored_hash:
                 return False
             prev_hash = stored_hash
+            if kind == "recommendation_recorded":
+                expected_hash = json.loads(payload).get("payload_hash")
+                row = self._conn.execute(
+                    "SELECT payload FROM recommendations WHERE id = ?",
+                    (rec_id,)).fetchone()
+                if row is None or _sha(row[0]) != expected_hash:
+                    return False
         return True
 
     # -- lifecycle events ----------------------------------------------------

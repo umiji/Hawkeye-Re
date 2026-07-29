@@ -136,12 +136,21 @@ def write_package(case: Case) -> Optional[dict]:
             render_bull_input(case.brief, case.gate_report),
             THESIS_SCHEMA)
     elif role == "adversary":
+        # Parse once so the Adversary argues over the same normalized
+        # numbers (clamped probabilities, renormalized scenario weights)
+        # that end up in the stored record, not the Bull's raw output —
+        # parse_thesis is deterministic, so this and finalize()'s later
+        # re-parse of case.thesis_raw agree.
+        thesis_for_render = parse_thesis(case.thesis_raw).model_dump(
+            mode="json")
         system, user, schema = (
             ADVERSARY_SYSTEM,
             render_adversary_input(case.brief, case.gate_report,
-                                   case.thesis_raw),
+                                   thesis_for_render),
             ATTACK_SCHEMA)
     else:
+        thesis_for_render = parse_thesis(case.thesis_raw).model_dump(
+            mode="json")
         # Parse once so the Judge sees the same attack ids finalize() will
         # later match `addressed[].attack_id` against (parse_attack_report
         # is deterministic — re-parsing case.attack_raw agrees on the ids).
@@ -150,7 +159,7 @@ def write_package(case: Case) -> Optional[dict]:
         system, user, schema = (
             JUDGE_SYSTEM,
             render_judge_input(case.brief, case.gate_report,
-                               case.thesis_raw, attacks_for_judge),
+                               thesis_for_render, attacks_for_judge),
             VERDICT_SCHEMA)
 
     role_dir = cases_dir() / case.id
@@ -188,15 +197,28 @@ def submit(case: Case, payload: dict) -> str:
 
 
 def finalize(case: Case, config: HawkeyeConfig) -> Recommendation:
-    """Deterministic tail (identical to API mode) once all roles submitted."""
+    """Deterministic tail (identical to API mode) once all roles submitted.
+
+    Does NOT mark the case complete — call mark_complete() only once the
+    caller has durably recorded the returned Recommendation (e.g. the
+    ledger insert succeeded). Marking complete first would let a ledger
+    write failure leave the case looking done with no matching ledger row;
+    next_role() already reports "complete" once all three role JSONs are
+    present (it doesn't depend on recommendation_id), so nothing here gets
+    stuck asking for a fourth role while recording is retried.
+    """
     if next_role(case) is not None:
         raise ValueError(f"case not complete: next role is {next_role(case)}")
-    rec = assemble_recommendation(
+    return assemble_recommendation(
         case.brief, case.gate_report,
         case.thesis_raw, case.attack_raw, case.verdict_raw,
         config, nav=case.nav,
         open_position_count=case.open_position_count,
         model=SESSION_MODEL_LABEL)
-    case.recommendation_id = rec.id
+
+
+def mark_complete(case: Case, recommendation_id: str) -> None:
+    """Record that `case` produced `recommendation_id`. Call only after the
+    caller has confirmed it's durably stored (e.g. ledger insert succeeded)."""
+    case.recommendation_id = recommendation_id
     save_case(case)
-    return rec

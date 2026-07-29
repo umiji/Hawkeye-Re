@@ -164,6 +164,20 @@ def cmd_case_step(args: argparse.Namespace) -> int:
     return 0
 
 
+def _case_finalize_and_record(case: "casefile.Case", config: HawkeyeConfig) -> int:
+    rec = casefile.finalize(case, config)
+    ledger = _ledger()
+    status = (RecommendationStatus.PROPOSED
+              if rec.verdict.decision == DecisionType.BUY
+              else RecommendationStatus.SYSTEM_PASS)
+    ledger.record_recommendation(rec, status)
+    casefile.mark_complete(case, rec.id)
+    print()
+    print(render_recommendation_ja(rec))
+    print(f"\n(記録済み: {rec.id} / status={status.value})")
+    return 0
+
+
 def cmd_case_submit(args: argparse.Namespace) -> int:
     import json as _json
     try:
@@ -171,12 +185,21 @@ def cmd_case_submit(args: argparse.Namespace) -> int:
     except FileNotFoundError:
         print(f"case not found: {args.case_id}", file=sys.stderr)
         return 1
+    config = HawkeyeConfig.from_env()
+
+    if casefile.next_role(case) is None and case.recommendation_id is None:
+        # All three roles were submitted in a previous run, but recording
+        # into the ledger never got confirmed (e.g. it crashed or the DB
+        # was locked) — finish that instead of erroring "case already
+        # complete" on a case that never actually finished.
+        print("all roles already submitted; retrying ledger recording")
+        return _case_finalize_and_record(case, config)
+
     try:
         payload = _json.loads(open(args.file, encoding="utf-8").read())
     except (OSError, _json.JSONDecodeError) as exc:
         print(f"cannot read JSON from {args.file}: {exc}", file=sys.stderr)
         return 1
-    config = HawkeyeConfig.from_env()
     try:
         role = casefile.submit(case, payload)
     except (ValueError, KeyError, TypeError) as exc:
@@ -185,17 +208,8 @@ def cmd_case_submit(args: argparse.Namespace) -> int:
         return 1
     print(f"accepted: {role}")
     if casefile.next_role(case) is None:
-        rec = casefile.finalize(case, config)
-        ledger = _ledger()
-        status = (RecommendationStatus.PROPOSED
-                  if rec.verdict.decision == DecisionType.BUY
-                  else RecommendationStatus.SYSTEM_PASS)
-        ledger.record_recommendation(rec, status)
-        print()
-        print(render_recommendation_ja(rec))
-        print(f"\n(記録済み: {rec.id} / status={status.value})")
-    else:
-        _print_step(case)
+        return _case_finalize_and_record(case, config)
+    _print_step(case)
     return 0
 
 
