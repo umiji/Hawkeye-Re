@@ -47,6 +47,7 @@ from hawkeye.scout.benchmark import (
     cohort_stats,
     collect_samples,
     forward_return,
+    min_calendar_days_for_trading_days,
     reason_snippet,
 )
 from hawkeye.scout.scout import run_scout
@@ -273,18 +274,26 @@ def cmd_scout(args: argparse.Namespace) -> int:
 
 
 def cmd_benchmark(args: argparse.Namespace) -> int:
+    config = HawkeyeConfig.from_env()
+    official_horizon = config.phase0_benchmark_horizon_days
+    horizon = args.horizon if args.horizon is not None else official_horizon
+    exploratory = args.horizon is not None and args.horizon != official_horizon
+
     ledger = _ledger()
     provider = _provider()
     today = date.today()
     records = [ledger.get(row["id"]) for row in ledger.list()]
     records = [r for r in records if r is not None]
     samples, pending, censored = collect_samples(
-        records, provider, today, args.horizon, source=args.source)
+        records, provider, today, horizon, source=args.source)
 
-    print(f"# 📊 コホート・ベンチマーク(評価日から{args.horizon}日後のリターン、"
+    print(f"# 📊 コホート・ベンチマーク(評価日から{horizon}営業日後のリターン、"
           f"対象コホート: {args.source})\n")
+    if exploratory:
+        print(f"⚠️ 探索用horizon(非公式) — Phase 0のキル基準判定には使えません。"
+              f"公式値は{official_horizon}営業日です。\n")
     if not samples:
-        print(f"対象データなし(評価から{args.horizon}日経過した記録がまだありません)")
+        print(f"対象データなし(評価から{horizon}営業日経過した記録がまだありません)")
         return 0
     stats = cohort_stats(samples)
     label = {"BUY": "🟢 BUY(推奨)", "TRIBUNAL_PASS": "⚪ 審理で見送り",
@@ -312,7 +321,7 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
         print(f"\nBUY − 見送り スプレッド: {spread:+.2f}%ポイント "
               f"({'✅ 絞り込みが価値を生んでいる方向' if spread > 0 else '⚠️ 絞り込みが価値を生んでいない — ロジック要見直し'})")
     if pending:
-        print(f"\n(未経過: {pending}件 — まだ{args.horizon}日経過していません)")
+        print(f"\n(未経過: {pending}件 — まだ{horizon}営業日経過していません)")
     return 0
 
 
@@ -327,6 +336,7 @@ def cmd_review_passes(args: argparse.Namespace) -> int:
     censored = 0
     review_statuses = {RecommendationStatus.SYSTEM_PASS.value,
                        RecommendationStatus.DECLINED.value}
+    min_wait_days = min_calendar_days_for_trading_days(args.horizon)
     for row in ledger.list():
         if row["status"] not in review_statuses:
             continue
@@ -334,7 +344,7 @@ def cmd_review_passes(args: argparse.Namespace) -> int:
         if rec is None:
             continue
         eval_day = rec.created_at.date()
-        if (today - eval_day).days < args.horizon:
+        if (today - eval_day).days < min_wait_days:
             pending += 1
             continue
         try:
@@ -351,7 +361,7 @@ def cmd_review_passes(args: argparse.Namespace) -> int:
                             "status": row["status"]})
 
     flagged.sort(key=lambda d: -abs(d["return_pct"]))
-    print(f"# 🔍 見送り案件の事後レビュー(評価から{args.horizon}日後、"
+    print(f"# 🔍 見送り案件の事後レビュー(評価から{args.horizon}営業日後、"
          f"±{args.threshold:.0f}%以上動いた銘柄)\n")
     if not flagged:
         print(f"該当なし(閾値{args.threshold:.0f}%を超えて動いた見送り銘柄はありません)")
@@ -359,7 +369,7 @@ def cmd_review_passes(args: argparse.Namespace) -> int:
             print(f"⚠️ 打ち切り(株価取得失敗): {censored}件 — "
                  f"上場廃止・買収・API障害などの可能性")
         if pending:
-            print(f"(未経過: {pending}件 — まだ{args.horizon}日経過していません)")
+            print(f"(未経過: {pending}件 — まだ{args.horizon}営業日経過していません)")
         return 0
     for item in flagged:
         rec, ret = item["rec"], item["return_pct"]
@@ -379,7 +389,7 @@ def cmd_review_passes(args: argparse.Namespace) -> int:
         print(f"\n⚠️ 打ち切り(株価取得失敗): {censored}件 — "
              f"上場廃止・買収・API障害などの可能性")
     if pending:
-        print(f"(未経過: {pending}件 — まだ{args.horizon}日経過していません)")
+        print(f"(未経過: {pending}件 — まだ{args.horizon}営業日経過していません)")
     return 0
 
 
@@ -688,8 +698,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     bm = sub.add_parser("benchmark",
                         help="forward returns: BUY vs PASS vs gate-reject cohorts")
-    bm.add_argument("--horizon", type=int, default=30,
-                    help="days after evaluation (default 30)")
+    bm.add_argument("--horizon", type=int, default=None,
+                    help="trading days after evaluation (default: the "
+                         "pinned official Phase-0 value, "
+                         "config.phase0_benchmark_horizon_days=30. An "
+                         "explicit value here is labeled exploratory/"
+                         "non-authoritative in the output — it is not the "
+                         "Phase-0 kill-criterion measurement)")
     bm.add_argument("--source", choices=["scout", "manual", "all"],
                     default="scout",
                     help="cohort source filter (default: scout-only. Per "
@@ -702,7 +717,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="flag individual PASS/DECLINE calls that moved "
                              "a lot afterward (postmortem, not aggregate stats)")
     rp.add_argument("--horizon", type=int, default=30,
-                    help="days after evaluation (default 30)")
+                    help="trading days after evaluation (default 30)")
     rp.add_argument("--threshold", type=float, default=15.0,
                     help="flag moves at or beyond this %% magnitude (default 15)")
     rp.set_defaults(func=cmd_review_passes)

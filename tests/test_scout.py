@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 from hawkeye.contracts.models import (
@@ -155,6 +156,21 @@ def test_forward_return():
     assert forward_return(bars, bars[-1].day, horizon_days=30) is None
 
 
+def test_forward_return_walks_trading_days_not_calendar_days():
+    # M13: horizon_days must count entries in `bars` (one per trading day),
+    # not add calendar days — the two disagree by ~30% over multi-week spans.
+    bars = make_bars(60, start_price=100.0, daily_move=0.0)  # flat prices
+    bars[15] = replace(bars[15], close=200.0)  # marker bar, exactly +5 index
+    ret = forward_return(bars, bars[10].day, horizon_days=5)
+    assert ret is not None and abs(ret - 100.0) < 1e-9  # bars[10] -> bars[15]
+
+
+def test_min_calendar_days_for_trading_days():
+    from hawkeye.scout.benchmark import min_calendar_days_for_trading_days
+    assert min_calendar_days_for_trading_days(5) == 7    # ceil(5*7/5)
+    assert min_calendar_days_for_trading_days(30) == 42  # ceil(30*7/5)
+
+
 def test_cohort_stats():
     samples = [("BUY", 10.0), ("BUY", -2.0),
                ("TRIBUNAL_PASS", 1.0), ("TRIBUNAL_PASS", -1.0),
@@ -167,8 +183,10 @@ def test_cohort_stats():
 
 
 def scan_rec(source="scout/finnhub-earnings-calendar", ticker="TEST",
-            days_ago=40, decision=DecisionType.PASS,
+            days_ago=60, decision=DecisionType.PASS,
             thesis=None) -> Recommendation:
+    # 60 calendar days safely clears the ~42-calendar-day wait a 30-
+    # trading-day horizon now needs (see min_calendar_days_for_trading_days).
     brief = make_brief()
     brief.catalyst.source = source
     return Recommendation(
@@ -184,9 +202,11 @@ class FailingProvider(StaticProvider):
 
 def test_collect_samples_excludes_manual_entries_by_default():
     # ROADMAP.md: manual `evaluate` picks must never enter viability stats.
+    # 100 trading-day bars gives enough room for eval_day (60 calendar days
+    # back, per scan_rec's default) plus a 30-trading-day horizon forward.
     scout_rec = scan_rec(source="scout/finnhub-earnings-calendar")
     manual_rec = scan_rec(source="manual")
-    bars = make_bars(60, start_price=100.0, daily_move=0.01)
+    bars = make_bars(100, start_price=100.0, daily_move=0.01)
     provider = StaticProvider(bars=bars)
 
     samples, pending, censored = collect_samples(
@@ -200,7 +220,7 @@ def test_collect_samples_excludes_manual_entries_by_default():
 def test_collect_samples_source_all_includes_both():
     scout_rec = scan_rec(source="scout/finnhub-earnings-calendar")
     manual_rec = scan_rec(source="manual")
-    bars = make_bars(60, start_price=100.0, daily_move=0.01)
+    bars = make_bars(100, start_price=100.0, daily_move=0.01)
     provider = StaticProvider(bars=bars)
 
     samples, _, _ = collect_samples(

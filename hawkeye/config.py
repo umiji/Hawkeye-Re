@@ -39,6 +39,15 @@ class HawkeyeConfig:
     # --- Attribution ---
     thesis_accuracy_threshold: float = 0.6  # >= this fraction of claims true = "thesis right"
 
+    # --- Phase 0 kill-criterion measurement ---
+    # The ONE official horizon (trading days) for the BUY-vs-PASS-vs-REJECT
+    # cohort comparison `hawkeye benchmark` uses to decide Phase 0 viability
+    # (docs/ROADMAP.md). Pinned so the measurement can't be quietly re-run at
+    # a different horizon until the spread looks favorable (2026-07-29,
+    # methodology-auditor finding H5). `--horizon` on the CLI still accepts
+    # an override for exploration, but its output is labeled non-authoritative.
+    phase0_benchmark_horizon_days: int = 30
+
     # --- LLM ---
     model: str = "claude-opus-4-8"
 

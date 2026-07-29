@@ -12,7 +12,7 @@ primary viability metric for Phase 0 (docs/ROADMAP.md).
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from typing import Optional
 
 from hawkeye.contracts.models import (
@@ -25,14 +25,35 @@ from hawkeye.marketdata.base import Bar
 
 def forward_return(bars: list[Bar], start_day: date,
                    horizon_days: int) -> Optional[float]:
-    """Return % from the last close on/before start_day to the first close
-    on/after start_day + horizon_days. None if either side is missing."""
-    base = next((b for b in reversed(bars) if b.day <= start_day), None)
-    target_day = start_day + timedelta(days=horizon_days)
-    end = next((b for b in bars if b.day >= target_day), None)
-    if base is None or end is None or base.close <= 0:
+    """Return % from the last close on/before start_day to the close
+    horizon_days *trading days* later — an index walk into `bars` (which
+    already contains one entry per trading day, no weekend gaps), not a
+    calendar delta. The doctrine's holding-period convention
+    (Thesis.expected_holding_days, config.max_holding_days,
+    config.phase0_benchmark_horizon_days) is trading days throughout; a
+    calendar delta under-counts the intended window by roughly 30% (5
+    trading days per 7 calendar days). None if either side is missing."""
+    base_idx = next(
+        (i for i in range(len(bars) - 1, -1, -1) if bars[i].day <= start_day),
+        None)
+    if base_idx is None:
+        return None
+    target_idx = base_idx + horizon_days
+    if target_idx >= len(bars):
+        return None
+    base, end = bars[base_idx], bars[target_idx]
+    if base.close <= 0:
         return None
     return (end.close / base.close - 1.0) * 100.0
+
+
+def min_calendar_days_for_trading_days(horizon_days: int) -> int:
+    """Calendar days that must elapse before `horizon_days` *trading* days
+    could plausibly have passed (ceil(horizon_days * 7/5), 5 trading days
+    per 7 calendar days) — used to gate the "pending" pre-filter so a record
+    isn't mistaken for censored (fetch failed) when it simply isn't old
+    enough yet for the now-trading-day-denominated horizon."""
+    return (horizon_days * 7 + 4) // 5
 
 
 def cohort_of(rec: Recommendation) -> str:
@@ -68,6 +89,7 @@ def collect_samples(
     samples: list[tuple[str, float]] = []
     pending = 0
     censored = {"BUY": 0, "TRIBUNAL_PASS": 0, "GATE_REJECT": 0}
+    min_wait_days = min_calendar_days_for_trading_days(horizon_days)
     for rec in records:
         is_scout = rec.brief.catalyst.source.startswith("scout")
         if source == "scout" and not is_scout:
@@ -76,7 +98,7 @@ def collect_samples(
             continue
         cohort = cohort_of(rec)
         eval_day = rec.created_at.date()
-        if (today - eval_day).days < horizon_days:
+        if (today - eval_day).days < min_wait_days:
             pending += 1
             continue
         try:
