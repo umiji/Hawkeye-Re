@@ -120,7 +120,7 @@ real bug in `build_brief` shouldn't be silently absorbed as "no data
 today" either). Record a separate `enrichment_failed` count in `scans`
 distinct from `screened`/`gate_passed`.
 
-### H5. `hawkeye benchmark --horizon` is unpinned and can be re-run at different values with no record of what was tried (OPEN)
+### H5. `hawkeye benchmark --horizon` is unpinned and can be re-run at different values with no record of what was tried (FIXED — commit 99678a4)
 
 **Source:** methodology-auditor.
 **Where:** `hawkeye/cli.py` — `bm.add_argument("--horizon", type=int, default=30, ...)`.
@@ -367,7 +367,7 @@ could silently violate it without any error.
 `Recommendation` (top-level only — `verdict`/`plan` are already finalized
 by the time it's constructed).
 
-### M13. `benchmark.forward_return` mixes calendar days with the doctrine's trading-day convention (OPEN)
+### M13. `benchmark.forward_return` mixes calendar days with the doctrine's trading-day convention (FIXED — commit 99678a4, alongside H5)
 
 **Source:** python-reviewer.
 **Where:** `hawkeye/scout/benchmark.py::forward_return` — adds
