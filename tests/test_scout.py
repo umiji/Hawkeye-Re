@@ -21,7 +21,11 @@ from hawkeye.scout.earnings import (
     parse_calendar,
     screen_events,
 )
-from hawkeye.scout.scout import run_scout, score_candidate
+from hawkeye.scout.scout import (
+    build_screened_candidates,
+    run_scout,
+    score_candidate,
+)
 from tests.conftest import make_bars, make_brief
 
 
@@ -128,6 +132,58 @@ def test_run_scout_funnel(config):
     assert good.brief is not None
     assert good.brief.catalyst.event_date == event_day
     assert good.score > 0
+    # H4/§5.1: a gate-rejected candidate must still get a real score — it
+    # was only ever computed for `passed` candidates before this fix, which
+    # left every dropped candidate's score at the dataclass default (0.0),
+    # making later score-vs-return correlation checks meaningless for them.
+    assert result.rejected[0].score > 0
+    assert result.rejected[0].score_version == "full"
+
+
+def test_run_scout_enrichment_cap_tier_is_recorded_with_one_price_fetch(config):
+    from dataclasses import replace as dc_replace
+    cfg = dc_replace(config, scout_max_enrich=1)
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [
+        {"symbol": "TOP", "date": event_day.isoformat(),
+         "epsActual": 1.30, "epsEstimate": 1.00},   # highest surprise, enriched
+        {"symbol": "CAPPED", "date": event_day.isoformat(),
+         "epsActual": 1.15, "epsEstimate": 1.00},   # sorted below scout_max_enrich=1
+    ]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    provider = StaticProvider(bars=bars)
+    result = run_scout(FakeCalendar(entries), provider, cfg, today=today)
+
+    assert [c.ticker for c in result.capped] == ["CAPPED"]
+    capped = result.capped[0]
+    assert capped.brief is None                 # never fully enriched
+    assert capped.price == bars[-1].close        # one cheap price fetch only
+    assert capped.price_asof == bars[-1].day
+    assert capped.score > 0 and capped.score_version == "partial_no_gap"
+
+
+def test_build_screened_candidates_tags_stage_and_ranking_cutoff(config):
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [
+        {"symbol": t, "date": event_day.isoformat(),
+         "epsActual": 1.10 + i * 0.05, "epsEstimate": 1.00}
+        for i, t in enumerate(["A", "B", "C"])
+    ]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    provider = StaticProvider(bars=bars, profile_data={"market_cap": 5e9})
+    result = run_scout(FakeCalendar(entries), provider, config, today=today)
+    assert len(result.passed) == 3   # all three clear the gates
+
+    rows = build_screened_candidates(result, scan_id=42, sent_to_tribunal_n=1)
+
+    # only the tail beyond sent_to_tribunal_n=1 becomes ranking_cutoff
+    cutoff_rows = [r for r in rows if r.stage.value == "ranking_cutoff"]
+    assert len(cutoff_rows) == 2
+    assert all(r.scan_id == 42 for r in rows)
+    ranks = sorted(r.rank for r in cutoff_rows)
+    assert ranks == [2, 3]   # 1-indexed, the top-1 already went to tribunal
 
 
 def test_run_scout_enrichment_failure_is_visible(config):

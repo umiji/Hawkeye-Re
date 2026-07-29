@@ -155,6 +155,40 @@ class GateReport(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Screened-but-dropped candidates (missed-candidate tracking,
+# docs/MASTER_OVERVIEW.ja.md §5.1) — every candidate the scout funnel drops
+# past the surprise screen, recorded at drop time so the Phase-0 "BUY beats
+# reject pile" comparison isn't limited to only the final tribunal-PASS
+# stage. Recording at drop time (not re-fetching prices later) avoids
+# survivorship bias: a delisted/acquired ticker can't be re-fetched after
+# the fact, and is disproportionately likely to be the worst performer.
+# ---------------------------------------------------------------------------
+
+class ScreenedCandidateStage(str, Enum):
+    ENRICHMENT_CAP = "enrichment_cap"    # sorted below scout_max_enrich, never enriched
+    GATE_REJECT = "gate_reject"          # enriched (or enrichment itself failed), then rejected
+    RANKING_CUTOFF = "ranking_cutoff"    # gate-passed, but outside this run's tribunal slot count
+
+
+class ScreenedCandidate(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("scr"))
+    recorded_at: datetime = Field(default_factory=utcnow)
+    scan_id: int
+    ticker: str
+    event_date: date
+    eps_surprise_pct: float
+    revenue_surprise_pct: Optional[float] = None
+    score: float
+    score_version: str            # "full" (gap-aware) or "partial_no_gap"
+    price: Optional[float] = None
+    price_asof: Optional[date] = None
+    stage: ScreenedCandidateStage
+    rank: Optional[int] = None    # 1-indexed position among gate-passed candidates
+    gate_report: Optional[GateReport] = None
+    reject_reason: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Thesis (Bull output) — pre-registered, falsifiable
 # ---------------------------------------------------------------------------
 

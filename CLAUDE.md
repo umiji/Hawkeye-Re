@@ -114,6 +114,68 @@ in one place. Keep §4/§5 current as capabilities land.
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-07-29** User recovered the full architecture review finding list
+  at `docs/ARCHITECTURE_REVIEW_BACKLOG.md` (the 2026-07-28(b) entry below
+  had marked it unrecoverable — that note is now stale, read the backlog
+  file instead). Worked through it in two rounds, prioritizing
+  integrity/consistency findings first per user request: (1) H1 — Adversary
+  and Judge argued over the Bull's raw, un-normalized thesis dict in both
+  API mode (`pipeline.run_tribunal`) and session mode
+  (`casefile.write_package`) instead of the parsed/clamped `Thesis` that
+  actually gets stored, so the debated record and the stored record could
+  disagree. Both call sites now parse once and render the normalized model.
+  (2) M5 — session-mode `finalize()` persisted `case.recommendation_id`
+  before the caller confirmed the ledger insert succeeded; a crash in
+  between left a case looking "complete" with no matching ledger row, and
+  `submit()` refuses to touch an already-answered role, making the work
+  unrecoverable. `finalize()` no longer sets `recommendation_id`; new
+  `mark_complete()` does, called only after the ledger write succeeds;
+  `cmd_case_submit` detects and retries an unconfirmed-but-role-complete
+  case instead of erroring. (3) M9 — `verify_chain()` never cross-checked
+  `recommendations.payload` against anything, so rewriting it directly via
+  SQL (and updating its own `hash` column to match) passed silently; it now
+  recomputes the payload hash and compares it against the tamper-evident
+  `payload_hash` captured in the `recommendation_recorded` journal event.
+  (4) H5 + M13 — `hawkeye benchmark --horizon` was unpinned (could be
+  re-run at whatever value makes the spread look favorable) and
+  `forward_return` added the horizon as *calendar* days while every other
+  holding-period convention in the doctrine is *trading* days (~30%
+  under-count over a multi-week span). User approved pinning the official
+  Phase-0 horizon at 30 trading days
+  (`config.phase0_benchmark_horizon_days`); `forward_return` now walks
+  `bars` by index (trading-day-native) instead of adding a calendar delta;
+  added `min_calendar_days_for_trading_days()` so the pending-vs-censored
+  pre-filter converts correctly instead of mislabeling genuinely-still-
+  pending records as "fetch failed". 87/87 green after this round
+  (commits 472421e, 99678a4).
+
+  User then asked to actually start running the candidate-selection cycle
+  (nothing held currently) and specifically wanted dropped candidates
+  recorded — this is exactly §5.1's proposal (missed-candidate tracking),
+  written 2026-07-14(b) and never implemented. Implemented the recording
+  MVP (deferred the analysis-loop / beta-alpha benchmark refinement in
+  §5.1, since those need accumulated data to mean anything): new
+  `ScreenedCandidate` contract (stages: enrichment_cap, gate_reject,
+  ranking_cutoff); `Ledger.record_screened_candidates()` persists the batch
+  and anchors its integrity as ONE `screened_candidates_recorded` journal
+  event (per-row hash-chaining wasn't worth the write overhead, but
+  `verify_chain()` now cross-checks the batch hash the same way it does for
+  `recommendations` — same M9 pattern, applied proactively here); `hawkeye
+  scout` now records automatically every run, `hawkeye screened list`
+  reviews what's recorded. Also fixed a bug §5.1 had specifically flagged
+  while reading the design doc: rejected/capped candidates never had
+  `score` computed (stayed at the dataclass default 0.0), which would have
+  made any later score-vs-return correlation check meaningless — score is
+  now computed for every candidate that gets far enough to have the data
+  for it (gap-aware "full" once a brief is built, "partial_no_gap"
+  otherwise, tagged via `score_version`). Separately found and fixed a
+  live blocker while smoke-testing: `hawkeye --help` (and any command
+  printing an em dash or emoji) crashed with `UnicodeEncodeError` on
+  Windows — `sys.stdout`/`stderr` default to the system codepage (cp932),
+  same bug class as commit 01152f2's file-I/O version, just for console
+  streams. Fixed by reconfiguring both to UTF-8 at the top of `main()`.
+  91/91 offline tests green.
+
 - **2026-07-28(b)** Follow-up to the same-day review below: worked through
   the leftover findings that were only summarized (not saved verbatim —
   the transcript that produced the full 21-item architecture list and

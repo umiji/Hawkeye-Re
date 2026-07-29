@@ -23,6 +23,7 @@ from hawkeye.contracts.models import (
     Outcome,
     Recommendation,
     RecommendationStatus,
+    ScreenedCandidate,
     utcnow,
 )
 
@@ -55,6 +56,16 @@ CREATE TABLE IF NOT EXISTS scans (
     gate_passed INTEGER NOT NULL,
     tickers     TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS screened_candidates (
+    id          TEXT PRIMARY KEY,
+    scan_id     INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL,
+    ticker      TEXT NOT NULL,
+    stage       TEXT NOT NULL,
+    payload     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_screened_scan ON screened_candidates (scan_id);
+CREATE INDEX IF NOT EXISTS idx_screened_ticker ON screened_candidates (ticker);
 """
 
 _GENESIS = "0" * 64
@@ -191,6 +202,16 @@ class Ledger:
                     (rec_id,)).fetchone()
                 if row is None or _sha(row[0]) != expected_hash:
                     return False
+            if kind == "screened_candidates_recorded":
+                body = json.loads(payload)
+                rows = self._conn.execute(
+                    "SELECT payload FROM screened_candidates WHERE scan_id = ?",
+                    (body.get("scan_id"),)).fetchall()
+                if len(rows) != body.get("count"):
+                    return False
+                current_hash = _sha("\n".join(sorted(r[0] for r in rows)))
+                if current_hash != body.get("batch_hash"):
+                    return False
         return True
 
     # -- lifecycle events ----------------------------------------------------
@@ -251,13 +272,16 @@ class Ledger:
 
     def record_scan(self, params: dict, scanned: int, screened: int,
                     enriched: int, gate_passed: int,
-                    tickers: list[str]) -> None:
-        self._conn.execute(
+                    tickers: list[str]) -> int:
+        """Returns the new scan's id, so callers can tag
+        record_screened_candidates() rows to the scan that dropped them."""
+        cur = self._conn.execute(
             "INSERT INTO scans (ts, params, scanned, screened, enriched,"
             " gate_passed, tickers) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (utcnow().isoformat(), json.dumps(params, default=str),
              scanned, screened, enriched, gate_passed, json.dumps(tickers)))
         self._conn.commit()
+        return cur.lastrowid
 
     def list_scans(self) -> list[dict]:
         return [
@@ -268,6 +292,52 @@ class Ledger:
                 "SELECT ts, params, scanned, screened, enriched, gate_passed,"
                 " tickers FROM scans ORDER BY id").fetchall()
         ]
+
+    # -- screened-but-dropped candidates (docs/MASTER_OVERVIEW.ja.md §5.1) ---
+
+    def record_screened_candidates(self, scan_id: int,
+                                   candidates: list[ScreenedCandidate]) -> None:
+        """Persist every candidate a scan dropped, then anchor the whole
+        batch's integrity as ONE tamper-evident journal event. Hash-chaining
+        every individual row wasn't worth the per-row write overhead (this
+        table can hold hundreds of rows per scan) — but the aggregate batch
+        hash is exactly the kind of evidence the project's own Phase-0
+        continuation decision depends on, so it must not be quietly editable
+        after the fact either.
+        """
+        if not candidates:
+            return
+        for c in candidates:
+            payload = c.model_dump_json()
+            self._conn.execute(
+                "INSERT INTO screened_candidates"
+                " (id, scan_id, recorded_at, ticker, stage, payload)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (c.id, scan_id, c.recorded_at.isoformat(), c.ticker,
+                 c.stage.value, payload))
+        self._conn.commit()
+        batch_repr = "\n".join(sorted(c.model_dump_json() for c in candidates))
+        self.append_event(str(scan_id), "screened_candidates_recorded",
+                          {"scan_id": scan_id, "count": len(candidates),
+                           "batch_hash": _sha(batch_repr)})
+
+    def screened_candidates(self, scan_id: Optional[int] = None,
+                            stage: Optional[str] = None
+                            ) -> list[ScreenedCandidate]:
+        q = "SELECT payload FROM screened_candidates"
+        conds: list[str] = []
+        args: list[Any] = []
+        if scan_id is not None:
+            conds.append("scan_id = ?")
+            args.append(scan_id)
+        if stage is not None:
+            conds.append("stage = ?")
+            args.append(stage)
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        q += " ORDER BY recorded_at"
+        return [ScreenedCandidate.model_validate_json(r[0])
+               for r in self._conn.execute(q, args).fetchall()]
 
     # -- cross-recommendation analytics --------------------------------------
 

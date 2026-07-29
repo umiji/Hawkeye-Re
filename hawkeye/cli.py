@@ -27,6 +27,7 @@ from hawkeye.contracts.models import (
     Outcome,
     Recommendation,
     RecommendationStatus,
+    ScreenedCandidateStage,
 )
 from hawkeye.ledger.scoring import (
     brier_score,
@@ -50,7 +51,7 @@ from hawkeye.scout.benchmark import (
     min_calendar_days_for_trading_days,
     reason_snippet,
 )
-from hawkeye.scout.scout import run_scout
+from hawkeye.scout.scout import build_screened_candidates, run_scout
 from hawkeye.sentinel.monitor import check_position
 from hawkeye.tribunal import casefile
 from hawkeye.tribunal.pipeline import (
@@ -237,13 +238,21 @@ def cmd_scout(args: argparse.Namespace) -> int:
     provider = CompositeProvider(YahooProvider(), finnhub)
     result = run_scout(finnhub, provider, config, days_back=args.days)
 
+    # Whatever isn't sent to the tribunal THIS run — from result.passed's
+    # tail onward — is the ranking-cutoff tier (docs/MASTER_OVERVIEW.ja.md
+    # §5.1, #4). Computed before record_scan() so it can be persisted in the
+    # same breath as the scan itself, immediately below.
+    sent_to_tribunal_n = max(args.evaluate or 0, args.open_cases or 0)
+
     ledger = _ledger()
-    ledger.record_scan(
+    scan_id = ledger.record_scan(
         params={"days_back": args.days or config.scout_days_back,
                 "min_eps_surprise": config.scout_min_eps_surprise_pct},
         scanned=result.scanned, screened=result.screened,
         enriched=result.enriched, gate_passed=len(result.passed),
         tickers=[c.ticker for c in result.passed])
+    ledger.record_screened_candidates(
+        scan_id, build_screened_candidates(result, scan_id, sent_to_tribunal_n))
     print(render_scout_ja(result))
 
     if args.open_cases and result.passed:
@@ -270,6 +279,24 @@ def cmd_scout(args: argparse.Namespace) -> int:
             ledger.record_recommendation(rec, status)
             print(render_recommendation_ja(rec))
             print(f"\n(記録済み: {rec.id} / status={status.value})")
+    return 0
+
+
+def cmd_screened_list(args: argparse.Namespace) -> int:
+    ledger = _ledger()
+    rows = ledger.screened_candidates(scan_id=args.scan_id, stage=args.stage)
+    if not rows:
+        print("(該当する落選候補の記録なし)")
+        return 0
+    stage_label = {"enrichment_cap": "肉付け上限落ち", "gate_reject": "入口ゲート落ち",
+                  "ranking_cutoff": "ランキング下位"}
+    print(f"# 落選候補一覧 ({len(rows)}件)\n")
+    print("| scan_id | 銘柄 | 段階 | スコア | 価格(基準日) | 理由 |")
+    print("|---|---|---|---|---|---|")
+    for r in rows:
+        price = f"${r.price:.2f} ({r.price_asof})" if r.price is not None else "-"
+        print(f"| {r.scan_id} | {r.ticker} | {stage_label.get(r.stage.value, r.stage.value)} "
+              f"| {r.score} | {price} | {r.reject_reason} |")
     return 0
 
 
@@ -660,6 +687,18 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--nav", type=float, default=100_000.0)
     sc.set_defaults(func=cmd_scout)
 
+    sd = sub.add_parser("screened",
+                        help="review candidates the scout funnel dropped "
+                             "(docs/MASTER_OVERVIEW.ja.md §5.1)")
+    sd_sub = sd.add_subparsers(dest="screened_command", required=True)
+    sdl = sd_sub.add_parser("list", help="list dropped candidates")
+    sdl.add_argument("--scan-id", type=int, default=None,
+                     help="restrict to one scan (see `hawkeye scout` output)")
+    sdl.add_argument("--stage",
+                     choices=[s.value for s in ScreenedCandidateStage],
+                     default=None, help="restrict to one funnel stage")
+    sdl.set_defaults(func=cmd_screened_list)
+
     # session-mode case workflow (LLM driven by Claude Code, no API key)
     ca_p = sub.add_parser("case",
                           help="stepwise tribunal for session mode (no API key)")
@@ -789,6 +828,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows consoles default stdout/stderr to the system codepage (cp932
+    # for Japanese locales), which can't encode em dashes or emoji used
+    # throughout this CLI's output and help text — the same bug class fixed
+    # for file I/O in commit 01152f2, here for the console streams instead.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     args = build_parser().parse_args(argv)
     return args.func(args)
 

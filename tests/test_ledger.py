@@ -7,6 +7,8 @@ from hawkeye.contracts.models import (
     GateReport,
     Recommendation,
     RecommendationStatus,
+    ScreenedCandidate,
+    ScreenedCandidateStage,
     Verdict,
 )
 from hawkeye.ledger.store import Ledger
@@ -130,6 +132,46 @@ def test_verify_chain_detects_rewritten_recommendation_row(tmp_path):
         (tampered_payload,
          hashlib.sha256(tampered_payload.encode("utf-8")).hexdigest(),
          rec.id))
+    ledger._conn.commit()
+
+    assert not ledger.verify_chain()
+
+
+def make_screened(scan_id=1, ticker="DROP", stage=ScreenedCandidateStage.GATE_REJECT,
+                  **overrides) -> ScreenedCandidate:
+    return ScreenedCandidate(
+        scan_id=scan_id, ticker=ticker, event_date=date(2026, 7, 20),
+        eps_surprise_pct=12.0, score=8.5, score_version="full",
+        stage=stage, reject_reason="test", **overrides)
+
+
+def test_record_and_query_screened_candidates(tmp_path):
+    ledger = Ledger(str(tmp_path / "test.db"))
+    rows = [make_screened(ticker="A"), make_screened(ticker="B"),
+           make_screened(ticker="C", stage=ScreenedCandidateStage.RANKING_CUTOFF)]
+    ledger.record_screened_candidates(1, rows)
+
+    all_rows = ledger.screened_candidates(scan_id=1)
+    assert {r.ticker for r in all_rows} == {"A", "B", "C"}
+    cutoff_only = ledger.screened_candidates(scan_id=1, stage="ranking_cutoff")
+    assert [r.ticker for r in cutoff_only] == ["C"]
+    assert ledger.verify_chain()
+
+
+def test_verify_chain_detects_rewritten_screened_candidate_row(tmp_path):
+    """Same tamper-evidence gap as recommendations, closed the same way:
+    the batch_hash anchored in the journal at write time must still match
+    the current screened_candidates rows for that scan."""
+    ledger = Ledger(str(tmp_path / "test.db"))
+    original = make_screened()
+    ledger.record_screened_candidates(1, [original])
+    assert ledger.verify_chain()
+
+    tampered_payload = original.model_copy(
+        update={"reject_reason": "rewritten"}).model_dump_json()
+    ledger._conn.execute(
+        "UPDATE screened_candidates SET payload = ? WHERE scan_id = 1",
+        (tampered_payload,))
     ledger._conn.commit()
 
     assert not ledger.verify_chain()
