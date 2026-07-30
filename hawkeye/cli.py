@@ -20,6 +20,7 @@ import sys
 from datetime import date
 
 from hawkeye.config import HawkeyeConfig, db_path
+from hawkeye.envfile import load_local_env
 from hawkeye.contracts.models import (
     Catalyst,
     CatalystType,
@@ -828,6 +829,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_local_env()
     # Windows consoles default stdout/stderr to the system codepage (cp932
     # for Japanese locales), which can't encode em dashes or emoji used
     # throughout this CLI's output and help text — the same bug class fixed

@@ -63,6 +63,8 @@ orchestrating session cannot leak the attacks to the Bull even by accident.
 
 ```bash
 export FINNHUB_API_KEY=...       # free key; needed by scout
+# or: cp .env.local.example .env.local  and fill it in — loaded
+# automatically at startup (hawkeye/envfile.py), no export needed
 # open this repo in Claude Code, then:
 /hawkeye-run
 ```
