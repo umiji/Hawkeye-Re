@@ -9,7 +9,7 @@ auditable years later.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from typing import Literal, Optional
 
@@ -17,13 +17,46 @@ import hashlib
 
 from pydantic import BaseModel, Field, model_validator
 
+JST = timezone(timedelta(hours=9), "JST")
+
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+def now() -> datetime:
+    """The moment a record is created, in the reader's own timezone (JST).
+
+    Records are stamped the way the user reads them, so the ledger is legible
+    without mental arithmetic. The `+09:00` offset is part of every stored
+    string, so each timestamp is still an unambiguous instant and rows
+    written before this change (which carry `+00:00`) stay directly
+    comparable — see `ledger.store._instant`, which is why ordering can no
+    longer be left to SQLite's text comparison.
+    """
+    return datetime.now(JST)
+
+
+def to_jst(value: datetime) -> datetime:
+    """Same instant, expressed in JST. A value with no offset at all is read
+    as UTC — that is what the pre-2026-07-31 records meant."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(JST)
+
+
+def utc_date(value: datetime) -> date:
+    """The UTC calendar date of an instant.
+
+    Deliberately NOT the JST date: this is the anchor every forward-return
+    measurement counts trading days from, and it must keep meaning what it
+    meant before timestamps became JST. A JST-dated anchor would push the
+    holding period one day later for anything recorded after 15:00 UTC,
+    silently changing every cohort comparison in the ledger.
+    """
+    if value.tzinfo is None:
+        return value.date()
+    return value.astimezone(timezone.utc).date()
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +94,7 @@ class NewsItem(BaseModel):
 
 class MarketSnapshot(BaseModel):
     ticker: str
-    as_of: datetime = Field(default_factory=utcnow)
+    as_of: datetime = Field(default_factory=now)
     price: float
     prev_close: Optional[float] = None
     market_cap: Optional[float] = None             # USD
@@ -174,7 +207,7 @@ class ScreenedCandidateStage(str, Enum):
 
 class ScreenedCandidate(BaseModel):
     id: str = Field(default_factory=lambda: new_id("scr"))
-    recorded_at: datetime = Field(default_factory=utcnow)
+    recorded_at: datetime = Field(default_factory=now)
     scan_id: int
     ticker: str
     event_date: date
@@ -253,7 +286,7 @@ class DropReview(BaseModel):
     cohort: str                        # funnel stage, see scout.drop_review.COHORTS
 
     # -- timing
-    reviewed_at: datetime = Field(default_factory=utcnow)
+    reviewed_at: datetime = Field(default_factory=now)
     checkpoint: Literal["t5", "t10"]   # fixed by design; never re-checked after
     checkpoint_date: Optional[date] = None
     decision_date: date
@@ -495,7 +528,7 @@ class RecommendationStatus(str, Enum):
 
 class Recommendation(BaseModel):
     id: str = Field(default_factory=lambda: new_id("rec"))
-    created_at: datetime = Field(default_factory=utcnow)
+    created_at: datetime = Field(default_factory=now)
     ticker: str
     brief: CandidateBrief
     gate_report: GateReport

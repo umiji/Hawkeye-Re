@@ -26,7 +26,7 @@ from hawkeye.contracts.models import (
     RecommendationStatus,
     ScreenedCandidate,
     new_id,
-    utcnow,
+    now,
 )
 
 _SCHEMA = """
@@ -100,6 +100,28 @@ def _sha(*parts: str) -> str:
     return h.hexdigest()
 
 
+def _instant(value: datetime | str) -> datetime:
+    """A stored timestamp as a comparable instant, for ordering.
+
+    Rows written before 2026-07-31 carry `+00:00` and everything after
+    carries `+09:00` (JST). SQLite's ``ORDER BY`` compares those as raw text,
+    which puts them in the wrong order wherever the two meet — "2026-08-01
+    00:30+09:00" is an EARLIER moment than "2026-07-31 23:00+00:00" but sorts
+    after it. Chronological ordering therefore happens here, on real
+    instants, not in SQL.
+
+    A value that can't be parsed at all (only reachable by hand-editing the
+    database) sorts first rather than taking down the whole listing; the row
+    itself is still returned, so nothing disappears silently.
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 class Ledger:
     def __init__(self, path: str):
         self.path = path
@@ -144,17 +166,18 @@ class Ledger:
         if status is not None:
             q += " WHERE status = ?"
             args = (status.value,)
-        q += " ORDER BY created_at"
-        return [
+        rows = [
             {"id": r[0], "created_at": r[1], "ticker": r[2], "status": r[3]}
             for r in self._conn.execute(q, args).fetchall()
         ]
+        return sorted(rows, key=lambda r: _instant(r["created_at"]))
 
     def open_positions(self) -> list[Recommendation]:
         rows = self._conn.execute(
-            "SELECT payload FROM recommendations WHERE status = ? ORDER BY created_at",
+            "SELECT payload FROM recommendations WHERE status = ?",
             (RecommendationStatus.OPEN.value,)).fetchall()
-        return [Recommendation.model_validate_json(r[0]) for r in rows]
+        return sorted((Recommendation.model_validate_json(r[0]) for r in rows),
+                      key=lambda rec: _instant(rec.created_at))
 
     def _set_status(self, rec_id: str, status: RecommendationStatus) -> None:
         self._conn.execute("UPDATE recommendations SET status = ? WHERE id = ?",
@@ -174,7 +197,7 @@ class Ledger:
             prev = self._conn.execute(
                 "SELECT hash FROM journal ORDER BY seq DESC LIMIT 1").fetchone()
             prev_hash = prev[0] if prev else _GENESIS
-            ts = utcnow().isoformat()
+            ts = now().isoformat()
             body = json.dumps(payload, sort_keys=True, default=str)
             h = _sha(prev_hash, ts, rec_id, kind, body)
             self._conn.execute(
@@ -310,7 +333,7 @@ class Ledger:
         cur = self._conn.execute(
             "INSERT INTO scans (ts, params, scanned, screened, enriched,"
             " gate_passed, tickers) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (utcnow().isoformat(), json.dumps(params, default=str),
+            (now().isoformat(), json.dumps(params, default=str),
              scanned, screened, enriched, gate_passed, json.dumps(tickers)))
         self._conn.commit()
         return cur.lastrowid
@@ -410,9 +433,9 @@ class Ledger:
             args.append(stage)
         if conds:
             q += " WHERE " + " AND ".join(conds)
-        q += " ORDER BY recorded_at"
-        return [ScreenedCandidate.model_validate_json(r[0])
-               for r in self._conn.execute(q, args).fetchall()]
+        return sorted((ScreenedCandidate.model_validate_json(r[0])
+                       for r in self._conn.execute(q, args).fetchall()),
+                      key=lambda c: _instant(c.recorded_at))
 
     # -- drop-candidate reviews (docs/MASTER_OVERVIEW.ja.md §5.2(3)) ---------
 
@@ -474,9 +497,9 @@ class Ledger:
                 args.append(value)
         if conds:
             q += " WHERE " + " AND ".join(conds)
-        q += " ORDER BY reviewed_at"
-        return [DropReview.model_validate_json(r[0])
-                for r in self._conn.execute(q, args).fetchall()]
+        return sorted((DropReview.model_validate_json(r[0])
+                       for r in self._conn.execute(q, args).fetchall()),
+                      key=lambda r: _instant(r.reviewed_at))
 
     # -- cross-recommendation analytics --------------------------------------
 

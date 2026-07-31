@@ -19,6 +19,7 @@ from hawkeye.contracts.models import (
     DecisionType,
     Recommendation,
     RecommendationStatus,
+    utc_date,
 )
 from hawkeye.marketdata.base import Bar
 
@@ -97,7 +98,7 @@ def collect_samples(
         if source == "manual" and is_scout:
             continue
         cohort = cohort_of(rec)
-        eval_day = rec.created_at.date()
+        eval_day = utc_date(rec.created_at)
         if (today - eval_day).days < min_wait_days:
             pending += 1
             continue

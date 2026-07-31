@@ -39,6 +39,7 @@ from hawkeye.contracts.models import (
     Recommendation,
     ScreenedCandidate,
     ScreenedCandidateStage,
+    utc_date,
 )
 from hawkeye.marketdata.base import Bar
 from hawkeye.scout.benchmark import (
@@ -168,7 +169,7 @@ def from_screened(c: ScreenedCandidate) -> TrackedCandidate:
         # measured from the same day — not from `recorded_at`, which can sit
         # a day later now that the scan window ends on the previous business
         # day.
-        decision_date=c.price_asof or c.recorded_at.date(),
+        decision_date=c.price_asof or utc_date(c.recorded_at),
         screened_candidate_id=c.id,
         reject_reason=c.reject_reason,
         failed_gates=failed_gate_names(c.gate_report),
@@ -185,7 +186,7 @@ def from_recommendation(rec: Recommendation) -> TrackedCandidate:
     rationale = (rec.verdict.rationale or "").strip()
     return TrackedCandidate(
         ticker=rec.ticker, cohort=cohort, scan_id=None,
-        decision_date=rec.created_at.date(),
+        decision_date=utc_date(rec.created_at),
         rec_id=rec.id,
         reject_reason=rationale.splitlines()[0][:160] if rationale else "",
         failed_gates=failed_gate_names(rec.gate_report))

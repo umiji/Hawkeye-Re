@@ -33,7 +33,7 @@ from hawkeye.contracts.models import (
     GateReport,
     Recommendation,
     new_id,
-    utcnow,
+    now,
 )
 from hawkeye.tribunal.pipeline import (
     assemble_recommendation,
@@ -60,7 +60,7 @@ ROLE_ORDER = ("bull", "adversary", "judge")
 
 class Case(BaseModel):
     id: str = Field(default_factory=lambda: new_id("case"))
-    created_at: str = Field(default_factory=lambda: utcnow().isoformat())
+    created_at: str = Field(default_factory=lambda: now().isoformat())
     nav: float
     open_position_count: int = 0
     brief: CandidateBrief

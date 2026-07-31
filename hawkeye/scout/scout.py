@@ -24,6 +24,7 @@ from hawkeye.contracts.models import (
     GateReport,
     ScreenedCandidate,
     ScreenedCandidateStage,
+    utc_date,
 )
 from hawkeye.gates.entry_gates import run_entry_gates
 from hawkeye.marketdata.base import MarketDataProvider
@@ -199,7 +200,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
             continue
         candidate.brief = brief
         candidate.price = brief.snapshot.price
-        candidate.price_asof = brief.snapshot.as_of.date()
+        candidate.price_asof = utc_date(brief.snapshot.as_of)
         candidate.score = score_candidate(
             eps_s, rev_s, brief.snapshot.gap_on_event_pct)
         candidate.score_version = "full"

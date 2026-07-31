@@ -5,10 +5,13 @@ Japanese, per the project requirements.
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from hawkeye.contracts.models import (
     DecisionType,
     KillKind,
     Recommendation,
+    to_jst,
 )
 from hawkeye.sentinel.monitor import Signal
 
@@ -48,6 +51,22 @@ def _fmt(v, suffix="", nd=2):
     return f"{v:,.{nd}f}{suffix}"
 
 
+def fmt_jst(value: datetime | str) -> str:
+    """A stored timestamp as the user reads it: `2026-07-31 23:45 JST`.
+
+    Takes either a datetime or the raw ISO string straight out of the
+    ledger, since some listings print the stored column without parsing it.
+    Records written before 2026-07-31 carry a `+00:00` offset and are
+    converted here, so old and new rows read on the same clock.
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value      # hand-edited/unknown format: show it verbatim
+    return f"{to_jst(value):%Y-%m-%d %H:%M} JST"
+
+
 def render_recommendation_ja(rec: Recommendation) -> str:
     is_buy = rec.verdict.decision == DecisionType.BUY
     s = rec.brief.snapshot
@@ -55,7 +74,7 @@ def render_recommendation_ja(rec: Recommendation) -> str:
     header = "🟢 投資提案(BUY)" if is_buy else "⚪ 見送り(PASS)"
     lines.append(f"# {header}: {rec.ticker} {rec.brief.company_name}")
     lines.append("")
-    lines.append(f"- 提案ID: `{rec.id}`  作成: {rec.created_at:%Y-%m-%d %H:%M} UTC  "
+    lines.append(f"- 提案ID: `{rec.id}`  作成: {fmt_jst(rec.created_at)}  "
                  f"モデル: {rec.model}")
     lines.append(f"- 現在値: ${_fmt(s.price)}  時価総額: {_fmt((s.market_cap or 0)/1e9 if s.market_cap else None, 'B USD')}  "
                  f"20日平均売買代金: {_fmt((s.avg_dollar_volume_20d or 0)/1e6 if s.avg_dollar_volume_20d else None, 'M USD')}")

@@ -29,6 +29,7 @@ from hawkeye.contracts.models import (
     Recommendation,
     RecommendationStatus,
     ScreenedCandidateStage,
+    utc_date,
 )
 from hawkeye.ledger.scoring import (
     brier_score,
@@ -41,6 +42,7 @@ from hawkeye.marketdata.finnhub import CompositeProvider, FinnhubProvider
 from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
 from hawkeye.reports.render_ja import (
+    fmt_jst,
     render_drop_review_ja,
     render_recommendation_ja,
     render_scout_ja,
@@ -461,7 +463,7 @@ def cmd_review_passes(args: argparse.Namespace) -> int:
         rec = ledger.get(row["id"])
         if rec is None:
             continue
-        eval_day = rec.created_at.date()
+        eval_day = utc_date(rec.created_at)
         if (today - eval_day).days < min_wait_days:
             pending += 1
             continue
@@ -495,7 +497,7 @@ def cmd_review_passes(args: argparse.Namespace) -> int:
         tag = ("見送り(判断ミスの可能性 — 上昇)" if ret > 0
               else "見送り(結果的に正しかった可能性 — 下落)")
         print(f"## {arrow} {rec.ticker}  {ret:+.1f}%  [{tag}]")
-        print(f"- 提案ID: {rec.id}  評価日: {rec.created_at.date()}")
+        print(f"- 提案ID: {rec.id}  評価日時: {fmt_jst(rec.created_at)}")
         print(f"- 理由: {reason_snippet(rec, item['status'])}")
         print(f"- 詳細: hawkeye show {rec.id}")
         print()
@@ -529,7 +531,8 @@ def cmd_list(args: argparse.Namespace) -> int:
         print("(記録なし)")
         return 0
     for r in rows:
-        print(f"{r['id']}  {r['ticker']:<6}  {r['status']:<12}  {r['created_at']}")
+        print(f"{r['id']}  {r['ticker']:<6}  {r['status']:<12}  "
+              f"{fmt_jst(r['created_at'])}")
     return 0
 
 
