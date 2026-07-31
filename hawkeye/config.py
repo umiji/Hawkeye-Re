@@ -36,6 +36,14 @@ class HawkeyeConfig:
     scout_max_enrich: int = 15              # candidates enriched with price data
                                             # (bounds free-tier API usage)
 
+    # --- News fetch window (docs/MASTER_OVERVIEW.ja.md §5.2(5)) ---
+    # Not doctrine — data-collection parameters. The window is anchored on
+    # the catalyst date, not on "today": with a fixed today-minus-N window,
+    # a candidate whose earnings landed near max_event_age_days could have
+    # its earnings coverage crowded out by newer unrelated headlines.
+    news_lead_days: int = 3                 # days before the catalyst to start
+    news_max_items: int = 25                # items kept (nearest the catalyst)
+
     # --- Attribution ---
     thesis_accuracy_threshold: float = 0.6  # >= this fraction of claims true = "thesis right"
 

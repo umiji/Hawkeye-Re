@@ -34,7 +34,15 @@ class MarketDataProvider(Protocol):
         """Best-effort: {name, sector, market_cap, next_earnings_date}."""
         ...
 
-    def news(self, ticker: str, limit: int = 10) -> list[NewsItem]:
+    def news(self, ticker: str, limit: int = 10,
+             event_date: Optional[date] = None,
+             lead_days: int = 3) -> list[NewsItem]:
+        """`event_date` anchors the fetch window on the catalyst.
+
+        Accepting it is OPTIONAL: Yahoo's news() takes only
+        `(ticker, limit)` and is called that way. build_brief() probes the
+        signature rather than assuming.
+        """
         ...
 
     # insider_activity() and analyst_trend() are OPTIONAL, duck-typed

@@ -112,3 +112,45 @@ def test_build_brief_survives_enrichment_call_raising():
                         event_date=date.today() - timedelta(days=3))
     brief = build_brief("TEST", catalyst, FlakyProvider(bars=bars))
     assert brief.insider_activity is None  # degraded, not raised
+
+
+# --- news window plumbing (§5.2(5)) -----------------------------------------
+
+def test_build_brief_anchors_the_news_window_on_the_catalyst_date():
+    """The catalyst date has to reach the provider — otherwise the news
+    window is anchored on 'today' and can miss the earnings coverage that
+    is the whole reason the candidate exists."""
+    bars = make_bars(300)
+    event_day = date.today() - timedelta(days=8)
+    seen: dict = {}
+
+    class RecordingProvider(StaticProvider):
+        def news(self, ticker, limit=10, event_date=None, lead_days=3):
+            seen["event_date"] = event_date
+            seen["limit"] = limit
+            return []
+
+    catalyst = Catalyst(type=CatalystType.EARNINGS_BEAT, description="beat",
+                        event_date=event_day)
+    build_brief("TEST", catalyst, RecordingProvider(bars=bars))
+    assert seen["event_date"] == event_day
+    assert seen["limit"] > 10   # raised from the old default so the window
+                                # cap isn't what drops the earnings coverage
+
+
+def test_build_brief_still_works_with_a_provider_that_takes_no_event_date():
+    """Yahoo's news() signature is (ticker, limit) only. Passing the new
+    argument to it would raise, so build_brief must probe first."""
+    bars = make_bars(300)
+    calls: list = []
+
+    class LegacyNewsProvider(StaticProvider):
+        def news(self, ticker, limit=10):
+            calls.append(limit)
+            return []
+
+    catalyst = Catalyst(type=CatalystType.EARNINGS_BEAT, description="beat",
+                        event_date=date.today() - timedelta(days=3))
+    brief = build_brief("TEST", catalyst, LegacyNewsProvider(bars=bars))
+    assert brief.news == []
+    assert len(calls) == 1

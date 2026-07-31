@@ -6,13 +6,16 @@ field for offline/manual runs.
 """
 from __future__ import annotations
 
+import inspect
 from datetime import date
 from typing import Optional
 
+from hawkeye.config import HawkeyeConfig
 from hawkeye.contracts.models import (
     CandidateBrief,
     Catalyst,
     MarketSnapshot,
+    NewsItem,
 )
 from hawkeye.marketdata.base import Bar, MarketDataProvider
 
@@ -106,8 +109,30 @@ def _optional_call(provider: MarketDataProvider, method: str, ticker: str):
         return None
 
 
+def _fetch_news(provider: MarketDataProvider, ticker: str,
+                event_date: Optional[date], limit: int,
+                lead_days: int) -> list[NewsItem]:
+    """Ask for news anchored on the catalyst, when the provider can do that.
+
+    Not every provider can: Yahoo's news() is `(ticker, limit)` only, and
+    passing the anchor to it would raise. Probing the signature (rather
+    than catching TypeError) keeps a genuine TypeError raised *inside* the
+    provider visible instead of being silently read as "old signature".
+    """
+    fn = provider.news
+    try:
+        accepts_anchor = "event_date" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):       # builtins/C callables have no signature
+        accepts_anchor = False
+    if not accepts_anchor:
+        return fn(ticker, limit)
+    return fn(ticker, limit, event_date=event_date, lead_days=lead_days)
+
+
 def build_brief(ticker: str, catalyst: Catalyst, provider: MarketDataProvider,
-                notes: str = "", overrides: Optional[dict] = None) -> CandidateBrief:
+                notes: str = "", overrides: Optional[dict] = None,
+                config: Optional[HawkeyeConfig] = None) -> CandidateBrief:
+    config = config or HawkeyeConfig()
     bars = provider.daily_history(ticker)
     profile = provider.profile(ticker)
     snapshot = build_snapshot(ticker, bars, profile,
@@ -118,7 +143,8 @@ def build_brief(ticker: str, catalyst: Catalyst, provider: MarketDataProvider,
         sector=profile.get("sector", ""),
         snapshot=snapshot,
         catalyst=catalyst,
-        news=provider.news(ticker),
+        news=_fetch_news(provider, ticker, catalyst.event_date,
+                         config.news_max_items, config.news_lead_days),
         insider_activity=_optional_call(provider, "insider_activity", ticker),
         analyst_trend=_optional_call(provider, "analyst_trend", ticker),
         notes=notes,

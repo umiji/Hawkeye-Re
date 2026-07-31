@@ -186,6 +186,16 @@ class ScreenedCandidate(BaseModel):
     rank: Optional[int] = None    # 1-indexed position among gate-passed candidates
     gate_report: Optional[GateReport] = None
     reject_reason: str = ""
+    # What was visible at drop time. Enrichment already fetched these, and
+    # they were then discarded for every dropped candidate — so a later drop
+    # review had no way to reconstruct the qualitative picture the decision
+    # was actually made against (docs/MASTER_OVERVIEW.ja.md §5.2(5)). Kept
+    # at no extra API cost. Empty for the enrichment_cap stage, which is
+    # dropped before any of this is fetched — absence here means "never
+    # looked", not "looked and found nothing".
+    news: list[NewsItem] = Field(default_factory=list)
+    insider_activity: Optional[InsiderActivity] = None
+    analyst_trend: Optional[AnalystTrend] = None
 
 
 # ---------------------------------------------------------------------------

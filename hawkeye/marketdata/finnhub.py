@@ -18,6 +18,42 @@ _INSIDER_BUY_SELL_CODES = {"P", "S"}  # open-market purchase / sale only
 
 _BASE = "https://finnhub.io/api/v1"
 
+# Sorts undated items last without special-casing them at every comparison.
+_UNDATED = datetime.min.replace(tzinfo=timezone.utc)
+_FAR_AWAY = 10**6  # days; ranking distance for an item with no timestamp
+
+
+def _parse_news(item: dict) -> NewsItem:
+    published = None
+    if item.get("datetime"):
+        published = datetime.fromtimestamp(item["datetime"], tz=timezone.utc)
+    return NewsItem(
+        headline=item.get("headline", ""),
+        source=item.get("source", "finnhub"),
+        url=item.get("url", ""),
+        published_at=published,
+        summary=item.get("summary", ""))
+
+
+def _rank_news(items: list[NewsItem], limit: int,
+               event_date: Optional[date]) -> list[NewsItem]:
+    """Keep `limit` items, then present them newest first.
+
+    Which ones are kept is the point: with a catalyst date, the items
+    nearest it win, so the earnings coverage survives a burst of newer
+    headlines. Without one there is nothing to be near, so the newest win.
+    """
+    if event_date is not None:
+        def distance(n: NewsItem) -> int:
+            if n.published_at is None:
+                return _FAR_AWAY
+            return abs((n.published_at.date() - event_date).days)
+
+        items = sorted(items, key=distance)[:limit]
+    else:
+        items = items[:limit]
+    return sorted(items, key=lambda n: n.published_at or _UNDATED, reverse=True)
+
 
 class FinnhubProvider:
     def __init__(self, api_key: Optional[str] = None, timeout: float = 15.0):
@@ -154,28 +190,33 @@ class FinnhubProvider:
             prior_sell=prior.get("sell") if prior else None,
             prior_strong_sell=prior.get("strongSell") if prior else None)
 
-    def news(self, ticker: str, limit: int = 10) -> list[NewsItem]:
+    def news(self, ticker: str, limit: int = 10,
+             event_date: Optional[date] = None,
+             lead_days: int = 3) -> list[NewsItem]:
+        """Company news, anchored on the catalyst when one is known.
+
+        The window used to be a fixed `today - 14 days .. today`, which is
+        unanchored to the reason the candidate exists. A candidate whose
+        earnings landed near the freshness limit could have its earnings
+        coverage pushed out of `limit` by newer, unrelated headlines — so
+        the tribunal argued over a candidate without ever seeing the report
+        it was supposed to be reacting to (docs/MASTER_OVERVIEW.ja.md
+        §5.2(5)). With `event_date` the window starts just before the event
+        and the items kept are the ones nearest to it.
+        """
         if not self.available:
             return []
+        today = date.today()
+        if event_date is not None:
+            start, end = event_date - timedelta(days=lead_days), max(today, event_date)
+        else:
+            start, end = today - timedelta(days=14), today
         try:
-            today = date.today()
             items = self._get("company-news", symbol=ticker,
-                              **{"from": (today - timedelta(days=14)).isoformat(),
-                                 "to": today.isoformat()})
+                              **{"from": start.isoformat(), "to": end.isoformat()})
         except httpx.HTTPError:
             return []
-        out: list[NewsItem] = []
-        for item in items[:limit]:
-            published = None
-            if item.get("datetime"):
-                published = datetime.fromtimestamp(item["datetime"], tz=timezone.utc)
-            out.append(NewsItem(
-                headline=item.get("headline", ""),
-                source=item.get("source", "finnhub"),
-                url=item.get("url", ""),
-                published_at=published,
-                summary=item.get("summary", "")))
-        return out
+        return _rank_news([_parse_news(item) for item in items], limit, event_date)
 
 
 class CompositeProvider:
@@ -191,8 +232,14 @@ class CompositeProvider:
     def profile(self, ticker: str) -> dict:
         return self._finnhub.profile(ticker) if self._finnhub.available else {}
 
-    def news(self, ticker: str, limit: int = 10) -> list[NewsItem]:
-        items = self._finnhub.news(ticker, limit) if self._finnhub.available else []
+    def news(self, ticker: str, limit: int = 10,
+             event_date: Optional[date] = None,
+             lead_days: int = 3) -> list[NewsItem]:
+        items = (self._finnhub.news(ticker, limit, event_date=event_date,
+                                    lead_days=lead_days)
+                 if self._finnhub.available else [])
+        # Yahoo has no window/anchor controls — it is a last resort, not an
+        # equivalent source.
         return items or self._yahoo.news(ticker, limit)
 
     def insider_activity(self, ticker: str) -> Optional[InsiderActivity]:
