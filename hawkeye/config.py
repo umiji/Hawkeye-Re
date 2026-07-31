@@ -56,6 +56,16 @@ class HawkeyeConfig:
     # an override for exploration, but its output is labeled non-authoritative.
     phase0_benchmark_horizon_days: int = 30
 
+    # --- Drop-candidate review (docs/MASTER_OVERVIEW.ja.md §5.2(3)) ---
+    # Measurement parameters, not doctrine numbers: invariant 7 governs the
+    # investment rules, and these describe how the screen is *scored*. The
+    # checkpoints (T+5/T+10 trading days), the 250-day beta window and the
+    # |z| >= 1.5 bar live in `hawkeye/scout/drop_review.py` rather than here,
+    # precisely because they must not be tunable per run.
+    drop_review_index_ticker: str = "SPY"
+    # Nothing gets re-tuned off a handful of names (§5.2(3) 過剰最適化の歯止め).
+    drop_review_min_samples_per_stage: int = 20
+
     # --- LLM ---
     model: str = "claude-opus-4-8"
 

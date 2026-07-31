@@ -41,9 +41,20 @@ from hawkeye.marketdata.finnhub import CompositeProvider, FinnhubProvider
 from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
 from hawkeye.reports.render_ja import (
+    render_drop_review_ja,
     render_recommendation_ja,
     render_scout_ja,
     render_signals_ja,
+)
+from hawkeye.scout.drop_review import (
+    CHECKPOINT_TRADING_DAYS,
+    attribute_by_cohort,
+    attribute_by_gate,
+    collect_checkpoints,
+    from_recommendation,
+    from_screened,
+    outliers,
+    with_peer_baseline,
 )
 from hawkeye.scout.benchmark import (
     cohort_stats,
@@ -314,6 +325,41 @@ def cmd_screened_list(args: argparse.Namespace) -> int:
         price = f"${r.price:.2f} ({r.price_asof})" if r.price is not None else "-"
         print(f"| {r.scan_id} | {r.ticker} | {stage_label.get(r.stage.value, r.stage.value)} "
               f"| {r.score} | {price} | {r.reject_reason} |")
+    return 0
+
+
+def cmd_drops_report(args: argparse.Namespace) -> int:
+    """Score the funnel's rejects (docs/MASTER_OVERVIEW.ja.md §5.2(3)).
+
+    Both ledger tables are read: `screened_candidates` holds the candidates
+    dropped before the tribunal, `recommendations` the ones that reached it.
+    Reviewing only the former would leave the tribunal unscored; reviewing
+    only the latter is the blind spot §5.1 was written about.
+    """
+    config = HawkeyeConfig.from_env()
+    ledger = _ledger()
+    provider = _provider()
+
+    tracked = [from_screened(c) for c in ledger.screened_candidates()]
+    for row in ledger.list():
+        rec = ledger.get(row["id"])
+        if rec is not None:
+            tracked.append(from_recommendation(rec))
+
+    results, pending, censored = collect_checkpoints(
+        tracked, provider, date.today(), config.drop_review_index_ticker,
+        checkpoint=args.checkpoint)
+    results = with_peer_baseline(results)
+
+    print(render_drop_review_ja(
+        checkpoint=args.checkpoint,
+        horizon_days=CHECKPOINT_TRADING_DAYS[args.checkpoint],
+        index_ticker=config.drop_review_index_ticker,
+        results=results, pending=pending, censored=censored,
+        cohort_table=attribute_by_cohort(results),
+        gate_table=attribute_by_gate(results),
+        flagged=outliers(results),
+        min_samples=config.drop_review_min_samples_per_stage))
     return 0
 
 
@@ -715,6 +761,20 @@ def build_parser() -> argparse.ArgumentParser:
                      choices=[s.value for s in ScreenedCandidateStage],
                      default=None, help="restrict to one funnel stage")
     sdl.set_defaults(func=cmd_screened_list)
+
+    dr = sub.add_parser("drops",
+                        help="score the candidates the funnel dropped "
+                             "(docs/MASTER_OVERVIEW.ja.md §5.2(3))")
+    dr_sub = dr.add_subparsers(dest="drops_command", required=True)
+    drr = dr_sub.add_parser(
+        "report",
+        help="alpha/z per funnel stage and per gate at a fixed checkpoint")
+    # No free-form horizon: the checkpoints are pre-registered (T+5/T+10) so
+    # a disappointing result can't be re-run at whatever horizon flatters it.
+    drr.add_argument("--checkpoint", choices=sorted(CHECKPOINT_TRADING_DAYS),
+                     default="t5",
+                     help="T+5 (default) or T+10 trading days after the drop")
+    drr.set_defaults(func=cmd_drops_report)
 
     # session-mode case workflow (LLM driven by Claude Code, no API key)
     ca_p = sub.add_parser("case",

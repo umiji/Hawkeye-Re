@@ -222,6 +222,107 @@ def render_scout_ja(result) -> str:
     return "\n".join(lines)
 
 
+_COHORT_JA = {
+    "BUY": "採用(BUY)",
+    "TRIBUNAL_PASS": "審理で見送り",
+    "RANKING_CUTOFF": "ランキング下位",
+    "GATE_REJECT": "入口ゲート落ち",
+    "ENRICHMENT_CAP": "肉付け上限落ち",
+}
+
+
+def _num(value, suffix: str = "", digits: int = 2) -> str:
+    return "—" if value is None else f"{value:+.{digits}f}{suffix}"
+
+
+def render_drop_review_ja(
+    checkpoint: str,
+    horizon_days: int,
+    index_ticker: str,
+    results: list,
+    pending: int,
+    censored: dict,
+    cohort_table: dict,
+    gate_table: dict,
+    flagged: list,
+    min_samples: int,
+) -> str:
+    """落選候補レビューの結果(docs/MASTER_OVERVIEW.ja.md §5.2(3))."""
+    lines = [
+        f"# 🔍 落選候補レビュー — T+{horizon_days}営業日時点 ({checkpoint})",
+        "",
+        f"判定済み {len(results)}件 / 観測期間が未経過 {pending}件",
+    ]
+    censored_n = sum(censored.values())
+    if censored_n:
+        lines.append(
+            f"⚠️ **追跡不能 {censored_n}件** — 株価履歴を取得できませんでした"
+            "(上場廃止・銘柄コード変更・買収・API障害)。"
+            "取得できない銘柄は最悪の結果を出したものである場合が多く、"
+            "**これを無視すると各群の平均が実態より良く見えます**(生存者バイアス)。")
+        for cohort, n in censored.items():
+            if n:
+                lines.append(f"  - {_COHORT_JA.get(cohort, cohort)}: {n}件")
+    lines.append("")
+    lines.append(
+        f"α = 実リターン − β × {index_ticker}の同期間リターン(βは過去250営業日)、"
+        "z = α ÷ (ATR% × √営業日数)。**上振れ・下振れの両方**を数えます。")
+    lines.append("")
+
+    lines.append("## 段階別")
+    lines.append("")
+    lines.append("| 段階 | 件数 | 平均α | 中央α | 上振れ z≥1.5 | 下振れ z≤-1.5 | α算出不可 |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    for cohort, row in cohort_table.items():
+        name = _COHORT_JA.get(cohort, cohort)
+        if row["n"] < min_samples:
+            name += " ※"
+        lines.append(
+            f"| {name} | {row['n']} | {_num(row['mean_alpha'], '%')} | "
+            f"{_num(row['median_alpha'], '%')} | {row['up_outliers']} | "
+            f"{row['down_outliers']} | {row['n_alpha_missing']} |")
+    lines.append("")
+    lines.append(
+        f"※ = サンプルが{min_samples}件未満。**この段階の数字を根拠に閾値や"
+        "スコア式を変更してはいけません**(§5.2(3) 過剰最適化の歯止め)。")
+    lines.append("")
+
+    lines.append("## ゲート別(入口ゲートで落ちた候補のみ)")
+    lines.append("")
+    if not gate_table:
+        lines.append("(該当なし)")
+    else:
+        lines.append("| ゲート | 件数 | 平均α | 上振れ | 下振れ |")
+        lines.append("|---|---:|---:|---:|---:|")
+        for gate, row in gate_table.items():
+            label = gate if row["n"] >= min_samples else f"{gate} ※"
+            lines.append(
+                f"| {label} | {row['n']} | {_num(row['mean_alpha'], '%')} | "
+                f"{row['up_outliers']} | {row['down_outliers']} |")
+        lines.append("")
+        lines.append(
+            "平均が高いゲートは「そのゲートが取りこぼしを生んでいる」候補です。"
+            "ただし**下振れの件数を必ず併せて見てください** — 下振れのほうが多い"
+            "ゲートは、正しく仕事をしています。")
+    lines.append("")
+
+    lines.append(f"## 要調査({len(flagged)}件、|z| ≥ 1.5)")
+    lines.append("")
+    if not flagged:
+        lines.append("(該当なし)")
+    else:
+        for r in flagged:
+            badge = "🔺" if r.direction == "up" else "🔻"
+            stage = _COHORT_JA.get(r.cohort, r.cohort)
+            gates = f" / {', '.join(r.failed_gates)}" if r.failed_gates else ""
+            lines.append(
+                f"- {badge} **{r.ticker}** α={_num(r.alpha_pct, '%')} "
+                f"z={_num(r.z, '', 1)} — {stage}{gates} / 判断日 {r.decision_date}")
+            if r.reject_reason:
+                lines.append(f"  - 落選理由: {r.reject_reason}")
+    return "\n".join(lines)
+
+
 def render_signals_ja(ticker: str, signals: list[Signal]) -> str:
     if not signals:
         return f"✅ {ticker}: シグナルなし(事前登録済みの基準に抵触なし)"

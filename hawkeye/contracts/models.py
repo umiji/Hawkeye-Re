@@ -13,7 +13,9 @@ from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+import hashlib
+
+from pydantic import BaseModel, Field, model_validator
 
 
 def new_id(prefix: str) -> str:
@@ -278,6 +280,20 @@ class AttackCategory(str, Enum):
     GOVERNANCE_ACCOUNTING = "governance_accounting"
 
 
+def attack_content_id(category, statement: str, evidence: str = "") -> str:
+    """Deterministic id for an attack, derived from its content.
+
+    Content-hashing rather than uuid4 means two independent parses of the
+    same attack agree on the same id — which is what lets the Judge cite an
+    attack it can only see rendered, and lets `_judge_rule_check` match by id
+    instead of by fragile substring comparison on the statement text.
+    """
+    digest = hashlib.sha256(
+        "|".join((str(category), statement, evidence)).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"atk_{digest}"
+
+
 class Attack(BaseModel):
     id: str                             # stable, content-derived — set by
                                          # parse_attack_report(), never by the LLM
@@ -286,6 +302,27 @@ class Attack(BaseModel):
     statement: str
     evidence: str = ""
     is_kill_shot: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_legacy_id(cls, data):
+        """Recover ids for ledger rows written before `id` existed.
+
+        Attack ids were added on 2026-07-28; records stored before that have
+        none, and a required field made those recommendations permanently
+        unloadable — `hawkeye show` and every cross-record analysis simply
+        crashed on them. The id is a pure function of the attack's content,
+        so it can be recomputed exactly rather than invented, and the stored
+        payload is never rewritten (invariant 1: pre-registered records are
+        immutable; this fills the field on the way *in*, not on disk).
+        """
+        if isinstance(data, dict) and not data.get("id"):
+            statement = data.get("statement")
+            if isinstance(statement, str):
+                return {**data, "id": attack_content_id(
+                    data.get("category", ""), statement,
+                    data.get("evidence", "") or "")}
+        return data
 
 
 class AttackReport(BaseModel):

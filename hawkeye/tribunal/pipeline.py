@@ -14,12 +14,12 @@ corrupts the pre-registered record.
 """
 from __future__ import annotations
 
-import hashlib
 
 from hawkeye.config import HawkeyeConfig
 from hawkeye.contracts.models import (
     AddressedAttack,
     Attack,
+    attack_content_id,
     AttackCategory,
     AttackReport,
     CandidateBrief,
@@ -61,18 +61,12 @@ def _enum_or(enum_cls, value, fallback):
         return fallback
 
 
-def _content_id(prefix: str, *parts: str) -> str:
-    """Deterministic id from content, not randomness.
-
-    An attack's raw dict is parsed twice per run — once to bake ids into the
-    view rendered to the Judge, once inside assemble_recommendation() to
-    build the final record — and both parses must agree on the same id for
-    the same attack. Content-hashing (rather than uuid4) makes that
-    automatic, and lets tests predict an id without inspecting pipeline
-    internals.
-    """
-    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:12]
-    return f"{prefix}_{digest}"
+# Attack ids are content-derived so the two parses of one raw dict per run
+# — once to bake ids into the view rendered to the Judge, once inside
+# assemble_recommendation() to build the final record — always agree. The
+# definition lives in contracts (`attack_content_id`) because loading an old
+# ledger row has to recompute the very same id, and contracts must not
+# import the pipeline.
 
 
 def parse_thesis(raw: dict) -> Thesis:
@@ -114,8 +108,8 @@ def parse_thesis(raw: dict) -> Thesis:
 def parse_attack_report(raw: dict) -> AttackReport:
     return AttackReport(
         attacks=[
-            Attack(id=a.get("id") or _content_id(
-                       "atk", str(a.get("category", "")), a["statement"],
+            Attack(id=a.get("id") or attack_content_id(
+                       a.get("category", ""), a["statement"],
                        a.get("evidence", "")),
                    category=_enum_or(AttackCategory, a.get("category"),
                                      AttackCategory.THESIS_LOGIC),
