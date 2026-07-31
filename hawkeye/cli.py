@@ -236,6 +236,12 @@ def cmd_case_submit(args: argparse.Namespace) -> int:
 
 
 def cmd_case_list(args: argparse.Namespace) -> int:
+    # Housekeeping runs here rather than as a command to remember: this is
+    # the one command /hawkeye-run always calls first (§5.2(7)/(8)). Reported
+    # rather than silent — a cleanup nobody sees is one nobody can question.
+    swept = casefile.sweep_role_workspaces()
+    if swept:
+        print(f"(完了済みケースの作業ファイルを削除: {len(swept)}件)")
     cases = casefile.list_cases()
     if not cases:
         print("(ケースなし)")

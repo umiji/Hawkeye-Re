@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -222,3 +223,35 @@ def mark_complete(case: Case, recommendation_id: str) -> None:
     caller has confirmed it's durably stored (e.g. ledger insert succeeded)."""
     case.recommendation_id = recommendation_id
     save_case(case)
+    # Only now — the role workspace is what makes a failed ledger write
+    # retryable, and `submit()` refuses to re-answer a completed role
+    # (docs/MASTER_OVERVIEW.ja.md §5.2(7); ordering per the M5 fix).
+    _remove_role_workspace(case.id)
+
+
+def _remove_role_workspace(case_id: str) -> bool:
+    """Delete one case's per-role scratch folder. Returns whether anything
+    was there. Every file in it is either regenerated deterministically by
+    `write_package()` or already copied verbatim into the case JSON by
+    `submit()`, so there is no version worth keeping and no need for an
+    opt-out flag."""
+    workspace = cases_dir() / case_id
+    if not workspace.is_dir():
+        return False
+    shutil.rmtree(workspace)
+    return True
+
+
+def sweep_role_workspaces() -> list[str]:
+    """Remove leftover workspaces of cases whose recommendation is already in
+    the ledger; returns the case ids cleaned up.
+
+    Runs automatically rather than as a command to remember (§5.2(8)). Cases
+    still in progress are untouched — an unfinished case's workspace is its
+    resume point, not garbage.
+    """
+    removed: list[str] = []
+    for case in list_cases():
+        if case.recommendation_id and _remove_role_workspace(case.id):
+            removed.append(case.id)
+    return removed
