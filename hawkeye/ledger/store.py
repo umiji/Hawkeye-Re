@@ -20,10 +20,12 @@ from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from hawkeye.contracts.models import (
+    DropReview,
     Outcome,
     Recommendation,
     RecommendationStatus,
     ScreenedCandidate,
+    new_id,
     utcnow,
 )
 
@@ -66,6 +68,26 @@ CREATE TABLE IF NOT EXISTS screened_candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_screened_scan ON screened_candidates (scan_id);
 CREATE INDEX IF NOT EXISTS idx_screened_ticker ON screened_candidates (ticker);
+CREATE TABLE IF NOT EXISTS drop_reviews (
+    id                    TEXT PRIMARY KEY,
+    batch_id              TEXT NOT NULL,
+    reviewed_at           TEXT NOT NULL,
+    ticker                TEXT NOT NULL,
+    cohort                TEXT NOT NULL,
+    checkpoint            TEXT NOT NULL,
+    screened_candidate_id TEXT NOT NULL DEFAULT '',
+    rec_id                TEXT NOT NULL DEFAULT '',
+    miss_category         TEXT NOT NULL DEFAULT '',
+    payload               TEXT NOT NULL
+);
+-- The checkpoints are fixed and never re-checked (§5.2(3)). A second row for
+-- the same candidate at the same checkpoint would be a re-measurement, i.e.
+-- exactly the "run it again until the number flatters" loop the fixed
+-- horizons exist to prevent — so the schema refuses one.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_drop_review_subject
+    ON drop_reviews (screened_candidate_id, rec_id, checkpoint);
+CREATE INDEX IF NOT EXISTS idx_drop_review_batch ON drop_reviews (batch_id);
+CREATE INDEX IF NOT EXISTS idx_drop_review_ticker ON drop_reviews (ticker);
 """
 
 _GENESIS = "0" * 64
@@ -207,6 +229,16 @@ class Ledger:
                 rows = self._conn.execute(
                     "SELECT payload FROM screened_candidates WHERE scan_id = ?",
                     (body.get("scan_id"),)).fetchall()
+                if len(rows) != body.get("count"):
+                    return False
+                current_hash = _sha("\n".join(sorted(r[0] for r in rows)))
+                if current_hash != body.get("batch_hash"):
+                    return False
+            if kind == "drop_reviews_recorded":
+                body = json.loads(payload)
+                rows = self._conn.execute(
+                    "SELECT payload FROM drop_reviews WHERE batch_id = ?",
+                    (body.get("batch_id"),)).fetchall()
                 if len(rows) != body.get("count"):
                     return False
                 current_hash = _sha("\n".join(sorted(r[0] for r in rows)))
@@ -381,6 +413,70 @@ class Ledger:
         q += " ORDER BY recorded_at"
         return [ScreenedCandidate.model_validate_json(r[0])
                for r in self._conn.execute(q, args).fetchall()]
+
+    # -- drop-candidate reviews (docs/MASTER_OVERVIEW.ja.md §5.2(3)) ---------
+
+    def record_drop_reviews(self, reviews: list[DropReview]) -> str:
+        """Persist a batch of scored/investigated drops; returns the batch id.
+
+        Separate table, not extra columns on `screened_candidates`: that row
+        is what was true at drop time, this is what happened afterwards.
+
+        All-or-nothing. A partially written batch would leave a journal-
+        anchored hash that can never match its rows again, i.e. a chain that
+        reports tampering forever. A duplicate (candidate, checkpoint) raises
+        rather than being skipped — a silently dropped review looks identical
+        to a review that was never requested.
+        """
+        if not reviews:
+            return ""
+        batch_id = new_id("drb")
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            for r in reviews:
+                self._conn.execute(
+                    "INSERT INTO drop_reviews (id, batch_id, reviewed_at,"
+                    " ticker, cohort, checkpoint, screened_candidate_id,"
+                    " rec_id, miss_category, payload)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (r.id, batch_id, r.reviewed_at.isoformat(), r.ticker,
+                     r.cohort, r.checkpoint, r.screened_candidate_id or "",
+                     r.rec_id or "",
+                     r.miss_category.value if r.miss_category else "",
+                     r.model_dump_json()))
+            self._conn.commit()
+        except sqlite3.IntegrityError as exc:
+            self._conn.rollback()
+            raise ValueError(
+                f"drop review already recorded for this candidate and "
+                f"checkpoint (batch rejected, nothing written): {exc}") from exc
+        except Exception:
+            self._conn.rollback()
+            raise
+        batch_repr = "\n".join(sorted(r.model_dump_json() for r in reviews))
+        self.append_event(batch_id, "drop_reviews_recorded",
+                          {"batch_id": batch_id, "count": len(reviews),
+                           "batch_hash": _sha(batch_repr)})
+        return batch_id
+
+    def drop_reviews(self, checkpoint: Optional[str] = None,
+                     ticker: Optional[str] = None,
+                     cohort: Optional[str] = None,
+                     miss_category: Optional[str] = None) -> list[DropReview]:
+        q = "SELECT payload FROM drop_reviews"
+        conds: list[str] = []
+        args: list[Any] = []
+        for column, value in (("checkpoint", checkpoint), ("ticker", ticker),
+                              ("cohort", cohort),
+                              ("miss_category", miss_category)):
+            if value is not None:
+                conds.append(f"{column} = ?")
+                args.append(value)
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        q += " ORDER BY reviewed_at"
+        return [DropReview.model_validate_json(r[0])
+                for r in self._conn.execute(q, args).fetchall()]
 
     # -- cross-recommendation analytics --------------------------------------
 

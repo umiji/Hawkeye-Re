@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 import hashlib
 
@@ -198,6 +198,106 @@ class ScreenedCandidate(BaseModel):
     news: list[NewsItem] = Field(default_factory=list)
     insider_activity: Optional[InsiderActivity] = None
     analyst_trend: Optional[AnalystTrend] = None
+
+
+# ---------------------------------------------------------------------------
+# Drop-candidate review (docs/MASTER_OVERVIEW.ja.md §5.2(3))
+# ---------------------------------------------------------------------------
+
+class MissCategory(str, Enum):
+    """Why a dropped candidate moved the way it did.
+
+    A join key, not prose: free text never forms the piles §5.2(3) [4] acts
+    on. `UNFORESEEABLE` and `GATE_CORRECT` are load-bearing — without a place
+    to record "nothing to fix here" and "the gate was right", only misses
+    accumulate and every review round tilts one way: loosen the gate.
+    """
+    GATE_THRESHOLD_TOO_STRICT = "gate_threshold_too_strict"
+    SCORE_FORMULA_WRONG = "score_formula_wrong"    # ranked low, actually strong
+    ENRICHMENT_CAP = "enrichment_cap"              # dropped before being looked at
+    DATA_GAP = "data_gap"                          # unverified, not a threshold problem
+    UNFORESEEABLE = "unforeseeable"                # new information; NOT fixable
+    GATE_CORRECT = "gate_correct"                  # fell — evidence the gate works
+    OTHER = "other"                                # requires notes; >3 means re-cut
+
+
+class ProposedChange(BaseModel):
+    """A revision the review argues for. Split into fields so [4] can group
+    proposals that point at the same knob instead of re-reading paragraphs."""
+    target: str        # config key or prompt section to change
+    direction: str     # which way, in the target's own units
+    rationale: str = ""
+
+
+class DropReview(BaseModel):
+    """One dropped candidate, scored at one fixed checkpoint.
+
+    Separate from `ScreenedCandidate` on purpose: that record is what was
+    true when the decision was made, this is what happened afterwards.
+    Folding the second into the first would rewrite a decision record — the
+    same failure invariant 1 forbids for recommendation payloads.
+
+    The reproduction inputs (prices, benchmark return, beta, ATR) are stored
+    with the verdict because they cannot be recovered later: beta comes from
+    a rolling 250-day regression, and splits/dividends retroactively rewrite
+    the prices it was estimated from. Alpha and z alone are unauditable.
+    """
+    id: str = Field(default_factory=lambda: new_id("drv"))
+    schema_version: int = 1
+
+    # -- identity: which decision is being reviewed
+    screened_candidate_id: Optional[str] = None
+    scan_id: Optional[int] = None
+    rec_id: Optional[str] = None       # set when the candidate reached the tribunal
+    ticker: str
+    cohort: str                        # funnel stage, see scout.drop_review.COHORTS
+
+    # -- timing
+    reviewed_at: datetime = Field(default_factory=utcnow)
+    checkpoint: Literal["t5", "t10"]   # fixed by design; never re-checked after
+    checkpoint_date: Optional[date] = None
+    decision_date: date
+    horizon_days: int
+
+    # -- reproduction inputs
+    price_at_decision: Optional[float] = None
+    price_at_checkpoint: Optional[float] = None
+    raw_return_pct: float
+    benchmark_return_pct: Optional[float] = None
+    beta: Optional[float] = None
+    beta_window: int
+    atr_pct: Optional[float] = None
+
+    # -- verdict
+    alpha_pct: float
+    z: float
+    direction: Literal["up", "down"]
+
+    # -- analysis (§5.2(3) [3]; empty until the investigation runs)
+    what_happened: str = ""
+    # Quotes from the record as it stood at decision time. The anti-hindsight
+    # constraint: an explanation that cites nothing visible then is a story.
+    visible_evidence: list[str] = Field(default_factory=list)
+    miss_category: Optional[MissCategory] = None
+    notes: str = ""
+    evidence_urls: list[str] = Field(default_factory=list)
+
+    # -- proposed revision (§5.2(3) [4])
+    proposed_change: Optional[ProposedChange] = None
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+    # -- provenance
+    reviewer_model: str = ""
+
+    @model_validator(mode="after")
+    def _check(self) -> "DropReview":
+        if not (self.screened_candidate_id or self.rec_id):
+            raise ValueError(
+                "a drop review must reference the screened candidate or the "
+                "recommendation it reviews")
+        if self.miss_category is MissCategory.OTHER and not self.notes.strip():
+            raise ValueError("miss_category 'other' requires notes")
+        return self
 
 
 # ---------------------------------------------------------------------------

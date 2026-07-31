@@ -35,6 +35,7 @@ from typing import Iterable, Optional
 
 from hawkeye.contracts.models import (
     DecisionType,
+    DropReview,
     Recommendation,
     ScreenedCandidate,
     ScreenedCandidateStage,
@@ -344,6 +345,42 @@ def collect_checkpoints(
             reject_reason=t.reject_reason, failed_gates=t.failed_gates,
             score=t.score))
     return results, pending, censored
+
+
+def to_drop_review(result: CheckpointResult,
+                   reviewer_model: str = "") -> DropReview:
+    """Freeze one measurement into a storable review (§5.2(3)).
+
+    Only the numbers; the investigation fields stay empty until [3] fills
+    them. A result with no alpha is refused: that is a censored fetch, not a
+    verdict, and storing it would put an empty judgement into the counts [4]
+    acts on.
+    """
+    if result.alpha_pct is None or result.z is None or result.direction is None:
+        raise ValueError(
+            f"{result.ticker} at {result.checkpoint} was never scored "
+            "(alpha/z unavailable) — censored, not reviewable")
+    return DropReview(
+        screened_candidate_id=result.screened_candidate_id,
+        scan_id=result.scan_id,
+        rec_id=result.rec_id,
+        ticker=result.ticker,
+        cohort=result.cohort,
+        checkpoint=result.checkpoint,
+        checkpoint_date=result.checkpoint_date,
+        decision_date=result.decision_date,
+        horizon_days=result.horizon_days,
+        price_at_decision=result.price_at_decision,
+        price_at_checkpoint=result.price_at_checkpoint,
+        raw_return_pct=result.raw_return_pct,
+        benchmark_return_pct=result.benchmark_return_pct,
+        beta=result.beta,
+        beta_window=result.beta_window,
+        atr_pct=result.atr_pct,
+        alpha_pct=result.alpha_pct,
+        z=result.z,
+        direction=result.direction,
+        reviewer_model=reviewer_model)
 
 
 def with_peer_baseline(
