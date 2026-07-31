@@ -290,6 +290,28 @@ def test_outliers_include_both_tails_ranked_by_absolute_z():
     assert [r.ticker for r in out] == ["CCC", "BBB"]
 
 
+def test_enrichment_cap_drops_are_left_out_of_the_investigation_queue():
+    """Their only recorded reason is 'ranked 16th or lower by EPS surprise',
+    so reading one at a time cannot tell you what to change — the levers move
+    on the group mean instead (§5.2(6))."""
+    out = outliers([
+        _cp("AAA", "ENRICHMENT_CAP", 30.0, z=4.0),
+        _cp("BBB", "GATE_REJECT", 10.0, z=2.0),
+    ])
+    assert [r.ticker for r in out] == ["BBB"]
+
+
+def test_enrichment_cap_drops_are_still_reachable_when_asked_for():
+    """Excluded by default, never unreachable: the aggregates count them and
+    a caller can opt back in."""
+    results = [
+        _cp("AAA", "ENRICHMENT_CAP", 30.0, z=4.0),
+        _cp("BBB", "GATE_REJECT", 10.0, z=2.0),
+    ]
+    assert [r.ticker for r in outliers(results, cohorts=None)] == ["AAA", "BBB"]
+    assert attribute_by_cohort(results)["ENRICHMENT_CAP"]["n"] == 1
+
+
 def test_outliers_can_be_restricted_to_one_direction():
     out = outliers([
         _cp("BBB", "GATE_REJECT", 25.0, z=2.0),

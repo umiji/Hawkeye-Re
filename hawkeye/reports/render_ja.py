@@ -246,6 +246,8 @@ def render_drop_review_ja(
     gate_table: dict,
     flagged: list,
     min_samples: int,
+    suppressed: int = 0,
+    suppressed_reason: str = "",
 ) -> str:
     """落選候補レビューの結果(docs/MASTER_OVERVIEW.ja.md §5.2(3))."""
     lines = [
@@ -287,7 +289,9 @@ def render_drop_review_ja(
         "スコア式を変更してはいけません**(§5.2(3) 過剰最適化の歯止め)。")
     lines.append("")
 
-    lines.append("## ゲート別(入口ゲートで落ちた候補のみ)")
+    # 見出しの正確さは重要。ここに出るのは「入口ゲートで落ちた候補」だけでは
+    # なく、審理まで通った候補が個別に不合格・未検証だったゲート項目も含む。
+    lines.append("## ゲート項目別(不合格・未検証だった項目。段階は問わない)")
     lines.append("")
     if not gate_table:
         lines.append("(該当なし)")
@@ -308,6 +312,13 @@ def render_drop_review_ja(
 
     lines.append(f"## 要調査({len(flagged)}件、|z| ≥ 1.5)")
     lines.append("")
+    if suppressed:
+        # 除外した件数は必ず出す。黙って隠すと「調べたが何も無かった」と
+        # 「そもそも見ていない」の区別がつかなくなる。
+        lines.append(
+            f"（この一覧からは **{suppressed}件を除外**しています — "
+            f"{suppressed_reason}）")
+        lines.append("")
     if not flagged:
         lines.append("(該当なし)")
     else:

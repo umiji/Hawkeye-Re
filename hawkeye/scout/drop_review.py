@@ -66,6 +66,16 @@ COHORTS: tuple[str, ...] = (
     "ENRICHMENT_CAP",  # never enriched: sorted below scout_max_enrich
 )
 
+# Cohorts worth investigating one name at a time. Enrichment-cap drops are
+# deliberately excluded: their only recorded reason is "ranked 16th or lower
+# by EPS surprise", so reading an individual name cannot tell you what to
+# change — the only two levers are `scout_max_enrich` and the sort key, and
+# those move on the *group* mean, not on any one story (§5.2(6)). They stay
+# in every aggregate for exactly that reason; it is the per-name reading
+# that would be wasted effort.
+INVESTIGATION_COHORTS: tuple[str, ...] = tuple(
+    c for c in COHORTS if c != "ENRICHMENT_CAP")
+
 _STAGE_TO_COHORT = {
     ScreenedCandidateStage.ENRICHMENT_CAP: "ENRICHMENT_CAP",
     ScreenedCandidateStage.GATE_REJECT: "GATE_REJECT",
@@ -421,12 +431,21 @@ def attribute_by_gate(results: list[CheckpointResult]) -> dict[str, dict]:
 
 def outliers(results: list[CheckpointResult],
              z_threshold: float = Z_THRESHOLD,
-             direction: Optional[str] = None) -> list[CheckpointResult]:
+             direction: Optional[str] = None,
+             cohorts: Optional[tuple[str, ...]] = INVESTIGATION_COHORTS
+             ) -> list[CheckpointResult]:
     """Candidates whose move was large relative to their own volatility — the
-    shortlist for the §5.2(3) [3] per-name investigation. Ordered by |z|
-    descending. `direction` filters to "up" or "down"; the default returns
-    both, and callers are expected to keep reporting both."""
+    shortlist for the §5.2(3) [3] per-name investigation, ordered by |z|
+    descending.
+
+    `cohorts` defaults to INVESTIGATION_COHORTS, i.e. enrichment-cap drops
+    are left out: reading those one at a time cannot tell you what to change,
+    while the group mean can. Pass None for every cohort. `direction` filters
+    to "up" or "down"; the default returns both, and callers are expected to
+    keep reporting both.
+    """
     hits = [r for r in results
             if r.z is not None and abs(r.z) >= z_threshold
-            and (direction is None or r.direction == direction)]
+            and (direction is None or r.direction == direction)
+            and (cohorts is None or r.cohort in cohorts)]
     return sorted(hits, key=lambda r: abs(r.z), reverse=True)

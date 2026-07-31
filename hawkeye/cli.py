@@ -48,6 +48,8 @@ from hawkeye.reports.render_ja import (
 )
 from hawkeye.scout.drop_review import (
     CHECKPOINT_TRADING_DAYS,
+    COHORTS,
+    INVESTIGATION_COHORTS,
     attribute_by_cohort,
     attribute_by_gate,
     collect_checkpoints,
@@ -351,6 +353,25 @@ def cmd_drops_report(args: argparse.Namespace) -> int:
         checkpoint=args.checkpoint)
     results = with_peer_baseline(results)
 
+    # The aggregates always cover every stage — they are what unfreezes the
+    # enrichment-cap settings (§5.2(6)). Only the per-name investigation
+    # queue narrows, because reading an enrichment-cap drop one at a time
+    # can't tell you what to change.
+    if args.stage == "all":
+        cohorts = None
+    elif args.stage:
+        cohorts = (args.stage,)
+    else:
+        cohorts = INVESTIGATION_COHORTS
+    flagged = outliers(results, cohorts=cohorts)
+    all_flagged = outliers(results, cohorts=None)
+    suppressed = len(all_flagged) - len(flagged)
+    reason = ("肉付け上限落ちは個別調査の対象外(落選理由が「サプライズ順で"
+              "16位以下」しかなく、1銘柄ずつ読んでも打つ手が決まらないため。"
+              "群の平均には計上済み)"
+              if cohorts is INVESTIGATION_COHORTS
+              else f"`--stage {args.stage}` で絞り込み中")
+
     print(render_drop_review_ja(
         checkpoint=args.checkpoint,
         horizon_days=CHECKPOINT_TRADING_DAYS[args.checkpoint],
@@ -358,8 +379,9 @@ def cmd_drops_report(args: argparse.Namespace) -> int:
         results=results, pending=pending, censored=censored,
         cohort_table=attribute_by_cohort(results),
         gate_table=attribute_by_gate(results),
-        flagged=outliers(results),
-        min_samples=config.drop_review_min_samples_per_stage))
+        flagged=flagged,
+        min_samples=config.drop_review_min_samples_per_stage,
+        suppressed=suppressed, suppressed_reason=reason))
     return 0
 
 
@@ -774,6 +796,12 @@ def build_parser() -> argparse.ArgumentParser:
     drr.add_argument("--checkpoint", choices=sorted(CHECKPOINT_TRADING_DAYS),
                      default="t5",
                      help="T+5 (default) or T+10 trading days after the drop")
+    drr.add_argument("--stage", choices=sorted(COHORTS) + ["all"],
+                     default=None,
+                     help="restrict the per-name investigation queue to one "
+                          "funnel stage ('all' includes enrichment-cap drops, "
+                          "which the default leaves out). Aggregates always "
+                          "cover every stage regardless.")
     drr.set_defaults(func=cmd_drops_report)
 
     # session-mode case workflow (LLM driven by Claude Code, no API key)
