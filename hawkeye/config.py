@@ -1,8 +1,11 @@
 """Central configuration with doctrine defaults.
 
-Every numeric rule in the investment doctrine (docs/INVESTMENT_DOCTRINE.md)
-lives here so it is pre-registered, versioned, and testable — never buried
-in prompts or ad-hoc code.
+Every numeric rule in the investment doctrine
+(strategy/INVESTMENT_DOCTRINE.md) lives here so it is pre-registered,
+versioned, and testable — never buried in prompts or ad-hoc code.
+
+Filesystem locations are NOT configuration in this sense; they live in
+`hawkeye/paths.py`.
 """
 from __future__ import annotations
 
@@ -50,7 +53,7 @@ class HawkeyeConfig:
     # --- Phase 0 kill-criterion measurement ---
     # The ONE official horizon (trading days) for the BUY-vs-PASS-vs-REJECT
     # cohort comparison `hawkeye benchmark` uses to decide Phase 0 viability
-    # (docs/ROADMAP.md). Pinned so the measurement can't be quietly re-run at
+    # (strategy/ROADMAP.md). Pinned so the measurement can't be quietly re-run at
     # a different horizon until the spread looks favorable (2026-07-29,
     # methodology-auditor finding H5). `--horizon` on the CLI still accepts
     # an override for exploration, but its output is labeled non-authoritative.
@@ -73,7 +76,3 @@ class HawkeyeConfig:
     def from_env() -> "HawkeyeConfig":
         model = os.environ.get("HAWKEYE_MODEL", "claude-opus-4-8")
         return HawkeyeConfig(model=model)
-
-
-def db_path() -> str:
-    return os.environ.get("HAWKEYE_DB", "hawkeye.db")

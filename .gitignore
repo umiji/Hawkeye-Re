@@ -7,11 +7,12 @@ dist/
 build/
 .pytest_cache/
 
-# Hawkeye runtime data
+# Hawkeye runtime data — everything the system emits at run time lives
+# under var/ (see hawkeye/paths.py). Human-written or human-approved
+# material goes in strategy/ or docs/ and IS tracked.
+var/
 *.db
 *.db-journal
-reports/out/
-cases/
 
 # Env / secrets
 .env.*

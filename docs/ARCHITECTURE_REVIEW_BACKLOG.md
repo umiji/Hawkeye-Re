@@ -141,7 +141,7 @@ exploratory/non-authoritative.
 ### H6. No minimum-n or significance treatment on the Phase-0 kill criterion itself (OPEN)
 
 **Source:** methodology-auditor.
-**Where:** `docs/ROADMAP.md`'s exit criteria; `hawkeye/scout/benchmark.py::cohort_stats`.
+**Where:** `strategy/ROADMAP.md`'s exit criteria; `hawkeye/scout/benchmark.py::cohort_stats`.
 
 **Failure scenario:** the funnel-discrimination exit criterion itself
 admits BUY rate could be 10-40% of evaluated candidates — at the low end,
@@ -519,7 +519,7 @@ corrected in the docs.
 ## Explicitly out of scope / not a new backlog item
 
 - Same-model correlation across Bull/Adversary/Judge (all Claude) — already
-  self-flagged in `docs/VERIFICATION_PROTOCOL.md`/`docs/ROADMAP.md` as a
+  self-flagged in `strategy/VERIFICATION_PROTOCOL.md`/`strategy/ROADMAP.md` as a
   Phase-2 item ("role independence... when verdict patterns suggest
   same-model correlation"). Structurally irreducible at single-vendor MVP
   scale; not something to fix now.

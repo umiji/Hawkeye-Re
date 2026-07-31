@@ -34,9 +34,15 @@ hawkeye evaluate ...           # / hawkeye scout --evaluate N
 
 cron等でClaude Codeを介さず回したい場合(Phase 1以降)はこちら。
 
-データベースはカレントディレクトリの `hawkeye.db` に作られます
-(`HAWKEYE_DB` 環境変数で変更可)。ケースファイルは `cases/`
-(`HAWKEYE_CASES` で変更可)。
+システムが実行中に書き出すものは、すべて `var/` 以下にまとまります
+(Git管理外)。台帳は `var/hawkeye.db`、審理の作業ファイルは `var/cases/`、
+落選レビューの調査待ちファイルは `var/drops/`、レポートは `var/reports/`。
+置き場所を変えたい場合は `HAWKEYE_VAR` で全体を、`HAWKEYE_DB` /
+`HAWKEYE_CASES` / `HAWKEYE_DROPS` / `HAWKEYE_REPORTS` で個別に変更できます。
+
+対して、人が書いた・人が承認するものはGitで管理します。投資判断の基準は
+`strategy/`(投資の大原則・検証の方法論・目標・改訂案)、システムの設計文書は
+`docs/`。
 
 ## 基本の流れ
 

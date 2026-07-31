@@ -4,7 +4,7 @@
 
 Adversarial-verification investment decision system (catalyst-driven US
 equities MVP). The core hypothesis and non-negotiables live in
-`docs/INVESTMENT_DOCTRINE.md` and `docs/VERIFICATION_PROTOCOL.md` — read them
+`strategy/INVESTMENT_DOCTRINE.md` and `strategy/VERIFICATION_PROTOCOL.md` — read them
 before changing behavior. The user-facing language is Japanese; system code,
 docs, prompts, and commit messages are English.
 
@@ -30,8 +30,8 @@ behavior descriptions, review summaries, everything.
 4. **Explain domain/strategy terms the first time they come up in a
    session**, not just code symbols. This project has its own vocabulary
    (Bull / Adversary / Judge roles, gates, EV hurdle, thesis-accuracy,
-   pre-registration, etc. — see `docs/INVESTMENT_DOCTRINE.md` and
-   `docs/VERIFICATION_PROTOCOL.md`). When one of these appears for the
+   pre-registration, etc. — see `strategy/INVESTMENT_DOCTRINE.md` and
+   `strategy/VERIFICATION_PROTOCOL.md`). When one of these appears for the
    first time in a conversation, give a one-line plain-language gloss of
    what that role/mechanism actually does before using it as shorthand
    (e.g. "Bull（強気側の主張だけを作る役割。Adversaryの反論は見えない）").
@@ -76,6 +76,16 @@ behavior descriptions, review summaries, everything.
 (Yahoo/Finnhub + indicators) · `gates` · `tribunal` (LLM roles + pipeline) ·
 `risk` · `ledger` (SQLite store + scoring) · `sentinel` · `reports` (Japanese
 rendering) · `cli`.
+
+Directories are split by *who writes the file*: `strategy/` is investment
+knowledge a human writes or approves (doctrine, protocol, roadmap, backlog,
+drafted revisions), `docs/` is system design and development notes, and
+`var/` is everything the system emits at run time (ledger, case files, drop
+measurements, reports) and is git-ignored. `hawkeye/paths.py` is the single
+place resolving `var/` locations — never hardcode a runtime path elsewhere.
+Investment standards do NOT go in `.claude/` (that defines how Claude Code
+drives the system; API mode never reads it, and the judgment criteria must
+not depend on which engine runs the tribunal).
 
 ## Dev
 
@@ -260,7 +270,7 @@ Record decisions and insights at the end of each working session
   measurement — had the same two failure modes `docs/MASTER_OVERVIEW.ja.md`
   §5.1 warns about for the *proposed* future feature: manual `evaluate`
   picks were never filtered out of viability stats despite
-  `docs/ROADMAP.md` requiring it, and any ticker whose price history fetch
+  `strategy/ROADMAP.md` requiring it, and any ticker whose price history fetch
   failed (delisted/acquired/API outage) was silently dropped rather than
   flagged — survivorship bias, since failed-fetch tickers are
   disproportionately the worst performers. **Fixed**: new
@@ -290,7 +300,7 @@ Record decisions and insights at the end of each working session
   (currently ~1/43 of full Kelly at p=0.55/2:1 payout — literal numbers
   belong to the reader's own priors, not a forecast). Also flagged missing
   defenses: no portfolio-level drawdown circuit breaker, no regime filter,
-  no sector-concentration cap. Wrote `docs/STRATEGY_BACKLOG.ja.md`: full
+  no sector-concentration cap. Wrote `strategy/STRATEGY_BACKLOG.ja.md`: full
   review + 12-item backlog (BL-01..12) tiered by cost/measurement-impact
   and sequenced against current dev state (Phase 0 has 0 open positions,
   3 evaluated candidates — cheapest possible time to make small

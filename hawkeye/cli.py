@@ -19,7 +19,8 @@ import argparse
 import sys
 from datetime import date
 
-from hawkeye.config import HawkeyeConfig, db_path
+from hawkeye.config import HawkeyeConfig
+from hawkeye.paths import db_path
 from hawkeye.envfile import load_local_env
 from hawkeye.contracts.models import (
     Catalyst,
@@ -861,7 +862,7 @@ def build_parser() -> argparse.ArgumentParser:
     bm.add_argument("--source", choices=["scout", "manual", "all"],
                     default="scout",
                     help="cohort source filter (default: scout-only. Per "
-                         "docs/ROADMAP.md, manually-picked `evaluate` "
+                         "strategy/ROADMAP.md, manually-picked `evaluate` "
                          "candidates are a separate cohort and must not "
                          "enter viability stats)")
     bm.set_defaults(func=cmd_benchmark)

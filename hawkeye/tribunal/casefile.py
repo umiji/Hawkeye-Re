@@ -19,7 +19,6 @@ attack report to the Bull because no Bull package ever contains one.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -27,6 +26,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from hawkeye import paths
 from hawkeye.config import HawkeyeConfig
 from hawkeye.contracts.models import (
     CandidateBrief,
@@ -72,7 +72,7 @@ class Case(BaseModel):
 
 
 def cases_dir() -> Path:
-    return Path(os.environ.get("HAWKEYE_CASES", "cases"))
+    return paths.cases_dir()
 
 
 def _case_path(case_id: str) -> Path:

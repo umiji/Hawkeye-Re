@@ -8,7 +8,7 @@ question that P&L alone cannot:
 
 If BUYs don't beat the candidates we rejected, the screening/judgment logic
 is not adding value — regardless of whether the book is up. This is the
-primary viability metric for Phase 0 (docs/ROADMAP.md).
+primary viability metric for Phase 0 (strategy/ROADMAP.md).
 """
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def collect_samples(
       hide survivorship bias in the comparison instead of surfacing it.
 
     `source` restricts which cohort of records is included: "scout" (the
-    default — per docs/ROADMAP.md, manually-picked `evaluate` candidates are
+    default — per strategy/ROADMAP.md, manually-picked `evaluate` candidates are
     a separate cohort and must never be mixed into viability stats),
     "manual", or "all".
     """

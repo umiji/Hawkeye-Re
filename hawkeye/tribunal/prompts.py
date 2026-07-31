@@ -1,6 +1,6 @@
 """System prompts and output schemas for the tribunal agents.
 
-Design principles (see docs/VERIFICATION_PROTOCOL.md):
+Design principles (see strategy/VERIFICATION_PROTOCOL.md):
 - Roles are informationally separated: the Adversary never sees the Bull's
   private reasoning, only the written thesis; the Judge sees only the record.
 - Every role is told how it will be SCORED, not just what to produce.

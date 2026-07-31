@@ -64,7 +64,7 @@ FinnhubProvider┘   (scout candidates and manual entries both land here)
 
 `*` **DROPPED** = nothing survives per ticker today — only the aggregate funnel
 counts in the `scans` table. This is a known gap, not a design choice: the
-Phase 0 kill criterion ("BUYs must beat the reject pile", `docs/ROADMAP.md`) is
+Phase 0 kill criterion ("BUYs must beat the reject pile", `strategy/ROADMAP.md`) is
 not measurable while most of the reject pile is unrecorded, and a missed winner
 is invisible by construction. Note the asymmetry — a bad buy is bounded by the
 stop; a missed winner is unbounded *and* silent. Recording every scanned

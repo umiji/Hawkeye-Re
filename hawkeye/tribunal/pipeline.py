@@ -1,6 +1,6 @@
 """Tribunal orchestration.
 
-Flow (docs/VERIFICATION_PROTOCOL.md):
+Flow (strategy/VERIFICATION_PROTOCOL.md):
 
     gates -> [hard fail => SYSTEM PASS, zero LLM spend]
           -> Bull (thesis)      : sees dossier + gates only
