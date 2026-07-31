@@ -2,8 +2,11 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 from hawkeye.contracts.models import (
+    AnalystTrend,
     DecisionType,
     GateReport,
+    InsiderActivity,
+    NewsItem,
     Recommendation,
     RecommendationStatus,
     Verdict,
@@ -24,6 +27,7 @@ from hawkeye.scout.earnings import (
 from hawkeye.scout.scout import (
     build_screened_candidates,
     run_scout,
+    scan_window,
     score_candidate,
 )
 from tests.conftest import make_bars, make_brief
@@ -85,14 +89,112 @@ def test_score_prefers_confirming_but_not_exhausted_reaction():
     assert ideal > negative and ideal > exhausted
 
 
+# --- scan window (§5.2(1)) --------------------------------------------------
+# The window used to be a fixed `today - scout_days_back .. today`. Runs are
+# manual and irregular (no cron/Actions exist), so a fixed narrow window drops
+# the earnings of any day the user didn't run, permanently. The window is now
+# derived from the previous run.
+
+def test_scan_window_covers_the_gap_since_the_last_run(config):
+    today = date(2026, 7, 29)                     # Wednesday
+    last = datetime(2026, 7, 27, 9, 0, tzinfo=timezone.utc)   # Monday
+    w = scan_window(today, last, config)
+    assert w.end == date(2026, 7, 28)             # previous business day
+    assert w.start == date(2026, 7, 26)           # one day of overlap
+    assert w.truncated is False
+
+
+def test_scan_window_ends_on_the_previous_business_day_over_a_weekend(config):
+    today = date(2026, 8, 3)                      # Monday
+    w = scan_window(today, datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
+                    config)
+    assert w.end == date(2026, 7, 31)             # Friday, not Sunday
+
+
+def test_scan_window_is_capped_and_flags_the_lost_days(config):
+    today = date(2026, 7, 29)
+    last = datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc)   # a long gap
+    w = scan_window(today, last, config)
+    assert w.days == config.scout_days_back
+    assert w.truncated is True    # earlier earnings days were NOT scanned
+
+
+def test_scan_window_without_a_previous_scan_uses_the_full_span(config):
+    w = scan_window(date(2026, 7, 29), None, config)
+    assert w.days == config.scout_days_back
+    assert w.truncated is False   # no prior run means nothing was skipped
+
+
+def test_scan_window_same_day_rerun_stays_valid(config):
+    today = date(2026, 7, 29)
+    w = scan_window(today, datetime(2026, 7, 29, 9, 0, tzinfo=timezone.utc),
+                    config)
+    assert w.start <= w.end
+
+
 # --- full scout run (offline) -----------------------------------------------
 
 class FakeCalendar:
     def __init__(self, entries):
         self.entries = entries
+        self.asked: list[tuple] = []
 
     def earnings_calendar(self, start, end):
+        self.asked.append((start, end))
         return self.entries
+
+
+def test_run_scout_skips_events_already_recorded(config):
+    """Overlapping windows are deliberate (the calendar back-fills), so the
+    same earnings event will be seen twice. Re-evaluating it would double-
+    count it in the drop statistics and waste enrichment calls."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [
+        {"symbol": "SEEN", "date": event_day.isoformat(),
+         "epsActual": 1.30, "epsEstimate": 1.00},
+        {"symbol": "NEW", "date": event_day.isoformat(),
+         "epsActual": 1.20, "epsEstimate": 1.00},
+    ]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    provider = StaticProvider(bars=bars, profile_data={"market_cap": 5e9})
+
+    result = run_scout(FakeCalendar(entries), provider, config, today=today,
+                       already_seen={("SEEN", event_day)})
+
+    assert result.duplicates == 1
+    assert result.enriched == 1
+    assert [c.ticker for c in result.passed] == ["NEW"]
+
+
+def test_already_seen_is_per_event_not_per_ticker(config):
+    """The same ticker reporting a *different* quarter is a new candidate."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [{"symbol": "AAA", "date": event_day.isoformat(),
+                "epsActual": 1.30, "epsEstimate": 1.00}]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    provider = StaticProvider(bars=bars, profile_data={"market_cap": 5e9})
+
+    result = run_scout(FakeCalendar(entries), provider, config, today=today,
+                       already_seen={("AAA", event_day - timedelta(days=90))})
+
+    assert result.duplicates == 0
+    assert [c.ticker for c in result.passed] == ["AAA"]
+
+
+def test_run_scout_asks_the_calendar_for_the_derived_window(config):
+    today = date(2026, 7, 29)
+    cal = FakeCalendar([])
+    window = scan_window(today, datetime(2026, 7, 27, 9, 0,
+                                         tzinfo=timezone.utc), config)
+
+    result = run_scout(cal, StaticProvider(), config, today=today,
+                       window=window)
+
+    assert cal.asked == [(window.start, window.end)]
+    assert result.scan_start == window.start and result.scan_end == window.end
+    assert result.window_truncated is False
 
 
 def test_run_scout_funnel(config):
@@ -125,7 +227,7 @@ def test_run_scout_funnel(config):
     assert [c.ticker for c in result.passed] == ["GOOD"]
     assert [c.ticker for c in result.rejected] == ["TINY"]
     assert "gate" in result.rejected[0].reject_reason
-    assert result.funnel() == {"scanned": 3, "screened": 2,
+    assert result.funnel() == {"scanned": 3, "screened": 2, "duplicates": 0,
                                "enriched": 2, "gate_passed": 1}
     # the passed candidate carries a ready-to-evaluate brief
     good = result.passed[0]
@@ -184,6 +286,63 @@ def test_build_screened_candidates_tags_stage_and_ranking_cutoff(config):
     assert all(r.scan_id == 42 for r in rows)
     ranks = sorted(r.rank for r in cutoff_rows)
     assert ranks == [2, 3]   # 1-indexed, the top-1 already went to tribunal
+
+
+def test_screened_candidates_keep_the_qualitative_data_they_were_judged_on(config):
+    """§5.2(5): news/insider/analyst are fetched during enrichment and were
+    then thrown away for every dropped candidate. Without them, a later drop
+    review can't reconstruct what was visible at decision time — and no extra
+    API call is needed to keep them."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [
+        {"symbol": "SMALL", "date": event_day.isoformat(),    # gate reject
+         "epsActual": 1.30, "epsEstimate": 1.00},
+    ]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    insider = InsiderActivity(window_days=90, net_shares=-5000,
+                              buyers=1, sellers=3)
+    analyst = AnalystTrend(period=date(2026, 7, 1), strong_buy=5, buy=10,
+                           hold=3, sell=1, strong_sell=0)
+    news = [NewsItem(headline="Q2 beat", source="wire", url="http://x")]
+    provider = StaticProvider(bars=bars, profile_data={"market_cap": 50e6},
+                              news_items=news, insider=insider,
+                              analyst=analyst)
+
+    result = run_scout(FakeCalendar(entries), provider, config, today=today)
+    assert [c.ticker for c in result.rejected] == ["SMALL"]
+
+    rows = build_screened_candidates(result, scan_id=7)
+    row = next(r for r in rows if r.ticker == "SMALL")
+    assert [n.headline for n in row.news] == ["Q2 beat"]
+    assert row.insider_activity == insider
+    assert row.analyst_trend == analyst
+
+
+def test_enrichment_capped_candidates_have_no_qualitative_data(config):
+    """Candidates dropped before enrichment never had news fetched — the
+    fields must come back empty rather than crash or invent anything."""
+    from dataclasses import replace as dc_replace
+    cfg = dc_replace(config, scout_max_enrich=1)
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [
+        {"symbol": "TOP", "date": event_day.isoformat(),
+         "epsActual": 1.30, "epsEstimate": 1.00},
+        {"symbol": "CAPPED", "date": event_day.isoformat(),
+         "epsActual": 1.15, "epsEstimate": 1.00},
+    ]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    provider = StaticProvider(bars=bars, profile_data={"market_cap": 5e9},
+                              news_items=[NewsItem(headline="x", source="s",
+                                                   url="u")])
+    result = run_scout(FakeCalendar(entries), provider, cfg, today=today)
+
+    rows = build_screened_candidates(result, scan_id=8)
+    capped_row = next(r for r in rows if r.ticker == "CAPPED")
+    assert capped_row.news == []
+    assert capped_row.insider_activity is None
+    assert capped_row.analyst_trend is None
 
 
 def test_run_scout_enrichment_failure_is_visible(config):

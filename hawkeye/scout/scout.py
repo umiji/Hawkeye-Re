@@ -13,7 +13,7 @@ is a first-class metric of the system, same as P&L.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from hawkeye.config import HawkeyeConfig
@@ -56,10 +56,63 @@ class ScoutResult:
     passed: list[ScoutCandidate] = field(default_factory=list)   # ranked
     rejected: list[ScoutCandidate] = field(default_factory=list)
     capped: list[ScoutCandidate] = field(default_factory=list)  # never enriched (scout_max_enrich)
+    duplicates: int = 0          # already recorded by an earlier scan
+    window_truncated: bool = False  # the lookback cap bounded the window
 
     def funnel(self) -> dict:
         return {"scanned": self.scanned, "screened": self.screened,
+                "duplicates": self.duplicates,
                 "enriched": self.enriched, "gate_passed": len(self.passed)}
+
+
+# --- scan window (docs/MASTER_OVERVIEW.ja.md §5.2(1)) -----------------------
+
+@dataclass(frozen=True)
+class ScanWindow:
+    """The range of earnings days one scan covers.
+
+    Derived from the previous run rather than fixed, because runs are manual
+    and irregular — no scheduler exists. A fixed narrow window would silently
+    drop the earnings of every day the user didn't run, permanently; a fixed
+    wide one re-reads the same days every time. `truncated` says the cap
+    bounded the lookback, so earlier days went unscanned and it is known.
+    """
+    start: date
+    end: date
+    truncated: bool = False
+
+    @property
+    def days(self) -> int:
+        return (self.end - self.start).days + 1
+
+
+def previous_business_day(day: date) -> date:
+    """The event-day close has to be final before a candidate can be ranked
+    (the score rewards a confirming event-day move), and US earnings land
+    pre-market or after the close — so today's reporters wait for the next
+    run rather than being ranked on an unfinished session."""
+    d = day - timedelta(days=1)
+    while d.weekday() >= 5:      # Saturday/Sunday
+        d -= timedelta(days=1)
+    return d
+
+
+def scan_window(today: date, last_scan_at: Optional[datetime],
+                config: HawkeyeConfig,
+                max_days: Optional[int] = None) -> ScanWindow:
+    max_days = max_days if max_days is not None else config.scout_days_back
+    end = previous_business_day(today)
+    earliest = end - timedelta(days=max_days - 1)
+    if last_scan_at is None:
+        return ScanWindow(start=earliest, end=end)
+    # One day of overlap with the previous run: the earnings calendar
+    # back-fills and corrects entries after the fact, so a day read once is
+    # worth reading again. Re-reading costs nothing — the (ticker, event
+    # date) dedup drops anything already recorded.
+    start = last_scan_at.date() - timedelta(days=1)
+    truncated = start < earliest
+    return ScanWindow(start=min(max(start, earliest), end), end=end,
+                      truncated=truncated)
 
 
 def score_candidate(eps_surprise: float, revenue_surprise: Optional[float],
@@ -86,19 +139,35 @@ def score_candidate(eps_surprise: float, revenue_surprise: Optional[float],
 
 def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConfig,
               days_back: Optional[int] = None,
-              today: Optional[date] = None) -> ScoutResult:
+              today: Optional[date] = None,
+              window: Optional[ScanWindow] = None,
+              already_seen: Optional[set[tuple[str, date]]] = None) -> ScoutResult:
     """calendar_source: object with earnings_calendar(start, end) -> list[dict]
     provider: MarketDataProvider for enrichment (prices/profile/news).
+    window: the earnings days to cover — normally built by scan_window()
+        from the previous run. `days_back` is the manual override.
+    already_seen: (ticker, event date) pairs an earlier scan already
+        recorded, dropped before enrichment so they cost no API calls.
     """
     today = today or date.today()
-    days_back = days_back or config.scout_days_back
-    start = today - timedelta(days=days_back)
+    if window is None:
+        end = previous_business_day(today)
+        span = days_back if days_back is not None else config.scout_days_back
+        window = ScanWindow(start=end - timedelta(days=span - 1), end=end)
 
-    raw = calendar_source.earnings_calendar(start, today)
+    raw = calendar_source.earnings_calendar(window.start, window.end)
     events = parse_calendar(raw)
     screened = screen_events(events,
                              config.scout_min_eps_surprise_pct,
                              config.scout_min_revenue_surprise_pct)
+
+    # Deduplicate before enrichment: windows overlap by design, so the same
+    # earnings event recurs across runs. Re-evaluating it would both waste
+    # free-tier calls and double-count it in the drop statistics.
+    seen = already_seen or set()
+    fresh = [row for row in screened if (row[0].ticker, row[0].day) not in seen]
+    duplicates = len(screened) - len(fresh)
+    screened_total, screened = len(screened), fresh
 
     to_enrich = screened[:config.scout_max_enrich]
     passed: list[ScoutCandidate] = []
@@ -122,7 +191,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                 candidate.ticker, catalyst, provider,
                 overrides={"eps_surprise_pct": round(eps_s, 1),
                           "revenue_surprise_pct": (round(rev_s, 1)
-                                                   if rev_s is not None else None)})
+                                                   if rev_s is not None else None)},
+                config=config)
         except Exception as exc:  # enrichment failure = rejection, visibly
             candidate.reject_reason = f"enrichment failed: {exc}"
             rejected.append(candidate)
@@ -164,10 +234,27 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
             pass
         capped.append(c)
 
-    return ScoutResult(scan_start=start, scan_end=today,
-                       scanned=len(raw), screened=len(screened),
+    return ScoutResult(scan_start=window.start, scan_end=window.end,
+                       scanned=len(raw), screened=screened_total,
                        enriched=len(to_enrich),
-                       passed=passed, rejected=rejected, capped=capped)
+                       passed=passed, rejected=rejected, capped=capped,
+                       duplicates=duplicates,
+                       window_truncated=window.truncated)
+
+
+def _visible_at_drop(c: ScoutCandidate) -> dict:
+    """The qualitative data enrichment already fetched for this candidate.
+
+    Empty when the candidate never got a brief — dropped at the enrichment
+    cap, or enrichment itself failed. Absence is therefore "never looked",
+    which is a different fact from "looked and found nothing"; the stage
+    field is what distinguishes them (docs/MASTER_OVERVIEW.ja.md §5.2(5)).
+    """
+    if c.brief is None:
+        return {}
+    return {"news": c.brief.news,
+            "insider_activity": c.brief.insider_activity,
+            "analyst_trend": c.brief.analyst_trend}
 
 
 def build_screened_candidates(
@@ -189,7 +276,8 @@ def build_screened_candidates(
             score=c.score, score_version=c.score_version,
             price=c.price, price_asof=c.price_asof,
             stage=ScreenedCandidateStage.ENRICHMENT_CAP,
-            reject_reason=c.reject_reason))
+            reject_reason=c.reject_reason,
+            **_visible_at_drop(c)))
     for c in result.rejected:
         out.append(ScreenedCandidate(
             scan_id=scan_id, ticker=c.ticker, event_date=c.event_date,
@@ -198,7 +286,8 @@ def build_screened_candidates(
             score=c.score, score_version=c.score_version,
             price=c.price, price_asof=c.price_asof,
             stage=ScreenedCandidateStage.GATE_REJECT,
-            gate_report=c.gate_report, reject_reason=c.reject_reason))
+            gate_report=c.gate_report, reject_reason=c.reject_reason,
+            **_visible_at_drop(c)))
     for i, c in enumerate(result.passed[sent_to_tribunal_n:],
                           start=sent_to_tribunal_n + 1):
         out.append(ScreenedCandidate(
@@ -209,5 +298,6 @@ def build_screened_candidates(
             price=c.price, price_asof=c.price_asof,
             stage=ScreenedCandidateStage.RANKING_CUTOFF, rank=i,
             gate_report=c.gate_report,
-            reject_reason=f"rank {i}, outside this run's top {sent_to_tribunal_n}"))
+            reject_reason=f"rank {i}, outside this run's top {sent_to_tribunal_n}",
+            **_visible_at_drop(c)))
     return out

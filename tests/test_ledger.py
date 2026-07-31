@@ -177,6 +177,45 @@ def test_verify_chain_detects_rewritten_screened_candidate_row(tmp_path):
     assert not ledger.verify_chain()
 
 
+def test_seen_events_covers_both_dropped_and_evaluated_candidates(tmp_path):
+    """§5.2(1) dedup source. A candidate sent to the tribunal is NOT in
+    screened_candidates (that table only holds what was dropped), so
+    reading one table alone would let an evaluated name come back."""
+    ledger = Ledger(str(tmp_path / "test.db"))
+    dropped = make_screened(ticker="DROP")
+    ledger.record_screened_candidates(1, [dropped])
+    rec = make_rec()
+    ledger.record_recommendation(rec, RecommendationStatus.PROPOSED)
+
+    seen = ledger.seen_events()
+
+    assert ("DROP", dropped.event_date) in seen
+    assert (rec.ticker, rec.brief.catalyst.event_date) in seen
+
+
+def test_seen_events_survives_a_row_the_current_model_cannot_parse(tmp_path):
+    """Dedup must not go blind because an old row predates a model change —
+    it reads the stored JSON directly rather than rebuilding the model."""
+    ledger = Ledger(str(tmp_path / "test.db"))
+    rec = make_rec()
+    ledger.record_recommendation(rec, RecommendationStatus.PROPOSED)
+    ledger._conn.execute(
+        "UPDATE recommendations SET payload = ?",
+        ('{"ticker": "OLD", "brief": {"catalyst":'
+         ' {"event_date": "2026-01-15"}}, "bogus_field": 1}',))
+    ledger._conn.commit()
+
+    assert ("OLD", date(2026, 1, 15)) in ledger.seen_events()
+
+
+def test_last_scan_at_is_none_before_any_scan(tmp_path):
+    ledger = Ledger(str(tmp_path / "test.db"))
+    assert ledger.last_scan_at() is None
+    ledger.record_scan(params={}, scanned=1, screened=1, enriched=1,
+                       gate_passed=0, tickers=[])
+    assert ledger.last_scan_at() is not None
+
+
 def test_all_resolved_claims_aggregation(tmp_path):
     ledger = Ledger(str(tmp_path / "test.db"))
     rec = make_rec()

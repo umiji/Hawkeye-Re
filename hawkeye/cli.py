@@ -52,7 +52,11 @@ from hawkeye.scout.benchmark import (
     min_calendar_days_for_trading_days,
     reason_snippet,
 )
-from hawkeye.scout.scout import build_screened_candidates, run_scout
+from hawkeye.scout.scout import (
+    build_screened_candidates,
+    run_scout,
+    scan_window,
+)
 from hawkeye.sentinel.monitor import check_position
 from hawkeye.tribunal import casefile
 from hawkeye.tribunal.pipeline import (
@@ -89,7 +93,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         "revenue_surprise_pct": args.revenue_surprise_pct,
     }
     brief = build_brief(args.ticker.upper(), catalyst, _provider(),
-                        notes=args.notes or "", overrides=overrides)
+                        notes=args.notes or "", overrides=overrides,
+                        config=config)
 
     from hawkeye.tribunal.llm import AnthropicLLM
     llm = AnthropicLLM(model=config.model)
@@ -142,7 +147,8 @@ def cmd_case_open(args: argparse.Namespace) -> int:
         "revenue_surprise_pct": args.revenue_surprise_pct,
     }
     brief = build_brief(args.ticker.upper(), catalyst, _provider(),
-                        notes=args.notes or "", overrides=overrides)
+                        notes=args.notes or "", overrides=overrides,
+                        config=config)
     gates = run_entry_gates(brief.snapshot, catalyst, config)
     ledger = _ledger()
     if not gates.ok:
@@ -237,7 +243,14 @@ def cmd_scout(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     provider = CompositeProvider(YahooProvider(), finnhub)
-    result = run_scout(finnhub, provider, config, days_back=args.days)
+    ledger = _ledger()
+    # The window is derived from the previous run, so an irregular manual
+    # cadence doesn't leave unscanned days (§5.2(1)). --days forces a fixed
+    # lookback instead, for backfills and one-off exploration.
+    window = (None if args.days
+              else scan_window(date.today(), ledger.last_scan_at(), config))
+    result = run_scout(finnhub, provider, config, days_back=args.days,
+                       window=window, already_seen=ledger.seen_events())
 
     # Whatever isn't sent to the tribunal THIS run — from result.passed's
     # tail onward — is the ranking-cutoff tier (docs/MASTER_OVERVIEW.ja.md
@@ -245,9 +258,12 @@ def cmd_scout(args: argparse.Namespace) -> int:
     # same breath as the scan itself, immediately below.
     sent_to_tribunal_n = max(args.evaluate or 0, args.open_cases or 0)
 
-    ledger = _ledger()
     scan_id = ledger.record_scan(
-        params={"days_back": args.days or config.scout_days_back,
+        params={"window_start": result.scan_start.isoformat(),
+                "window_end": result.scan_end.isoformat(),
+                "window_truncated": result.window_truncated,
+                "days_back_override": args.days,
+                "duplicates_skipped": result.duplicates,
                 "min_eps_surprise": config.scout_min_eps_surprise_pct},
         scanned=result.scanned, screened=result.screened,
         enriched=result.enriched, gate_passed=len(result.passed),

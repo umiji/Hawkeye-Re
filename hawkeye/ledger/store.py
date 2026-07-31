@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from datetime import date, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from hawkeye.contracts.models import (
@@ -282,6 +282,49 @@ class Ledger:
              scanned, screened, enriched, gate_passed, json.dumps(tickers)))
         self._conn.commit()
         return cur.lastrowid
+
+    def last_scan_at(self) -> Optional[datetime]:
+        """When the most recent scan ran — the anchor for the next scan's
+        lookback window (docs/MASTER_OVERVIEW.ja.md §5.2(1))."""
+        row = self._conn.execute(
+            "SELECT ts FROM scans ORDER BY id DESC LIMIT 1").fetchone()
+        if not row:
+            return None
+        try:
+            return datetime.fromisoformat(row[0])
+        except ValueError:
+            return None
+
+    def seen_events(self) -> set[tuple[str, date]]:
+        """Every (ticker, catalyst date) this system has already acted on.
+
+        Both tables are needed: `screened_candidates` holds only what was
+        DROPPED, so a candidate that went to the tribunal appears solely in
+        `recommendations` and would otherwise come back on the next
+        overlapping window.
+
+        Read as raw JSON rather than through the models on purpose — dedup
+        going blind because one old row predates a model change would
+        silently re-evaluate candidates, which is worse than the parse
+        error it would otherwise raise.
+        """
+        out: set[tuple[str, date]] = set()
+        queries = (
+            "SELECT json_extract(payload, '$.ticker'),"
+            " json_extract(payload, '$.event_date') FROM screened_candidates",
+            "SELECT json_extract(payload, '$.ticker'),"
+            " json_extract(payload, '$.brief.catalyst.event_date')"
+            " FROM recommendations",
+        )
+        for query in queries:
+            for ticker, day in self._conn.execute(query).fetchall():
+                if not ticker or not day:
+                    continue
+                try:
+                    out.add((ticker, date.fromisoformat(str(day)[:10])))
+                except ValueError:
+                    continue
+        return out
 
     def list_scans(self) -> list[dict]:
         return [

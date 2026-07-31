@@ -180,8 +180,15 @@ def render_scout_ja(result) -> str:
     lines = [f"# 🔭 スカウト結果 ({result.scan_start} 〜 {result.scan_end})", ""]
     f = result.funnel()
     lines.append(f"ファネル: 決算イベント {f['scanned']}件 → サプライズ選別 "
-                 f"{f['screened']}件 → 詳細取得 {f['enriched']}件 → "
+                 f"{f['screened']}件 → 既出を除外 {f['duplicates']}件 → "
+                 f"詳細取得 {f['enriched']}件 → "
                  f"ゲート通過 {f['gate_passed']}件")
+    if getattr(result, "window_truncated", False):
+        lines.append("")
+        lines.append("⚠️ **前回実行からの間隔が探索窓の上限を超えました。**"
+                     f" {result.scan_start} より前の決算はスキャンしていません"
+                     "(取りこぼしの可能性あり)。必要なら "
+                     "`hawkeye scout --days N` で遡って実行してください。")
     lines.append("")
     if result.passed:
         lines.append("## 候補ショートリスト(スコア順)")
