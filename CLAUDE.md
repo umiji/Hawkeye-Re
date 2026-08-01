@@ -134,6 +134,67 @@ in one place. Keep §4/§5 current as capabilities land.
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-08-01(b)** First real session-mode run since the tree split: scout
+  opened 3 cases (BJRI/ABR/CRI), all three PASSed. The run itself was fine;
+  what it surfaced was not. Two convergent observations from the role
+  subagents — which argue from separate contexts and cannot compare notes —
+  turned out to be real defects, investigated with systematic-debugging
+  before any fix.
+
+  **(1) The ranking metric was broken, and it was the metric deciding which
+  candidates were ever examined.** `screen_events` sorted by raw EPS surprise
+  % and `to_enrich = screened[:scout_max_enrich]` cut the top 15 by that same
+  order. Three independent ways the percentage lies, all verified against
+  live Finnhub responses: (a) the calendar returns *several rows for one
+  print* with different quarter labels and different consensus — BJRI's
+  2026-07-30 came back as both +3.5% (est $0.9085) and +633.2% (est $0.1282);
+  sorting by surprise meant the broken row always won, and the correct row
+  then fell below the 5% screen, so the only surviving reading was the wrong
+  one. (b) `revenueActual` and `revenueEstimate` can be on different
+  accounting bases — ABR's actual is gross interest income (230.9M) against a
+  net-basis estimate (50.7M), i.e. "+355.3%". (c) a near-zero consensus makes
+  the ratio explode without adding information; the recorded drop pile was
+  topped by CORT +6958%, SONO +5194%, LXP +3459%, overwhelmingly REITs (GAAP
+  EPS ≈ 0, real earning power is FFO). Both of that day's top-scored
+  candidates (BJRI 85.0, ABR 85.0 — the cap-saturated maximum) were artifacts.
+  Fixed, user picked the full three-part remedy: `parse_calendar` collapses
+  rows sharing (ticker, day) to the *conservative* reading and flags
+  `conflicting_estimates`; percentages below `scout_min_abs_eps_estimate`
+  (0.10) or beyond `scout_max_trusted_revenue_surprise_pct` (50.0) are marked
+  untrusted; ranking is by the *capped* score with untrusted values scoring 0.
+  Untrusted means "cannot buy a ranking slot" — NOT dropped (still recorded,
+  with the trust flags, so a later drop review doesn't read "+6958%, dropped"
+  as a missed monster) and NOT passed through as fact: a distrusted number is
+  kept out of the structured snapshot fields entirely, because the prompts
+  tell Bull and Adversary to prefer those over prose, so leaving it there
+  would launder it into a fact. The catalyst text says what was measured and
+  why it isn't stood behind. Verified against the real rows: BJRI now reads
+  +3.5% and drops below the screen, CRI 66.23 → 1.23, ABR 85.0 → 0.0, and a
+  genuine +40%/+5% name ranks first.
+
+  **(2) `Claim.id` was a random uuid, so `parse_thesis` was not
+  deterministic.** Session mode parses the thesis three times — Adversary
+  package, Judge package, finalize — so each role saw a different set of
+  `clm_` ids; the Adversary cited ids the Judge could not find, and neither
+  matched the ledger. The comment in `casefile.py` asserting determinism was
+  simply false. Same bug class as the 2026-07-28 attack-id fix, and the same
+  remedy: `claim_content_id()`, a before-validator that fills only an absent
+  id (stored payloads keep theirs — invariant 1). Damage was bounded today
+  because claim resolution reads ids off the stored record, but any future
+  rule matching claim ids across parses would have failed silently, exactly
+  as `_judge_rule_check` once did. **Not fixed, worth knowing:**
+  `parse_attack_report` still honours an LLM-supplied `id` (`a.get("id") or
+  ...`) even though its docstring says ids are never the LLM's choice — the
+  schema doesn't expose the field, so it can't happen today, but the guard
+  is prose rather than code.
+
+  226/226 offline tests green (216 + 10 new). Docs: MASTER_OVERVIEW §4 gained
+  both write-ups and §5 a new "サプライズ率の信頼性" row recording the
+  deferred option — replacing the percentage with a price-normalized surprise
+  ((actual − estimate) / price) is the principled fix but needs a price for
+  every screened name *before* ranking, so it waits until the trust-flagged
+  data shows how much distortion the current remedy leaves.
+
 - **2026-08-01** Three planned steps, each committed after a green run.
   (1) `26b7ad8` — split the tree by *who writes the file*: `strategy/`
   (investment knowledge a human writes or approves) vs `docs/` (system

@@ -213,6 +213,14 @@ class ScreenedCandidate(BaseModel):
     event_date: date
     eps_surprise_pct: float
     revenue_surprise_pct: Optional[float] = None
+    # How far the screen trusted its own percentages (added 2026-08-01).
+    # Without this a later drop review reads "+6958.8% surprise, dropped" as
+    # a missed monster instead of what it was — an artifact of a near-zero
+    # consensus that the screen had already discounted. Optional so records
+    # written before the distinction existed still load (invariant 1).
+    eps_surprise_trusted: bool = True
+    revenue_surprise_trusted: bool = True
+    conflicting_estimates: bool = False
     score: float
     score_version: str            # "full" (gap-aware) or "partial_no_gap"
     price: Optional[float] = None
@@ -353,17 +361,59 @@ class EdgeType(str, Enum):
     NONE_IDENTIFIED = "none_identified"
 
 
+def claim_content_id(statement: str, probability: float,
+                     horizon_days: int, verification: str = "") -> str:
+    """Deterministic id for a claim, derived from its content.
+
+    Same reasoning as `attack_content_id`, and added for the same reason one
+    step later (2026-08-01). Claim ids used to come from a random uuid
+    factory, so every parse of the SAME bull output minted a fresh set.
+    Session mode parses the thesis once to build the Adversary's package,
+    again for the Judge's, and again at finalize — three disagreeing sets.
+    The Adversary therefore cited claim ids that did not exist in the record
+    the Judge was reading, and neither matched what the ledger stored.
+    """
+    digest = hashlib.sha256(
+        "|".join((statement, f"{float(probability):.6f}",
+                  str(int(horizon_days)), verification)).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"clm_{digest}"
+
+
 class Claim(BaseModel):
     """A falsifiable prediction with a probability and a deadline.
 
     Claims are the unit of accountability: at horizon they resolve TRUE or
     FALSE, feed Brier scoring, and drive the skill-vs-luck attribution.
     """
-    id: str = Field(default_factory=lambda: new_id("clm"))
+    id: str = ""       # content-derived below; never chosen by the LLM
     statement: str
     probability: float = Field(ge=0.0, le=1.0)
     horizon_days: int
     verification: str  # how this will be checked at resolution time
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_content_id(cls, data):
+        """Fill the id from the claim's content when it has none.
+
+        A stored payload already carries an id and keeps it untouched —
+        pre-registered records are immutable (invariant 1), and records
+        written while ids were random must stay resolvable by the id the
+        user sees in `hawkeye claims`. This fills the field on the way *in*,
+        never on disk.
+        """
+        if isinstance(data, dict) and not data.get("id"):
+            statement = data.get("statement")
+            if isinstance(statement, str) and "probability" in data:
+                try:
+                    return {**data, "id": claim_content_id(
+                        statement, data["probability"],
+                        data.get("horizon_days", 0),
+                        data.get("verification", "") or "")}
+                except (TypeError, ValueError):
+                    return data
+        return data
 
 
 class Scenario(BaseModel):

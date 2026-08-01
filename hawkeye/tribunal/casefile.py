@@ -139,9 +139,13 @@ def write_package(case: Case) -> Optional[dict]:
     elif role == "adversary":
         # Parse once so the Adversary argues over the same normalized
         # numbers (clamped probabilities, renormalized scenario weights)
-        # that end up in the stored record, not the Bull's raw output —
-        # parse_thesis is deterministic, so this and finalize()'s later
-        # re-parse of case.thesis_raw agree.
+        # that end up in the stored record, not the Bull's raw output.
+        # This and every later re-parse of case.thesis_raw agree ONLY
+        # because claim ids are content-derived (`claim_content_id`). While
+        # they came from a random uuid factory the three parses below —
+        # here, the Judge's package, and finalize() — each minted a
+        # different set, so the Adversary cited claim ids the Judge could
+        # not find (2026-08-01 fix). Keep ids a pure function of content.
         thesis_for_render = parse_thesis(case.thesis_raw).model_dump(
             mode="json")
         system, user, schema = (

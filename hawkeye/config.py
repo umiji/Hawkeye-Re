@@ -38,6 +38,15 @@ class HawkeyeConfig:
     scout_min_revenue_surprise_pct: float = 0.0
     scout_max_enrich: int = 15              # candidates enriched with price data
                                             # (bounds free-tier API usage)
+    # A surprise percentage is only as good as its denominator. Below this
+    # absolute consensus the ratio measures the estimate, not the beat — a
+    # REIT reporting FFO carries a GAAP EPS consensus near zero, which is why
+    # a 2026-08-01 run was topped by +6958%, +5194% and +3459% readings.
+    scout_min_abs_eps_estimate: float = 0.10
+    # Actual and estimate can be on different accounting bases (gross vs net
+    # revenue for lenders), which reads as a several-hundred-percent beat.
+    # Past this, the number is treated as unverified rather than as a beat.
+    scout_max_trusted_revenue_surprise_pct: float = 50.0
 
     # --- News fetch window (docs/MASTER_OVERVIEW.ja.md §5.2(5)) ---
     # Not doctrine — data-collection parameters. The window is anchored on

@@ -213,15 +213,32 @@ def render_scout_ja(result) -> str:
         lines.append("## 候補ショートリスト(スコア順)")
         lines.append("| 順位 | ティッカー | イベント日 | EPSサプライズ | 売上サプライズ | 当日反応 | スコア |")
         lines.append("|---|---|---|---|---|---|---|")
+        untrusted_seen = False
         for i, c in enumerate(result.passed, 1):
             gap = (f"{c.brief.snapshot.gap_on_event_pct:+.1f}%"
                    if c.brief and c.brief.snapshot.gap_on_event_pct is not None
                    else "不明")
-            rev = (f"{c.revenue_surprise_pct:+.1f}%"
+            # A percentage the screen does not stand behind must not be shown
+            # as if it did — it earns no score, and the reader has to be able
+            # to see why a big number sits low in the ranking.
+            eps_mark = "" if c.eps_surprise_trusted else " ⚠"
+            rev_mark = "" if c.revenue_surprise_trusted else " ⚠"
+            untrusted_seen = untrusted_seen or bool(
+                eps_mark or (c.revenue_surprise_pct is not None and rev_mark)
+                or c.conflicting_estimates)
+            rev = (f"{c.revenue_surprise_pct:+.1f}%{rev_mark}"
                    if c.revenue_surprise_pct is not None else "-")
-            lines.append(f"| {i} | **{c.ticker}** | {c.event_date} | "
-                         f"{c.eps_surprise_pct:+.1f}% | {rev} | {gap} | {c.score} |")
+            ticker = c.ticker + ("†" if c.conflicting_estimates else "")
+            lines.append(f"| {i} | **{ticker}** | {c.event_date} | "
+                         f"{c.eps_surprise_pct:+.1f}%{eps_mark} | {rev} | "
+                         f"{gap} | {c.score} |")
         lines.append("")
+        if untrusted_seen:
+            lines.append("⚠ = その数値は採点に使っていません(分母が小さすぎる、"
+                         "または実績と予想の集計基準が食い違っている)。"
+                         "†= 決算カレンダーが同じ決算に対して矛盾する予想値を"
+                         "返したため、保守的な方を採用しています。")
+            lines.append("")
         lines.append("次の一手(検証にかける):")
         top = result.passed[0]
         lines.append("```")

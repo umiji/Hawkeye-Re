@@ -1,16 +1,55 @@
 """End-to-end tribunal runs with a scripted LLM (fully offline)."""
 import json
 
-from hawkeye.contracts.models import DecisionType
+from hawkeye.contracts.models import Claim, DecisionType
 from hawkeye.reports.render_ja import render_recommendation_ja
 from hawkeye.tribunal.llm import ScriptedLLM
-from hawkeye.tribunal.pipeline import parse_attack_report, run_tribunal
+from hawkeye.tribunal.pipeline import (
+    parse_attack_report,
+    parse_thesis,
+    run_tribunal,
+)
 from tests.conftest import (
     attack_payload,
     make_brief,
     thesis_payload,
     verdict_payload,
 )
+
+
+# --- claim ids (2026-08-01) -------------------------------------------------
+# Claim ids used to be random uuids minted by the default factory, so every
+# parse of the SAME bull output produced a different set. Session mode parses
+# the thesis once per role package and once more at finalize, so the Adversary
+# cited ids the Judge could not find and neither matched the ledger. Same bug
+# class as the 2026-07-28 attack-id fix; same remedy.
+
+def test_claim_ids_are_stable_across_repeated_parses():
+    raw = thesis_payload(50.0)
+    first = [c.id for c in parse_thesis(raw).claims]
+    second = [c.id for c in parse_thesis(raw).claims]
+    assert first == second
+    assert all(cid.startswith("clm_") for cid in first)
+
+
+def test_claim_id_is_derived_from_content_not_position():
+    a = Claim(statement="X happens", probability=0.6, horizon_days=30,
+              verification="check the 10-Q")
+    same = Claim(statement="X happens", probability=0.6, horizon_days=30,
+                 verification="check the 10-Q")
+    different = Claim(statement="Y happens", probability=0.6, horizon_days=30,
+                      verification="check the 10-Q")
+    assert a.id == same.id
+    assert a.id != different.id
+
+
+def test_stored_claim_id_is_never_rewritten():
+    """Invariant 1: a pre-registered payload is immutable. Records written
+    before ids were content-derived must keep the id they were stored with."""
+    legacy = Claim.model_validate({"id": "clm_legacyrandom", "statement": "X",
+                                   "probability": 0.5, "horizon_days": 10,
+                                   "verification": ""})
+    assert legacy.id == "clm_legacyrandom"
 
 
 def test_hard_gate_failure_skips_llm(config):

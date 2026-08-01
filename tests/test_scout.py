@@ -12,6 +12,7 @@ from hawkeye.contracts.models import (
     Verdict,
 )
 from hawkeye.marketdata.base import StaticProvider
+from hawkeye.reports.render_ja import render_scout_ja
 from hawkeye.scout.benchmark import (
     cohort_stats,
     collect_samples,
@@ -40,6 +41,14 @@ def ev(ticker="AAA", day=None, eps_a=1.10, eps_e=1.00,
                          revenue_actual=rev_a, revenue_estimate=rev_e)
 
 
+def screen(events, min_eps=5.0, min_rev=0.0,
+           min_abs_eps_estimate=0.0, max_trusted_rev=1e9):
+    """Screen with every trust guard wide open unless a test narrows one, so
+    a threshold test stays a threshold test."""
+    return screen_events(events, min_eps, min_rev,
+                         min_abs_eps_estimate, max_trusted_rev)
+
+
 # --- earnings screen --------------------------------------------------------
 
 def test_surprise_math_and_guards():
@@ -55,17 +64,83 @@ def test_screen_thresholds_and_sort():
               ev("SMALL", eps_a=1.02, eps_e=1.00),  # +2% -> dropped
               ev("MID", eps_a=1.10, eps_e=1.00),    # +10%
               ev("NODATA", eps_a=None)]             # dropped
-    kept = screen_events(events, min_eps_surprise_pct=5.0,
-                         min_revenue_surprise_pct=0.0)
-    assert [e.ticker for e, _, _ in kept] == ["BIG", "MID"]
+    kept = screen(events)
+    assert [k.event.ticker for k in kept] == ["BIG", "MID"]
+
+
+# --- surprise-percentage trust (2026-08-01) ---------------------------------
+# A percentage surprise is only as good as its denominator. Three separate
+# defects let a meaningless number decide which candidates were examined:
+# conflicting calendar rows, actual/estimate on different accounting bases,
+# and a near-zero consensus inflating the ratio without adding information.
+
+def test_conflicting_calendar_rows_collapse_to_the_conservative_read():
+    """Finnhub returned two rows for BJRI's 2026-07-30 print with different
+    consensus figures (0.9085 -> +3.5%, 0.1282 -> +633.2%). Ranked by
+    surprise, the broken row always won — and the correct one then fell below
+    the 5% screen, so the only reading that survived was the wrong one."""
+    raw = [
+        {"symbol": "BJRI", "date": "2026-07-30", "epsEstimate": 0.9085,
+         "epsActual": 0.94, "revenueEstimate": 384615990,
+         "revenueActual": 388888000},
+        {"symbol": "BJRI", "date": "2026-07-30", "epsEstimate": 0.1282,
+         "epsActual": 0.94, "revenueEstimate": 349062258,
+         "revenueActual": 388890000},
+    ]
+    events = parse_calendar(raw)
+    assert len(events) == 1
+    assert events[0].eps_estimate == 0.9085          # the conservative row
+    assert events[0].conflicting_estimates is True   # and it says so
+
+
+def test_identical_duplicate_rows_are_not_flagged_as_conflicting():
+    row = {"symbol": "AAA", "date": "2026-07-30", "epsEstimate": 1.0,
+           "epsActual": 1.1}
+    events = parse_calendar([row, dict(row)])
+    assert len(events) == 1
+    assert events[0].conflicting_estimates is False
+
+
+def test_near_zero_consensus_makes_the_eps_percentage_untrusted():
+    """CRI printed $0.26 against a $0.06 consensus: +317%, which is a fact
+    about the denominator, not a bigger surprise than a genuine +40%."""
+    kept = screen([ev("CRI", eps_a=0.26, eps_e=0.0623)],
+                  min_abs_eps_estimate=0.10)
+    assert kept[0].eps_surprise_trusted is False
+    assert kept[0].scored_eps_pct is None       # earns no ranking score
+
+
+def test_revenue_actual_and_estimate_on_different_bases_are_untrusted():
+    """ABR's revenueActual is gross interest income (230.9M) while its
+    revenueEstimate is a net figure (50.7M). +355% is a basis mismatch."""
+    kept = screen([ev("ABR", eps_a=0.10, eps_e=0.055,
+                      rev_a=230_860_000, rev_e=50_702_000)],
+                  min_abs_eps_estimate=0.10, max_trusted_rev=50.0)
+    assert kept[0].revenue_surprise_trusted is False
+    assert kept[0].eps_surprise_trusted is False      # 0.055 consensus
+
+
+def test_untrusted_surprises_earn_no_score():
+    assert score_candidate(None, None, None) == 0.0
+    assert score_candidate(None, 5.0, None) < score_candidate(20.0, 5.0, None)
+
+
+def test_enrichment_order_is_by_capped_score_not_raw_percentage():
+    """The enrichment cap decides which candidates are ever looked at. Ranked
+    by raw percentage, near-zero-consensus names (REITs reporting FFO, and the
+    like) monopolised every slot — CORT +6958%, SONO +5194%, LXP +3459%."""
+    artifact = ev("CORT", eps_a=0.71, eps_e=0.01, rev_a=105.0, rev_e=100.0)
+    genuine = ev("REAL", eps_a=1.40, eps_e=1.00, rev_a=105.0, rev_e=100.0)
+    kept = screen([artifact, genuine], min_abs_eps_estimate=0.10)
+    assert [k.event.ticker for k in kept] == ["REAL", "CORT"]
 
 
 def test_screen_revenue_miss_drops():
     events = [ev("REVMISS", rev_a=95.0, rev_e=100.0)]  # EPS beat, revenue miss
-    assert screen_events(events, 5.0, 0.0) == []
+    assert screen(events) == []
     # ...but an event with NO revenue data survives on EPS alone
     events = [ev("NOREV", rev_a=None, rev_e=None)]
-    assert len(screen_events(events, 5.0, 0.0)) == 1
+    assert len(screen(events)) == 1
 
 
 def test_parse_calendar_skips_foreign_and_malformed():
@@ -142,6 +217,31 @@ class FakeCalendar:
     def earnings_calendar(self, start, end):
         self.asked.append((start, end))
         return self.entries
+
+
+def test_distrusted_surprise_never_reaches_the_tribunal_as_a_fact(config):
+    """The Bull and Adversary are told to prefer structured surprise fields
+    over prose, so putting a number the screen distrusts into one would
+    launder it into a fact. It stays out of the snapshot; the catalyst text
+    still says what was measured and why it is not stood behind, and the
+    Japanese shortlist flags it."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [{"symbol": "REIT", "date": event_day.isoformat(),
+                "epsActual": 0.71, "epsEstimate": 0.01,   # +7000%, meaningless
+                "revenueActual": 105e6, "revenueEstimate": 100e6}]
+    provider = StaticProvider(bars=make_bars(30, start_price=40.0,
+                                             volume=2_000_000),
+                              profile_data={"market_cap": 5e9})
+
+    result = run_scout(FakeCalendar(entries), provider, config, today=today)
+
+    candidate = result.passed[0]
+    assert candidate.eps_surprise_trusted is False
+    assert candidate.eps_surprise_pct == 7000.0          # measured, recorded
+    assert candidate.brief.snapshot.eps_surprise_pct is None   # not asserted
+    assert "UNVERIFIED" in candidate.brief.catalyst.description
+    assert "⚠" in render_scout_ja(result)
 
 
 def test_run_scout_skips_events_already_recorded(config):

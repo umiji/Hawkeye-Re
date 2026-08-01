@@ -70,7 +70,7 @@ COHORTS: tuple[str, ...] = (
 
 # Cohorts worth investigating one name at a time. Enrichment-cap drops are
 # deliberately excluded: their only recorded reason is "ranked 16th or lower
-# by EPS surprise", so reading an individual name cannot tell you what to
+# by score", so reading an individual name cannot tell you what to
 # change — the only two levers are `scout_max_enrich` and the sort key, and
 # those move on the *group* mean, not on any one story (§5.2(6)). They stay
 # in every aggregate for exactly that reason; it is the per-name reading
