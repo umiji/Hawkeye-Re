@@ -272,3 +272,21 @@ def test_conversion_refuses_a_result_that_was_never_scored():
 
     with pytest.raises(ValueError):
         to_drop_review(unscored)
+
+
+def test_recorded_subjects_are_reportable_so_a_round_never_re_measures(tmp_path):
+    """The unique index refuses a duplicate; the caller needs to know which
+    subjects are already done *before* it spends an API call re-fetching
+    prices for them. Without this, every review round would re-measure the
+    entire back catalogue and then abort on the first insert."""
+    ledger = Ledger(str(tmp_path / "test.db"))
+    ledger.record_drop_reviews([
+        make_review(ticker="AAA", checkpoint="t5", screened_candidate_id="scr_a"),
+        make_review(ticker="BBB", checkpoint="t10", screened_candidate_id="scr_b"),
+    ])
+
+    # Absent ids come back as "" — the same convention the unique index
+    # relies on, since SQLite treats each NULL in an index as distinct.
+    assert ledger.recorded_drop_review_keys() == {
+        ("scr_a", "", "t5"), ("scr_b", "", "t10")}
+    assert ledger.recorded_drop_review_keys("t5") == {("scr_a", "", "t5")}

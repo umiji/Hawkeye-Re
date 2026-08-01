@@ -244,12 +244,20 @@ class MissCategory(str, Enum):
     on. `UNFORESEEABLE` and `GATE_CORRECT` are load-bearing — without a place
     to record "nothing to fix here" and "the gate was right", only misses
     accumulate and every review round tilts one way: loosen the gate.
+
+    `COLLECTION_GAP` exists because `UNFORESEEABLE` was doing two jobs
+    (2026-08-01). "The information that moved it was published before we
+    decided, and we simply never collected it" is not unforeseeable — it is
+    the most fixable defect we have, and it was hiding inside the one
+    category that ends an inquiry. The two are now split by a checkable
+    fact: whether the article predates the decision.
     """
     GATE_THRESHOLD_TOO_STRICT = "gate_threshold_too_strict"
     SCORE_FORMULA_WRONG = "score_formula_wrong"    # ranked low, actually strong
     ENRICHMENT_CAP = "enrichment_cap"              # dropped before being looked at
     DATA_GAP = "data_gap"                          # unverified, not a threshold problem
-    UNFORESEEABLE = "unforeseeable"                # new information; NOT fixable
+    COLLECTION_GAP = "collection_gap"              # was public in time; we missed it
+    UNFORESEEABLE = "unforeseeable"                # arose AFTER the call; NOT fixable
     GATE_CORRECT = "gate_correct"                  # fell — evidence the gate works
     OTHER = "other"                                # requires notes; >3 means re-cut
 

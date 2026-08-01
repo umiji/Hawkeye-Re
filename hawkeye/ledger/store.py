@@ -501,6 +501,26 @@ class Ledger:
                        for r in self._conn.execute(q, args).fetchall()),
                       key=lambda r: _instant(r.reviewed_at))
 
+    def recorded_drop_review_keys(
+            self, checkpoint: Optional[str] = None
+    ) -> set[tuple[Optional[str], Optional[str], str]]:
+        """Subjects already scored, as (screened_candidate_id, rec_id,
+        checkpoint) — the same triple the unique index is built on.
+
+        A review round asks for this first so it never spends a price fetch
+        re-measuring a subject it cannot store anyway, and so "re-run it and
+        see" produces nothing to re-run rather than an insert error halfway
+        through a batch.
+        """
+        q = ("SELECT screened_candidate_id, rec_id, checkpoint "
+             "FROM drop_reviews")
+        args: list[Any] = []
+        if checkpoint is not None:
+            q += " WHERE checkpoint = ?"
+            args.append(checkpoint)
+        return {(r[0], r[1], r[2])
+                for r in self._conn.execute(q, args).fetchall()}
+
     # -- cross-recommendation analytics --------------------------------------
 
     def all_resolved_claims(self) -> list[tuple[float, bool]]:

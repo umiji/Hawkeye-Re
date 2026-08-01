@@ -44,11 +44,13 @@ from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
 from hawkeye.reports.render_ja import (
     fmt_jst,
+    render_drop_cycle_ja,
     render_drop_review_ja,
     render_recommendation_ja,
     render_scout_ja,
     render_signals_ja,
 )
+from hawkeye.scout import drop_case, drop_cycle
 from hawkeye.scout.drop_review import (
     CHECKPOINT_TRADING_DAYS,
     COHORTS,
@@ -59,6 +61,7 @@ from hawkeye.scout.drop_review import (
     from_recommendation,
     from_screened,
     outliers,
+    to_drop_review,
     with_peer_baseline,
 )
 from hawkeye.scout.benchmark import (
@@ -389,8 +392,194 @@ def cmd_drops_report(args: argparse.Namespace) -> int:
         cohort_table=attribute_by_cohort(results),
         gate_table=attribute_by_gate(results),
         flagged=flagged,
-        min_samples=config.drop_review_min_samples_per_stage,
+        min_samples=config.drop_review_min_samples_per_category,
         suppressed=suppressed, suppressed_reason=reason))
+    return 0
+
+
+# --- the review round (§5.2(3) [2][3][4]; driven by /hawkeye-review) --------
+
+def _tracked_candidates(ledger) -> tuple[list, dict, dict]:
+    """Everything the funnel dropped, plus the two lookups an investigation
+    needs: what our own record held at decision time, and (for gate rejects)
+    the catalyst date the news window should be anchored on."""
+    tracked = []
+    record_news: dict[str, list] = {}
+    event_dates: dict[str, date] = {}
+    for c in ledger.screened_candidates():
+        t = from_screened(c)
+        tracked.append(t)
+        record_news[c.id] = list(c.news)
+        event_dates[c.id] = c.event_date
+    for row in ledger.list():
+        rec = ledger.get(row["id"])
+        if rec is None:
+            continue
+        tracked.append(from_recommendation(rec))
+        record_news[rec.id] = list(rec.brief.news) if rec.brief else []
+        if rec.brief is not None:
+            event_dates[rec.id] = rec.brief.catalyst.event_date
+    return tracked, record_news, event_dates
+
+
+def cmd_drops_measure(args: argparse.Namespace) -> int:
+    """Score every dropped candidate whose checkpoint has elapsed.
+
+    Records all of them, not only the ones that moved: without the
+    denominator, "3 names got away from us" cannot be read as a lot or a
+    few. At T+10 the outliers are staged for investigation instead of being
+    written straight away, because the row is written once, complete — the
+    ledger has no UPDATE path by design.
+    """
+    config = HawkeyeConfig.from_env()
+    ledger = _ledger()
+    provider = _provider()
+    checkpoint = args.checkpoint
+
+    tracked, record_news, event_dates = _tracked_candidates(ledger)
+    already = ledger.recorded_drop_review_keys(checkpoint)
+
+    results, pending, censored = collect_checkpoints(
+        tracked, provider, date.today(), config.drop_review_index_ticker,
+        checkpoint=checkpoint)
+    results = with_peer_baseline(results)
+    plan = drop_cycle.plan(results, checkpoint, already_recorded=already)
+
+    reviews = [to_drop_review(r, reviewer_model=args.reviewer or "")
+               for r in plan.record_now]
+    if reviews:
+        ledger.record_drop_reviews(reviews)
+
+    queued: list[str] = []
+    for r in plan.investigate:
+        subject_id = r.screened_candidate_id or r.rec_id or ""
+        try:
+            refetched = provider.news(
+                r.ticker, limit=config.news_max_items,
+                event_date=event_dates.get(subject_id),
+                lead_days=config.news_lead_days)
+        except Exception:
+            refetched = []
+        case = drop_case.open_case(
+            r, record_at_decision=record_news.get(subject_id, []),
+            refetched=refetched, reviewer_model=args.reviewer or "")
+        drop_case.save_case(case)
+        queued.append(case.id)
+
+    total_before = len(ledger.drop_reviews()) - len(reviews)
+    drop_cycle.save_round(drop_cycle.merge_round(
+        drop_cycle.load_round(), checkpoint, plan,
+        recorded_ids=[r.id for r in reviews], queued_case_ids=queued,
+        pending=pending, censored=censored, total_before=total_before))
+
+    print(f"{checkpoint}: 記録 {len(reviews)}件 / 調査待ちに追加 {len(queued)}件 "
+          f"/ 観測期間未経過 {pending}件 / 記録済みのため対象外 "
+          f"{plan.skipped_already_recorded}件 / 測定不能 {plan.unmeasurable}件")
+    if queued:
+        print("次: hawkeye drops queue")
+    return 0
+
+
+def cmd_drops_queue(args: argparse.Namespace) -> int:
+    """Emit the investigation package for one queued case, or list the queue.
+
+    One case at a time on purpose: the caller spawns a fresh subagent per
+    name so the previous ticker's story cannot colour the next one's.
+    """
+    cases = drop_case.list_cases()
+    if not cases:
+        print("調査待ちはありません。")
+        return 0
+    if args.case_id is None:
+        print(f"調査待ち {len(cases)}件:")
+        for c in cases:
+            m = c.measurement
+            print(f"  {c.id}  {m.ticker:6s} {m.cohort:16s} "
+                  f"z={m.z:+.2f}  判断日 {m.decision_date}")
+        print(f"\n次: hawkeye drops queue --case-id {cases[0].id}")
+        return 0
+    try:
+        case = drop_case.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    print(drop_case.render_input(case))
+    print()
+    print(f"submit_with: hawkeye drops submit {case.id} --file <調査結果.json>")
+    return 0
+
+
+def cmd_drops_submit(args: argparse.Namespace) -> int:
+    """Merge one investigation into its measurement and record the row."""
+    try:
+        case = drop_case.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    try:
+        review = drop_case.submit(case, drop_case.load_reply(args.file),
+                                  reviewer_model=args.reviewer or "")
+    except ValueError as exc:
+        print(f"投稿された調査結果を受け付けられません: {exc}", file=sys.stderr)
+        return 1
+
+    ledger = _ledger()
+    ledger.record_drop_reviews([review])
+    # Only now — the staged file is what makes a failed ledger write
+    # retryable (the same ordering as the tribunal's case workspaces).
+    drop_case.discard(case.id)
+
+    state = drop_cycle.load_round()
+    state.recorded_ids.append(review.id)
+    drop_cycle.save_round(state)
+
+    label = review.miss_category.value if review.miss_category else "未分類"
+    print(f"記録しました: {review.ticker} / 分類 {label} / {review.id}")
+    remaining = len(drop_case.list_cases())
+    print("次: " + (f"hawkeye drops queue (残り {remaining}件)"
+                    if remaining else "hawkeye drops revise"))
+    return 0
+
+
+def cmd_drops_revise(args: argparse.Namespace) -> int:
+    """Report the round and say whether any cause is ready for a revision.
+
+    Always prints, threshold met or not: a review process that only speaks
+    when it has a proposal is indistinguishable from one that stopped
+    running. Drafting the revision itself is the caller's job — writing to
+    strategy/ is a human-approved act, not something a CLI does on its own.
+    """
+    config = HawkeyeConfig.from_env()
+    ledger = _ledger()
+    state = drop_cycle.load_round()
+    all_reviews = ledger.drop_reviews()
+    min_samples = config.drop_review_min_samples_per_category
+
+    this_round = [r for r in all_reviews if r.id in set(state.recorded_ids)]
+    investigated = [r for r in this_round if r.miss_category is not None]
+    measured = [r for r in this_round if r.miss_category is None]
+
+    cohort_counts: dict[str, int] = {}
+    for r in this_round:
+        cohort_counts[r.cohort] = cohort_counts.get(r.cohort, 0) + 1
+
+    ready = drop_cycle.ready_categories(all_reviews, min_samples)
+    print(render_drop_cycle_ja(
+        checkpoint=state.checkpoint or "t5/t10",
+        measured=measured, investigated=investigated,
+        cohort_counts=cohort_counts, censored=state.censored,
+        pending=state.pending, skipped=state.skipped_already_recorded,
+        remaining=drop_cycle.remaining_to_threshold(all_reviews, min_samples),
+        ready=ready, min_samples=min_samples,
+        previous_total=state.total_before))
+
+    still_queued = len(drop_case.list_cases())
+    if still_queued:
+        print(f"\n⚠️ 調査待ちが {still_queued}件 残っています "
+              "— 先に hawkeye drops queue を処理してください。")
+        return 0
+    if not args.keep_round:
+        drop_cycle.clear_round()
     return 0
 
 
@@ -813,6 +1002,45 @@ def build_parser() -> argparse.ArgumentParser:
                           "which the default leaves out). Aggregates always "
                           "cover every stage regardless.")
     drr.set_defaults(func=cmd_drops_report)
+
+    # The review round (§5.2(3) [2][3][4]). Driven by /hawkeye-review, which
+    # runs in its OWN session: the round reads a lot of history and produces
+    # a lot of prose, and mixing it into /hawkeye-run would make every daily
+    # candidate cycle pay for it.
+    drm = dr_sub.add_parser(
+        "measure",
+        help="score every elapsed drop at one checkpoint and record it; "
+             "at t10, stage the outliers for investigation")
+    drm.add_argument("--checkpoint", choices=sorted(CHECKPOINT_TRADING_DAYS),
+                     required=True,
+                     help="t5 (measure and file) or t10 (measure, then queue "
+                          "the outliers for a per-name investigation)")
+    drm.add_argument("--reviewer", default="",
+                     help="engine label recorded with the rows")
+    drm.set_defaults(func=cmd_drops_measure)
+
+    drq = dr_sub.add_parser(
+        "queue", help="list the investigation queue, or emit one case's package")
+    drq.add_argument("--case-id", default=None,
+                     help="emit this case's investigation package "
+                          "(omit to list the queue)")
+    drq.set_defaults(func=cmd_drops_queue)
+
+    drs = dr_sub.add_parser(
+        "submit", help="merge one investigation into its measurement and record")
+    drs.add_argument("case_id")
+    drs.add_argument("--file", required=True,
+                     help="JSON file holding the investigation reply")
+    drs.add_argument("--reviewer", default="")
+    drs.set_defaults(func=cmd_drops_submit)
+
+    drv = dr_sub.add_parser(
+        "revise",
+        help="report the round and say whether any cause reached the "
+             "threshold for drafting a revision (prints either way)")
+    drv.add_argument("--keep-round", action="store_true",
+                     help="do not clear the round state (for re-printing)")
+    drv.set_defaults(func=cmd_drops_revise)
 
     # session-mode case workflow (LLM driven by Claude Code, no API key)
     ca_p = sub.add_parser("case",

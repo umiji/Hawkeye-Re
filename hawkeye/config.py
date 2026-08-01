@@ -67,7 +67,11 @@ class HawkeyeConfig:
     # precisely because they must not be tunable per run.
     drop_review_index_ticker: str = "SPY"
     # Nothing gets re-tuned off a handful of names (§5.2(3) 過剰最適化の歯止め).
-    drop_review_min_samples_per_stage: int = 20
+    # Counted per `miss_category`, not per funnel stage: the unit that has to
+    # reach 20 is "the same cause, seen 20 times", because that is what names
+    # the knob to turn. A stage tally mixes causes and would authorize a
+    # revision nobody can point at (renamed 2026-08-01; value unchanged).
+    drop_review_min_samples_per_category: int = 20
 
     # --- LLM ---
     model: str = "claude-opus-4-8"
