@@ -7,10 +7,16 @@ the case is done — but it is ~79% of the bytes on disk.
 
 Order is the whole point: the workspace is what makes a failed ledger write
 retryable, so it may only be removed *after* the ledger insert is confirmed
-(the same ordering bug fixed in M5 on 2026-07-29). The case JSON itself
-stays: it holds the LLM's raw reply before parsing/clamping, and comparing
-it against the stored recommendation is the only way to audit that the code
-really did enforce what the prompts asked for (invariant 3).
+(the same ordering bug fixed in M5 on 2026-07-29).
+
+The case JSON itself stays, but as a debugging convenience rather than an
+audit trail (downgraded 2026-08-01). It does hold the LLM's raw reply
+before parsing and clamping, which the ledger does not — but no code
+compares the two, and the file sits in git-ignored var/ outside the hash
+chain, so its loss is undetectable. Claiming audit value for a file with
+neither a reader nor tamper-evidence is the worst of both worlds: nobody
+dares delete it, and nobody notices when it disappears. If that comparison
+ever needs to actually happen, the raw values belong in the ledger.
 """
 import pytest
 

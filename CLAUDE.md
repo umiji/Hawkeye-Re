@@ -134,6 +134,52 @@ in one place. Keep §4/§5 current as capabilities land.
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-08-01** Three planned steps, each committed after a green run.
+  (1) `26b7ad8` — split the tree by *who writes the file*: `strategy/`
+  (investment knowledge a human writes or approves) vs `docs/` (system
+  design) vs `var/` (everything the system emits at run time, git-ignored).
+  `hawkeye/paths.py` is now the single resolver for runtime locations;
+  `HAWKEYE_VAR` moves the whole tree. Investment standards deliberately stay
+  out of `.claude/` — API mode never reads it, so criteria kept there would
+  silently depend on which engine ran the tribunal.
+  (2) `18835ba` — the drop-candidate review round (`drops measure/queue/
+  submit/revise`, driven by the new `/hawkeye-review` skill in its own
+  session). The measurement engine and the table both existed but nothing
+  joined them: no CLI path ever called `record_drop_reviews()`. Design
+  points now enforced in code: only T+10 is investigated (a name looked at
+  twice would double-count in the 20-per-category tally); every measured
+  candidate is recorded, not only outliers (no denominator = "3 got away"
+  reads as neither good nor bad); `recorded_drop_review_keys()` stops a
+  round re-measuring what it cannot store. **Split `unforeseeable` into
+  `collection_gap` + `unforeseeable`** — "nobody could have known" is the
+  one category that ends an inquiry, so our own collection defects (narrow
+  news window, single source) were accumulating inside the one verdict that
+  requires no follow-up. The investigator now receives what we held at
+  decision time alongside a fresh fetch **cut at the decision date in code**
+  (articles published later are never handed over — the same reasoning as
+  invariant 4), and `submit()` overturns `unforeseeable` to `collection_gap`
+  when the record shows the news was public in time (invariant 3). Renamed
+  `drop_review_min_samples_per_stage` → `_per_category` (value 20 unchanged).
+  (3) `98b6e49` — `strategy/TRIBUNAL_ROLES.ja.md` generated from
+  `prompts.py` (`hawkeye docs tribunal-roles --write|--check`). Prompts stay
+  in `prompts.py`; a new numbered Judge rule fails generation until it gets
+  a Japanese gloss. 216/216 offline tests green.
+
+  **Two things worth knowing.** (a) `cases/` (12 case JSONs) vanished during
+  this session — cause never identified; not reproducible from the test
+  suite, not in the recycle bin, and the code that deletes directories
+  (`_remove_role_workspace`) can only touch `cases/<case_id>/`, never the
+  parent. The ledger was unaffected (chain verified, 12 recommendations
+  readable). (b) Prompted by that, the user **downgraded the case JSON from
+  "audit trail" to "debugging convenience"**: it does hold the LLM's raw
+  pre-normalization reply which the ledger lacks, but no code compares the
+  two and the file sits in git-ignored `var/` outside the hash chain, so its
+  loss is undetectable. Claiming audit value for a file with neither a
+  reader nor tamper-evidence is the worst combination — nobody dares delete
+  it, nobody notices when it goes. If that comparison ever genuinely needs
+  to happen, the raw values belong in the ledger, hash-chained. Docs and
+  test docstrings updated to say this plainly.
+
 - **2026-07-29** User recovered the full architecture review finding list
   at `docs/ARCHITECTURE_REVIEW_BACKLOG.md` (the 2026-07-28(b) entry below
   had marked it unrecoverable — that note is now stale, read the backlog
