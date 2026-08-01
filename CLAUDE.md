@@ -98,6 +98,16 @@ LLM client: `claude-opus-4-8`, adaptive thinking, structured outputs.
 Pipeline parsers clamp/normalize all LLM output — keep new LLM fields going
 through a parser, never straight into a contract model.
 
+Tribunal prompts stay in `hawkeye/tribunal/prompts.py` — do NOT extract them
+to files. A prompt rule and the code enforcing it only mean something
+together (invariant 3), and both engines reading the same constant is what
+makes API-mode and session-mode results comparable. The readable Japanese
+copy at `strategy/TRIBUNAL_ROLES.ja.md` is generated: after editing a role
+prompt run `hawkeye docs tribunal-roles --write`, or the test fails. Adding
+a numbered Judge rule also requires a gloss in
+`hawkeye/reports/tribunal_roles.py` — a rule that binds the Judge must not
+be invisible to the reader.
+
 ## Session mode (/hawkeye-run)
 
 The tribunal can be driven by a Claude Code session instead of the API:

@@ -583,6 +583,34 @@ def cmd_drops_revise(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_docs_tribunal_roles(args: argparse.Namespace) -> int:
+    """Regenerate (or verify) the readable copy of the tribunal's criteria.
+
+    The prompts stay in `prompts.py`; this only renders them. `--check` is
+    what a test and a reviewer use to catch a prompt edit that never made it
+    into the document people actually read.
+    """
+    from pathlib import Path
+
+    from hawkeye.reports.tribunal_roles import DOC_PATH, render_tribunal_roles_ja
+
+    rendered = render_tribunal_roles_ja()
+    target = Path(DOC_PATH)
+    if args.check:
+        current = target.read_text(encoding="utf-8") if target.exists() else ""
+        if current == rendered:
+            print(f"{DOC_PATH}: ✅ prompts.py と一致")
+            return 0
+        print(f"{DOC_PATH}: ❌ prompts.py とずれています — "
+              "`hawkeye docs tribunal-roles --write` で再生成してください",
+              file=sys.stderr)
+        return 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(rendered, encoding="utf-8")
+    print(f"{DOC_PATH}: 生成しました({len(rendered.splitlines())}行)")
+    return 0
+
+
 def cmd_benchmark(args: argparse.Namespace) -> int:
     config = HawkeyeConfig.from_env()
     official_horizon = config.phase0_benchmark_horizon_days
@@ -1041,6 +1069,22 @@ def build_parser() -> argparse.ArgumentParser:
     drv.add_argument("--keep-round", action="store_true",
                      help="do not clear the round state (for re-printing)")
     drv.set_defaults(func=cmd_drops_revise)
+
+    # Generated strategy docs. The prompts stay in prompts.py (a prompt rule
+    # and the code enforcing it only mean something together, and both engines
+    # must read the same constant) — this only renders a readable copy.
+    dc = sub.add_parser("docs", help="generate strategy documents from code")
+    dc_sub = dc.add_subparsers(dest="docs_command", required=True)
+    dtr = dc_sub.add_parser(
+        "tribunal-roles",
+        help="render strategy/TRIBUNAL_ROLES.ja.md from prompts.py")
+    dtr.add_argument("--check", action="store_true",
+                     help="verify the committed document matches prompts.py "
+                          "instead of rewriting it (exit 1 on drift)")
+    dtr.add_argument("--write", action="store_true",
+                     help="write the document (the default; accepted so the "
+                          "command printed in the document's own header works)")
+    dtr.set_defaults(func=cmd_docs_tribunal_roles)
 
     # session-mode case workflow (LLM driven by Claude Code, no API key)
     ca_p = sub.add_parser("case",
