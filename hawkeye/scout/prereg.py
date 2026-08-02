@@ -56,12 +56,14 @@ class CaptureReport:
     unchanged: int = 0
     yahoo_missing: int = 0
     skipped_already_reported: int = 0
+    nothing_to_record: int = 0
     tickers: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {"captured": self.captured, "unchanged": self.unchanged,
                 "yahoo_missing": self.yahoo_missing,
                 "skipped_already_reported": self.skipped_already_reported,
+                "nothing_to_record": self.nothing_to_record,
                 "tickers": list(self.tickers)}
 
 
@@ -157,7 +159,7 @@ def capture_consensus(store, prints: list[UpcomingPrint],
     pre-registered, with the absent distribution visible in the row rather
     than inferred from silence.
     """
-    captured = unchanged = missing = skipped = 0
+    captured = unchanged = missing = skipped = empty = 0
     touched: list[str] = []
     for item in prints:
         stock_id = resolve_stock(store, item.ticker, directory)
@@ -187,6 +189,13 @@ def capture_consensus(store, prints: list[UpcomingPrint],
             next_quarter_revenue_avg=(reading.next_quarter_revenue_avg
                                       if reading else None),
             source_note="yahoo+finnhub" if reading else "finnhub_only")
+        # A row with no numbers in it is not "the estimate held still" — it
+        # is nothing at all, and it would make the master look covered where
+        # it is blank. A live two-day window carries ~560 names, plenty of
+        # them with neither a calendar estimate nor a Yahoo reading.
+        if all(v is None for v in snapshot.content_key()[1:]):
+            empty += 1
+            continue
         stored_id = store.capture_consensus(snapshot)
         if stored_id == snapshot.id:
             captured += 1
@@ -195,14 +204,16 @@ def capture_consensus(store, prints: list[UpcomingPrint],
             unchanged += 1
     return CaptureReport(captured=captured, unchanged=unchanged,
                          yahoo_missing=missing,
-                         skipped_already_reported=skipped, tickers=touched)
+                         skipped_already_reported=skipped,
+                         nothing_to_record=empty, tickers=touched)
 
 
 def report_line(report: CaptureReport) -> str:
     """One-line Japanese summary for the CLI."""
     return (f"事前登録: 新規 {report.captured} 件 / 変化なし "
             f"{report.unchanged} 件 / Yahoo未取得 {report.yahoo_missing} 件 / "
-            f"発表済みのため対象外 {report.skipped_already_reported} 件")
+            f"発表済みのため対象外 {report.skipped_already_reported} 件 / "
+            f"予想が1つも取れず記録なし {report.nothing_to_record} 件")
 
 
 def warn_if_nothing_captured(report: CaptureReport) -> None:

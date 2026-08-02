@@ -172,6 +172,24 @@ def test_a_yahoo_failure_still_pre_registers_the_calendar_estimate(tmp_path):
     assert snapshot.eps_avg is None and snapshot.eps_analysts is None
 
 
+def test_a_capture_with_no_numbers_at_all_writes_nothing(tmp_path):
+    """A live run covers ~560 names over two business days, and plenty of
+    them have neither a calendar estimate nor a Yahoo reading. An empty row
+    is not "the estimate did not move" — it is nothing at all, and writing
+    one would make the master look covered where it is blank."""
+    store = make_store(tmp_path)
+    prints = [UpcomingPrint(ticker="EMPTY", report_date=date(2026, 8, 3),
+                            fiscal_quarter="2026-Q2", eps_estimate=None,
+                            revenue_estimate=None)]
+
+    report = capture_consensus(store, prints, StubConsensus({}),
+                               captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
+
+    assert report.captured == 0 and report.nothing_to_record == 1
+    stock_id = store.stock_by_ticker("EMPTY").id
+    assert store.consensus_snapshots(stock_id, "2026-Q2") == []
+
+
 def test_capture_stops_once_that_quarters_print_is_recorded(tmp_path):
     """Snapshotting for quarter Q ends when Q's result exists; anything
     later belongs to Q+1 (§6.1(D))."""
