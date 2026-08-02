@@ -44,6 +44,8 @@ _FLAG = {
     "unadjusted": "一時要因の金額が開示されておらず、GAAPのまま(未調整)",
     "guidance_not_published": "会社がガイダンスを開示していない",
     "no_forward_consensus_to_compare": "比較対象の翌四半期コンセンサスが無い",
+    "on_eps": "EPSレンジの中央値で比較",
+    "on_revenue": "売上レンジの中央値で比較(EPSレンジの開示が無いため)",
 }
 
 
@@ -76,6 +78,15 @@ def render_quality_ja(quality: EarningsQuality) -> str:
              f"{_VERDICT[quality.verdict]}",
              f"スコア {quality.score}"]
     lines += [render_leg_ja(leg) for leg in quality.legs]
+    # Quarter-level warnings, which belong to the print rather than to one
+    # leg. `unadjusted` is the reason this whole design exists — AMZN's
+    # headline beat was a one-off — so it must never be stored and then left
+    # off the page.
+    quarter_only = [f for f in quality.flags
+                    if f not in {g for leg in quality.legs for g in leg.flags}]
+    if quarter_only:
+        lines.append("  この決算そのものへの注意:")
+        lines += [f"    - {_flag_ja(f)}" for f in quarter_only]
     if quality.verdict is QuarterVerdict.UNVERIFIED:
         lines.append("  ※ 未検証は「問題なし」ではありません。順位付けの点数は"
                      "ゼロとして扱い、既知の不明点として審理に渡します。")

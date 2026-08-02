@@ -51,6 +51,26 @@ class ConsensusReading:
         return self.eps_avg is None and self.revenue_avg is None
 
 
+def shift_after_print(reading: ConsensusReading) -> ConsensusReading:
+    """Re-label a reading taken AFTER the release it relates to.
+
+    The period labels are relative to today, not to the last print. Measured
+    on AMZN three days after its Q2 release: `0q` read 1.956 while the
+    consensus that print was actually judged against was 1.83, and the row's
+    own YoY growth field said +0.3% where Q2 had grown 242%. So once a
+    quarter has reported, `0q` describes the quarter now in progress.
+
+    That makes it useless as "what was expected of the quarter just
+    reported" — and exactly right as the guidance yardstick, since the
+    quarter now in progress is the one guidance covers. The reported
+    quarter's own consensus is simply not in this response, so those fields
+    come back empty rather than plausible-looking and wrong.
+    """
+    return ConsensusReading(
+        next_quarter_eps_avg=reading.eps_avg,
+        next_quarter_revenue_avg=reading.revenue_avg)
+
+
 def _to_float(value) -> Optional[float]:
     if value is None:
         return None

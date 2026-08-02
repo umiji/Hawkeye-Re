@@ -239,6 +239,29 @@ def test_the_yahoo_source_reads_this_quarter_and_the_next():
     assert got.next_quarter_revenue_avg == 1.7e11
 
 
+def test_a_reading_taken_after_the_print_is_one_quarter_out():
+    """Measured on AMZN, 2026-08-02, three days after its Q2 release: the
+    `0q` row read 1.956 while the Q2 consensus the print was judged against
+    was 1.83, and its YoY growth field said +0.3% where Q2 grew 242%. The
+    labels are relative to TODAY, not to the last print — so once a quarter
+    has reported, `0q` is the quarter now in progress.
+
+    Using it as "what was expected of the quarter just reported" silently
+    compares a result against the WRONG quarter's consensus. What it IS good
+    for is the guidance yardstick: the quarter now in progress is exactly the
+    one guidance covers."""
+    from hawkeye.marketdata.consensus import shift_after_print
+
+    shifted = shift_after_print(reading(eps_avg=1.956, revenue_avg=2.022e11,
+                                        next_quarter_eps_avg=2.435))
+
+    assert shifted.next_quarter_eps_avg == 1.956
+    assert shifted.next_quarter_revenue_avg == 2.022e11
+    # the reported quarter's own consensus is NOT in this response at all
+    assert shifted.eps_avg is None and shifted.revenue_avg is None
+    assert shifted.eps_analysts is None
+
+
 def test_the_yahoo_source_returns_nothing_when_the_scrape_breaks():
     """yfinance scrapes a site that changes without notice. Every failure
     degrades to None so the caller keeps one source and says so — missing

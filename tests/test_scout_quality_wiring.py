@@ -119,6 +119,26 @@ def test_the_print_records_which_source_each_actual_came_from():
     assert row.fiscal_quarter == "2026-Q2"
 
 
+def test_contradictory_actuals_from_the_calendar_reach_the_print():
+    """AMZN's print came back as two rows with DIFFERENT actuals (1.88 and
+    1.97). Collapsing to one row is right for ranking, but the collapse must
+    not hide the contradiction — that is what makes Finnhub's actual unusable
+    for this print, and a print row holding only one of them would look like
+    a clean single-source reading."""
+    rows = [{"symbol": "AMZN", "date": "2026-07-31", "year": 2026,
+             "quarter": 2, "epsActual": 1.88, "epsEstimate": 1.83},
+            {"symbol": "AMZN", "date": "2026-07-31", "year": 2026,
+             "quarter": 1, "epsActual": 1.97, "epsEstimate": 1.83}]
+
+    event = parse_calendar(rows)[0]
+    row = print_from_event(event, stock_id="cik:0001018724")
+
+    assert sorted(row.eps_finnhub) == [1.88, 1.97]
+    assert row.eps_finnhub_usable is None
+    quality = assess_event(event, None, _config())
+    assert "finnhub_actual_conflict" in quality.eps.flags
+
+
 def test_a_reconstructed_consensus_says_so():
     snapshot = reconstructed_consensus(
         an_event(eps_source="yahoo", eps_estimate=1.89,
@@ -248,6 +268,34 @@ def test_an_unconfirmable_beat_cannot_outrank_a_confirmed_one(tmp_path):
 
     assert [c.ticker for c in result.passed] == ["CONF", "THIN"]
     assert result.passed[1].quality.eps.status is LegStatus.UNVERIFIED
+
+
+def test_the_funnel_can_fill_the_guidance_yardstick_after_the_print(tmp_path):
+    """Guidance is only judgeable against next quarter's consensus, and after
+    a print that is the `0q` row (see test_consensus_capture). Without this
+    the funnel would record every guidance leg as "absent", which describes
+    our data collection rather than the company."""
+    from hawkeye.marketdata.consensus import ConsensusReading
+
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+
+    class PostPrintConsensus:
+        def consensus(self, ticker):
+            return ConsensusReading(eps_avg=2.44, revenue_avg=2.4e11,
+                                    eps_analysts=43)
+
+    run_scout(FakeCalendar(_entries(event_day)), _provider(), _config(),
+              today=today, stock_store=store,
+              consensus_source=PostPrintConsensus())
+
+    stock = store.stock_by_ticker("AMZN")
+    snapshot = store.consensus_in_force(stock.id, "2026-Q2")
+    assert snapshot.next_quarter_eps_avg == 2.44
+    assert snapshot.next_quarter_revenue_avg == 2.4e11
+    # ...and it must NOT be mistaken for this quarter's own consensus
+    assert snapshot.eps_avg != 2.44
 
 
 def test_the_screen_still_works_without_a_store():

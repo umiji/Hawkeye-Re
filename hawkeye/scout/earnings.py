@@ -67,6 +67,12 @@ class EarningsEvent:
     # Preferred over the calendar quarter of the report date, which is wrong
     # for any company whose fiscal year does not end in December.
     fiscal_quarter: Optional[str] = None
+    # Every distinct EPS actual the calendar returned for this one print.
+    # AMZN's came back as 1.88 on one row and 1.97 on another; collapsing to
+    # the conservative row is right for ranking, but a print row holding only
+    # one of them would read as a clean single-source figure. Two values here
+    # means the source contradicts itself, and its actual is unusable.
+    all_eps_actuals: tuple[float, ...] = ()
 
 
 class ScreenedEvent(NamedTuple):
@@ -140,13 +146,16 @@ def _collapse_duplicates(events: list[EarningsEvent]) -> list[EarningsEvent]:
 
     collapsed: list[EarningsEvent] = []
     for group in grouped.values():
+        actuals = tuple(sorted({round(e.eps_actual, 6) for e in group
+                                if e.eps_actual is not None}))
         if len(group) == 1:
-            collapsed.append(group[0])
+            collapsed.append(replace(group[0], all_eps_actuals=actuals))
             continue
         readings = {round(s, 6) for s in map(eps_surprise_pct, group)
                     if s is not None}
         collapsed.append(replace(min(group, key=_conservative_first),
-                                 conflicting_estimates=len(readings) > 1))
+                                 conflicting_estimates=len(readings) > 1,
+                                 all_eps_actuals=actuals))
     return collapsed
 
 
@@ -187,6 +196,32 @@ def parse_calendar(raw: list[dict]) -> list[EarningsEvent]:
     return _collapse_duplicates(events)
 
 
+_EPS_POINT_CAP = 50.0
+_REVENUE_WEIGHT = 2.0
+_REVENUE_POINT_CAP = 20.0
+
+
+def eps_points(surprise: Optional[float]) -> float:
+    """Ranking points an EPS surprise is worth, capped both ways.
+
+    Symmetric by construction: a leg that missed subtracts what the same
+    magnitude of beat would have added. Without that, a miss scores like
+    missing data, and a name that beat hugely on EPS while missing on
+    revenue outranks one that beat on both — which is the opposite of the
+    reader's own definition of a good quarter.
+    """
+    if surprise is None:
+        return 0.0
+    return max(min(surprise, _EPS_POINT_CAP), -_EPS_POINT_CAP)
+
+
+def revenue_points(surprise: Optional[float]) -> float:
+    if surprise is None:
+        return 0.0
+    return max(min(surprise * _REVENUE_WEIGHT, _REVENUE_POINT_CAP),
+               -_REVENUE_POINT_CAP)
+
+
 def score_candidate(eps_surprise: Optional[float],
                     revenue_surprise: Optional[float],
                     gap_on_event_pct: Optional[float]) -> float:
@@ -201,9 +236,9 @@ def score_candidate(eps_surprise: Optional[float],
     components are capped, so a number that is merely enormous cannot buy a
     ranking slot away from a genuine one.
     """
-    score = 0.0 if eps_surprise is None else min(eps_surprise, 50.0)
+    score = eps_points(eps_surprise)
     if revenue_surprise is not None and revenue_surprise > 0:
-        score += min(revenue_surprise * 2.0, 20.0)
+        score += revenue_points(revenue_surprise)
     if gap_on_event_pct is not None:
         if 2.0 <= gap_on_event_pct <= 15.0:
             score += 15.0

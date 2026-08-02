@@ -134,6 +134,56 @@ in one place. Keep §4/§5 current as capabilities land.
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-08-02(c)** Implementation session: the whole of §5.3/§6.1 was built
+  under TDD (`47f172c` docs, `64f41e6` core, plus this entry's commit).
+  **347 offline tests green** (271 before). New surfaces: `hawkeye consensus
+  capture`, `hawkeye stocks show|list|rebuild`, and a live rehearsal script
+  `scripts/dry_run_earnings_quality.py` (outside `tests/` — it does real
+  network I/O; the suite stays fully offline).
+
+  **What is now enforced in code.** A beat requires BOTH sources to say so;
+  a disputed consensus (>5%) ranks on the conservative reading; disputed
+  actuals (>2% AND >$0.01) are unverified until the release settles them;
+  Finnhub's actual is unusable when its own rows contradict each other;
+  non-GAAP is read, never computed. `consensus_snapshots` and
+  `earnings_prints` refuse UPDATE/DELETE **at the SQLite level** — an API
+  without an update method is only a convention, and a decision references
+  those rows by id (invariant 1 survives by reference, not by copy). A
+  quarter deepens by APPENDING a row per `depth`, never by rewriting one.
+
+  **Four things only implementation revealed** (all fixed; detail in
+  `docs/MASTER_OVERVIEW.ja.md` §5.3(8)). (1) **Yahoo's estimate periods are
+  relative to today, not to the last print** — measured on AMZN three days
+  after its Q2 release, `0q` read 1.956 while the consensus that print was
+  judged against was 1.83, and the row's own growth field said +0.3% where Q2
+  grew 242%. So a post-print reading is one quarter out; `shift_after_print()`
+  now uses it ONLY as the guidance yardstick, which is what the quarter now in
+  progress actually is. This is a stronger argument for pre-registration than
+  the design had. (2) **The unquantified-one-off case (§5.3 決定1③) is real**:
+  AMZN disclosed $53.4B pre-tax at the consolidated level and no per-share
+  figure anywhere, so the print travels as `unadjusted` — first measurement of
+  a share the design listed as unknown. (3) **A missed leg used to score like
+  missing data**, so AMZN (EPS +194%, revenue −3.5%) took the capped maximum
+  and outranked a name that beat on both; a miss now subtracts what the same
+  magnitude of beat would add (no new constants — the existing caps, mirrored).
+  (4) A stored warning that never printed: the `unadjusted` flag was recorded
+  but absent from the Japanese verdict. Also fixed a latent bug — nothing ever
+  created `var/`, so any fresh `HAWKEYE_VAR` killed every command.
+
+  **Operational requirement, not optional**: run `hawkeye consensus capture`
+  every business day during earnings season. Without a pre-registered row the
+  revenue leg has one consensus source and is therefore *unverified* — one of
+  the three legs is effectively unavailable (that is exactly what the AMZN
+  rehearsal showed). Nothing recovers a snapshot after the release.
+
+  Not done, deliberately: `stock_id` is NOT back-filled into the existing
+  tables (the user's instruction is that recorded rows are never rewritten),
+  so history still joins by ticker; guidance extraction is not automated
+  inside `hawkeye scout` (the rehearsal script takes it via `--guidance`, and
+  an extraction is rejected outright unless its GAAP EPS equals EDGAR's XBRL
+  value). Still unrun: the ledger check "do any of the 15 recorded
+  recommendations rest on numbers where the sources disagree?".
+
 - **2026-08-02(b)** Measurement + design session, **no code written**, working
   tree clean at `a0f8419`. Started from one question — AMZN printed EPS 5.75
   against a 1.83 consensus (+215%); how does the system treat a beat that is

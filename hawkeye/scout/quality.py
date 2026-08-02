@@ -41,7 +41,12 @@ from hawkeye.contracts.stocks import (
     SnapshotKind,
     fiscal_quarter_of,
 )
-from hawkeye.scout.earnings import EarningsEvent, score_candidate
+from hawkeye.scout.earnings import (
+    EarningsEvent,
+    eps_points,
+    revenue_points,
+    score_candidate,
+)
 
 
 class LegStatus(str, Enum):
@@ -218,18 +223,30 @@ def _guidance_leg(print_row: EarningsPrint,
     absence would quietly penalise the data gap rather than the company.
     """
     guidance = print_row.guidance
-    yardstick = consensus.next_quarter_eps_avg if consensus else None
-    if guidance is None or guidance.eps_midpoint is None or yardstick is None:
+    # EPS first, revenue second. Plenty of companies guide only on sales —
+    # Amazon gives net sales and operating income and never an EPS range —
+    # and scoring those as "no guidance" would describe our reading rather
+    # than the company.
+    pairs = (((guidance.eps_midpoint if guidance else None),
+              (consensus.next_quarter_eps_avg if consensus else None),
+              "eps"),
+             ((guidance.revenue_midpoint if guidance else None),
+              (consensus.next_quarter_revenue_avg if consensus else None),
+              "revenue"))
+    usable = [(value, yardstick, unit) for value, yardstick, unit in pairs
+              if value is not None and yardstick is not None]
+    if guidance is None or not usable:
         flag = ("guidance_not_published" if guidance is None
                 else "no_forward_consensus_to_compare")
         return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
                           flags=(flag,))
-    surprise = _pct(guidance.eps_midpoint, yardstick)
+    midpoint, yardstick, unit = usable[0]
+    surprise = _pct(midpoint, yardstick)
     status = (LegStatus.BEAT if surprise and surprise > 0
               else LegStatus.MISS if surprise and surprise < 0
               else LegStatus.INLINE)
     return LegVerdict(leg="guidance", status=status, surprise_pct=surprise,
-                      actual=guidance.eps_midpoint, sources=1)
+                      actual=midpoint, sources=1, flags=(f"on_{unit}",))
 
 
 def _verdict(eps: LegVerdict, revenue: LegVerdict,
@@ -297,6 +314,10 @@ def print_from_event(event: EarningsEvent, stock_id: str,
     yahoo_actual = event.eps_actual if verified else None
     finnhub_actual = (event.calendar_eps_actual if verified
                       else event.eps_actual)
+    # Every actual the calendar gave for this print, not just the row that
+    # won the collapse: two of them means the source contradicts itself.
+    finnhub_actuals = list(event.all_eps_actuals) or (
+        [finnhub_actual] if finnhub_actual is not None else [])
     return EarningsPrint(
         stock_id=stock_id, ticker=event.ticker,
         fiscal_quarter=(fiscal_quarter or event.fiscal_quarter
@@ -304,7 +325,7 @@ def print_from_event(event: EarningsEvent, stock_id: str,
         report_date=event.day,
         depth=PrintDepth.VERIFIED if verified else PrintDepth.CALENDAR_ONLY,
         eps_yahoo=yahoo_actual,
-        eps_finnhub=[finnhub_actual] if finnhub_actual is not None else [],
+        eps_finnhub=finnhub_actuals,
         revenue_finnhub=event.revenue_actual)
 
 
@@ -393,8 +414,16 @@ def assess_earnings(print_row: EarningsPrint,
 
     score = score_candidate(eps.scored_pct, revenue.scored_pct,
                             gap_on_event_pct)
+    # A leg that MISSED subtracts. Only a miss does: unverified and absent
+    # legs score zero, because "we could not check" must never read as "it
+    # went badly" any more than it reads as "it went well" (invariant 6).
+    if eps.status is LegStatus.MISS:
+        score += eps_points(eps.surprise_pct)
+    if revenue.status is LegStatus.MISS:
+        score += revenue_points(revenue.surprise_pct)
     if guidance.status is LegStatus.BEAT:
-        score = round(score + config.guidance_beat_score, 2)
+        score += config.guidance_beat_score
+    score = round(score, 2)
 
     flags = list(dict.fromkeys(
         list(eps.flags) + [f"revenue_{f}" for f in revenue.flags]))

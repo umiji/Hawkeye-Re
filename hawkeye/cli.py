@@ -308,7 +308,9 @@ def cmd_scout(args: argparse.Namespace) -> int:
                        window=window, already_seen=ledger.seen_events(),
                        numbers_source=numbers if numbers.available else None,
                        stock_store=_stock_store(),
-                       directory=EdgarDirectory())
+                       directory=EdgarDirectory(),
+                       consensus_source=(YahooConsensusSource()
+                                         if numbers.available else None))
 
     # Whatever isn't sent to the tribunal THIS run — from result.passed's
     # tail onward — is the ranking-cutoff tier (docs/MASTER_OVERVIEW.ja.md

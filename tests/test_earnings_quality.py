@@ -240,6 +240,23 @@ def test_guidance_above_consensus_earns_a_small_bonus():
             == CONFIG.guidance_beat_score)
 
 
+def test_revenue_guidance_counts_when_the_company_gives_no_eps_range():
+    """Amazon guides on net sales and operating income, never on EPS. Judging
+    guidance only on EPS would score every such company as "no guidance",
+    which is a fact about our reading rather than about the company."""
+    quality = assess_earnings(
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+                revenue_finnhub=1.05e9,
+                guidance=GuidanceReading(period="2026-Q3",
+                                         revenue_low=1.10e9,
+                                         revenue_high=1.16e9)),
+        a_consensus(next_quarter_revenue_avg=1.08e9), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
+    assert quality.guidance.leg == "guidance"
+    assert round(quality.guidance.surprise_pct, 1) == 4.6
+
+
 def test_guidance_below_consensus_is_reported_without_a_mechanical_penalty():
     """The Adversary is free to attack a cut; the screen does not dock
     points for one, because "no guidance" and "weak guidance" must not be
@@ -272,6 +289,39 @@ def test_all_three_legs_beating_is_a_good_quarter():
     assert quality.verdict is QuarterVerdict.GOOD_QUARTER
     assert [leg.status for leg in (quality.eps, quality.revenue,
                                    quality.guidance)] == [LegStatus.BEAT] * 3
+
+
+def test_a_leg_that_missed_cannot_score_like_a_leg_with_no_data():
+    """Found on the live AMZN dry run (2026-08-02): a +194% EPS beat whose
+    revenue MISSED still scored the capped maximum, outranking a name that
+    beat on both. A miss is a fact about the quarter, and the user's own
+    definition of a good quarter requires all three legs — so it subtracts,
+    mirroring the bonus a beat earns, rather than reading as absent data."""
+    eps_only = assess_earnings(
+        a_print(eps_yahoo=3.00, eps_finnhub=[3.00], revenue_xbrl=0.9e9,
+                revenue_finnhub=0.9e9),
+        a_consensus(), CONFIG)
+    both_legs = assess_earnings(
+        a_print(eps_yahoo=1.40, eps_finnhub=[1.40], revenue_xbrl=1.08e9,
+                revenue_finnhub=1.08e9),
+        a_consensus(), CONFIG)
+
+    assert eps_only.eps.surprise_pct > both_legs.eps.surprise_pct
+    assert eps_only.score < both_legs.score
+
+
+def test_a_missing_revenue_reading_is_not_a_penalty():
+    """The mirror of the rule above: no revenue data is unverified, and
+    unverified scores zero — it must never be scored as a miss."""
+    no_data = assess_earnings(
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20]),
+        a_consensus(revenue_avg=None, revenue_finnhub=None), CONFIG)
+    missed = assess_earnings(
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=0.9e9,
+                revenue_finnhub=0.9e9),
+        a_consensus(), CONFIG)
+
+    assert no_data.score > missed.score
 
 
 def test_the_event_day_reaction_still_shapes_the_score():

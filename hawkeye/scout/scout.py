@@ -29,6 +29,7 @@ from hawkeye.contracts.models import (
 from hawkeye.contracts.stocks import ConsensusSnapshot, EarningsPrint
 from hawkeye.gates.entry_gates import run_entry_gates
 from hawkeye.marketdata.base import MarketDataProvider
+from hawkeye.marketdata.consensus import shift_after_print
 from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.scout.earnings import (
     ScreenedEvent,
@@ -212,7 +213,8 @@ class _QuarterContext:
     consensus: ConsensusSnapshot
 
 
-def _quarter_context(store, directory, event) -> Optional[_QuarterContext]:
+def _quarter_context(store, directory, event,
+                     consensus_source=None) -> Optional[_QuarterContext]:
     """Resolve the company and the consensus this print is judged against.
 
     A pre-registered row always wins. Only when none exists is one
@@ -228,8 +230,19 @@ def _quarter_context(store, directory, event) -> Optional[_QuarterContext]:
     consensus = store.consensus_in_force(stock_id, row.fiscal_quarter,
                                          as_of=as_of)
     if consensus is None:
-        snapshot_id = store.capture_consensus(
-            reconstructed_consensus(event, stock_id, row.fiscal_quarter))
+        snapshot = reconstructed_consensus(event, stock_id, row.fiscal_quarter)
+        # The guidance yardstick, when a source is available. It is read
+        # AFTER the print, so its "this quarter" row is the quarter now in
+        # progress — which is useless as this print's consensus and exactly
+        # right as what guidance will be judged against.
+        forward = (consensus_source.consensus(event.ticker)
+                   if consensus_source is not None else None)
+        if forward is not None:
+            shifted = shift_after_print(forward)
+            snapshot = snapshot.model_copy(update={
+                "next_quarter_eps_avg": shifted.next_quarter_eps_avg,
+                "next_quarter_revenue_avg": shifted.next_quarter_revenue_avg})
+        snapshot_id = store.capture_consensus(snapshot)
         consensus = store.consensus(snapshot_id)
     return _QuarterContext(stock_id=stock_id, print_row=row,
                            consensus_id=consensus.id, consensus=consensus)
@@ -257,7 +270,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
               already_seen: Optional[set[tuple[str, date]]] = None,
               numbers_source: Optional[EarningsNumberSource] = None,
               stock_store=None,
-              directory=None) -> ScoutResult:
+              directory=None,
+              consensus_source=None) -> ScoutResult:
     """calendar_source: object with earnings_calendar(start, end) -> list[dict]
     provider: MarketDataProvider for enrichment (prices/profile/news).
     window: the earnings days to cover — normally built by scan_window()
@@ -327,7 +341,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
         # the brief because it decides what the tribunal is told AND which
         # numbers are allowed to become structured facts; the event-day
         # reaction only refines the score afterwards.
-        context = _quarter_context(stock_store, directory, event)
+        context = _quarter_context(stock_store, directory, event,
+                                   consensus_source)
         quality = (assess_earnings(context.print_row, context.consensus, config)
                    if context is not None else None)
         catalyst = Catalyst(
