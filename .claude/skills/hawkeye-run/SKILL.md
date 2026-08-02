@@ -119,4 +119,7 @@ Remind them: 発注はユーザー自身が行い、約定したら
 
 Summarize in Japanese: candidates scanned → gate-passed → BUY/PASS, any
 sentinel signals, and the pending action items (fills to record, claims due).
-If ≥30 days of history exists, suggest `hawkeye benchmark --horizon 30`.
+If ≥30 days of history exists, suggest `hawkeye benchmark --horizon 30`
+(aggregate cohort stats) and `hawkeye review-passes --horizon 30` (flags
+individual PASSed/declined tickers that moved a lot afterward — worth a
+manual look at whether the PASS was a mistake or new information emerged).

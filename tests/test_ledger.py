@@ -1,3 +1,5 @@
+import hashlib
+import threading
 from datetime import date
 
 from hawkeye.contracts.models import (
@@ -5,6 +7,8 @@ from hawkeye.contracts.models import (
     GateReport,
     Recommendation,
     RecommendationStatus,
+    ScreenedCandidate,
+    ScreenedCandidateStage,
     Verdict,
 )
 from hawkeye.ledger.store import Ledger
@@ -74,6 +78,142 @@ def test_hash_chain_detects_tampering(tmp_path):
         ('{"approved": true, "note": ""}',))
     ledger._conn.commit()
     assert not ledger.verify_chain()
+
+
+def test_append_event_atomic_under_concurrent_writers(tmp_path):
+    """Two processes appending to the same journal must not corrupt the
+    hash chain. append_event's read-prev-hash-then-insert used to be two
+    separate statements; two connections could both read the same prev_hash
+    and each insert a row claiming it, breaking verify_chain() with no way
+    to recover the true order after the fact."""
+    path = str(tmp_path / "test.db")
+    Ledger(path)  # create schema once, up front
+
+    n_threads, events_per_thread = 6, 15
+    errors: list[Exception] = []
+
+    def worker(worker_id: int) -> None:
+        try:
+            ledger = Ledger(path)
+            for i in range(events_per_thread):
+                ledger.append_event(f"rec-{worker_id}", "sentinel_signal",
+                                    {"worker": worker_id, "seq": i})
+            ledger.close()
+        except Exception as exc:  # pragma: no cover - surfaced via errors list
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(w,)) for w in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    verifier = Ledger(path)
+    assert verifier.verify_chain()
+    total_events = sum(len(verifier.events(f"rec-{w}")) for w in range(n_threads))
+    assert total_events == n_threads * events_per_thread
+
+
+def test_verify_chain_detects_rewritten_recommendation_row(tmp_path):
+    """A tamperer who rewrites recommendations.payload directly via SQL and
+    updates its own `hash` column to match (so that column looks internally
+    consistent) must still be caught — only the journal's payload_hash,
+    itself protected by the hash chain, is a trustworthy reference."""
+    path = str(tmp_path / "test.db")
+    ledger = Ledger(path)
+    rec = make_rec()
+    ledger.record_recommendation(rec, RecommendationStatus.PROPOSED)
+    assert ledger.verify_chain()
+
+    tampered_payload = rec.model_copy(update={"ticker": "EVIL"}).model_dump_json()
+    ledger._conn.execute(
+        "UPDATE recommendations SET payload = ?, hash = ? WHERE id = ?",
+        (tampered_payload,
+         hashlib.sha256(tampered_payload.encode("utf-8")).hexdigest(),
+         rec.id))
+    ledger._conn.commit()
+
+    assert not ledger.verify_chain()
+
+
+def make_screened(scan_id=1, ticker="DROP", stage=ScreenedCandidateStage.GATE_REJECT,
+                  **overrides) -> ScreenedCandidate:
+    return ScreenedCandidate(
+        scan_id=scan_id, ticker=ticker, event_date=date(2026, 7, 20),
+        eps_surprise_pct=12.0, score=8.5, score_version="full",
+        stage=stage, reject_reason="test", **overrides)
+
+
+def test_record_and_query_screened_candidates(tmp_path):
+    ledger = Ledger(str(tmp_path / "test.db"))
+    rows = [make_screened(ticker="A"), make_screened(ticker="B"),
+           make_screened(ticker="C", stage=ScreenedCandidateStage.RANKING_CUTOFF)]
+    ledger.record_screened_candidates(1, rows)
+
+    all_rows = ledger.screened_candidates(scan_id=1)
+    assert {r.ticker for r in all_rows} == {"A", "B", "C"}
+    cutoff_only = ledger.screened_candidates(scan_id=1, stage="ranking_cutoff")
+    assert [r.ticker for r in cutoff_only] == ["C"]
+    assert ledger.verify_chain()
+
+
+def test_verify_chain_detects_rewritten_screened_candidate_row(tmp_path):
+    """Same tamper-evidence gap as recommendations, closed the same way:
+    the batch_hash anchored in the journal at write time must still match
+    the current screened_candidates rows for that scan."""
+    ledger = Ledger(str(tmp_path / "test.db"))
+    original = make_screened()
+    ledger.record_screened_candidates(1, [original])
+    assert ledger.verify_chain()
+
+    tampered_payload = original.model_copy(
+        update={"reject_reason": "rewritten"}).model_dump_json()
+    ledger._conn.execute(
+        "UPDATE screened_candidates SET payload = ? WHERE scan_id = 1",
+        (tampered_payload,))
+    ledger._conn.commit()
+
+    assert not ledger.verify_chain()
+
+
+def test_seen_events_covers_both_dropped_and_evaluated_candidates(tmp_path):
+    """§5.2(1) dedup source. A candidate sent to the tribunal is NOT in
+    screened_candidates (that table only holds what was dropped), so
+    reading one table alone would let an evaluated name come back."""
+    ledger = Ledger(str(tmp_path / "test.db"))
+    dropped = make_screened(ticker="DROP")
+    ledger.record_screened_candidates(1, [dropped])
+    rec = make_rec()
+    ledger.record_recommendation(rec, RecommendationStatus.PROPOSED)
+
+    seen = ledger.seen_events()
+
+    assert ("DROP", dropped.event_date) in seen
+    assert (rec.ticker, rec.brief.catalyst.event_date) in seen
+
+
+def test_seen_events_survives_a_row_the_current_model_cannot_parse(tmp_path):
+    """Dedup must not go blind because an old row predates a model change —
+    it reads the stored JSON directly rather than rebuilding the model."""
+    ledger = Ledger(str(tmp_path / "test.db"))
+    rec = make_rec()
+    ledger.record_recommendation(rec, RecommendationStatus.PROPOSED)
+    ledger._conn.execute(
+        "UPDATE recommendations SET payload = ?",
+        ('{"ticker": "OLD", "brief": {"catalyst":'
+         ' {"event_date": "2026-01-15"}}, "bogus_field": 1}',))
+    ledger._conn.commit()
+
+    assert ("OLD", date(2026, 1, 15)) in ledger.seen_events()
+
+
+def test_last_scan_at_is_none_before_any_scan(tmp_path):
+    ledger = Ledger(str(tmp_path / "test.db"))
+    assert ledger.last_scan_at() is None
+    ledger.record_scan(params={}, scanned=1, screened=1, enriched=1,
+                       gate_passed=0, tickers=[])
+    assert ledger.last_scan_at() is not None
 
 
 def test_all_resolved_claims_aggregation(tmp_path):

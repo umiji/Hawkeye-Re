@@ -52,17 +52,28 @@ def make_brief(**snapshot_overrides) -> CandidateBrief:
 def make_bars(n: int = 300, start_price: float = 40.0,
               daily_move: float = 0.001, volume: float = 1_000_000,
               end: date | None = None) -> list[Bar]:
+    """n trading-day bars ending exactly on/at `end` (default today).
+
+    Built backward from `end` so the series always reaches it, however far
+    back `n` pushes the start — stepping forward from an estimated start day
+    (the previous approach) stops early once weekends are skipped, leaving
+    the last bar short of `end` for large `n`.
+    """
     end = end or date.today()
+    days: list[date] = []
+    day = end
+    while len(days) < n:
+        if day.weekday() < 5:  # trading days only
+            days.append(day)
+        day -= timedelta(days=1)
+    days.reverse()
     bars = []
     price = start_price
-    day = end - timedelta(days=int(n * 1.5))
-    while len(bars) < n:
-        if day.weekday() < 5:  # trading days only
-            close = price * (1 + daily_move)
-            bars.append(Bar(day=day, open=price, high=close * 1.01,
-                            low=price * 0.99, close=close, volume=volume))
-            price = close
-        day += timedelta(days=1)
+    for day in days:
+        close = price * (1 + daily_move)
+        bars.append(Bar(day=day, open=price, high=close * 1.01,
+                        low=price * 0.99, close=close, volume=volume))
+        price = close
     return bars
 
 

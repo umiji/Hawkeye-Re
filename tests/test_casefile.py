@@ -33,20 +33,20 @@ def test_role_sequence_and_information_separation(config):
 
     package = casefile.write_package(case)
     assert package["role"] == "bull"
-    bull_input = open(package["input"]).read()
+    bull_input = open(package["input"], encoding="utf-8").read()
     assert "attack" not in bull_input.lower()          # bull never sees attacks
-    assert "BULL" not in open(package["system"]).read() or True
+    assert "BULL" not in open(package["system"], encoding="utf-8").read() or True
 
     casefile.submit(case, thesis_payload(50.0))
     package = casefile.write_package(case)
     assert package["role"] == "adversary"
-    adv_input = open(package["input"]).read()
+    adv_input = open(package["input"], encoding="utf-8").read()
     assert "thesis_under_attack" in adv_input          # adversary sees the thesis
 
     casefile.submit(case, attack_payload())
     package = casefile.write_package(case)
     assert package["role"] == "judge"
-    judge_input = open(package["input"]).read()
+    judge_input = open(package["input"], encoding="utf-8").read()
     assert "thesis" in judge_input and "attack_report" in judge_input
 
     casefile.submit(case, verdict_payload("buy", 0.62))
@@ -74,6 +74,7 @@ def test_session_and_api_drivers_produce_identical_decisions(config):
     for p in payloads:
         casefile.submit(case, p)
     rec_session = casefile.finalize(case, config)
+    casefile.mark_complete(case, rec_session.id)
 
     # identical outcome: unaddressed severe attack overturns BUY in both
     assert rec_api.verdict.decision == rec_session.verdict.decision \
@@ -90,7 +91,54 @@ def test_finalize_requires_all_roles(config):
         casefile.finalize(case, config)
 
 
+def test_write_package_renders_normalized_thesis_to_adversary(config):
+    case = open_test_case(config)
+    thesis = thesis_payload(50.0)
+    for s in thesis["scenarios"]:
+        s["probability"] = s["probability"] * 2  # sums to 2.0, un-normalized
+    casefile.submit(case, thesis)
+
+    package = casefile.write_package(case)
+    assert package["role"] == "adversary"
+    raw = open(package["input"], encoding="utf-8").read()
+    adversary_input = json.loads(raw.split("\n\n", 1)[1])
+    probs = [s["probability"]
+            for s in adversary_input["thesis_under_attack"]["scenarios"]]
+    assert abs(sum(probs) - 1.0) < 1e-9
+
+
+def test_finalize_does_not_mark_case_complete_until_mark_complete(config):
+    """finalize() must not persist recommendation_id itself — a caller that
+    crashes between finalize() and recording the result durably (e.g. a
+    ledger insert) must still be able to retry, not find a case that looks
+    "done" with nothing to show for it."""
+    case = open_test_case(config)
+    casefile.submit(case, thesis_payload(50.0))
+    casefile.submit(case, attack_payload())
+    casefile.submit(case, verdict_payload("buy", 0.62))
+
+    rec = casefile.finalize(case, config)
+    assert case.recommendation_id is None
+    assert casefile.next_role(case) is None  # role-complete, independent of recommendation_id
+
+    casefile.mark_complete(case, rec.id)
+    assert case.recommendation_id == rec.id
+    assert casefile.load_case(case.id).recommendation_id == rec.id
+
+
 def test_list_cases(config):
     case = open_test_case(config)
     ids = [c.id for c in casefile.list_cases()]
     assert case.id in ids
+
+
+def test_list_cases_skips_unreadable_file_with_warning(config, capsys):
+    case = open_test_case(config)
+    broken = casefile.cases_dir() / "case_broken.json"
+    broken.write_text("{not valid json", encoding="utf-8")
+
+    ids = [c.id for c in casefile.list_cases()]
+
+    assert case.id in ids                    # good case still loads
+    assert "case_broken.json" not in str(ids)  # broken one silently excluded
+    assert "case_broken.json" in capsys.readouterr().err  # but visibly warned

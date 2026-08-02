@@ -31,12 +31,26 @@ def test_stale_event_hard_fails(config):
     assert any(r.name == "catalyst_freshness_days" for r in report.hard_failures)
 
 
-def test_missing_data_is_unverified_not_pass(config):
+def test_missing_hard_gate_data_fails_closed(config):
+    # A hard gate with no data is not "verified clean" — it's a hole. It
+    # must block entry (fail closed), not silently wave the candidate
+    # through to the LLM tribunal with real money on the line.
     brief = make_brief(market_cap=None)
     report = run_entry_gates(brief.snapshot, brief.catalyst, config)
-    assert report.ok  # no hard failure...
+    assert not report.ok
     mcap = next(r for r in report.results if r.name == "min_market_cap")
-    assert mcap.unverified  # ...but visibly flagged, never silently green
+    assert mcap.unverified and mcap.passed  # visibly flagged, not silently dropped
+    assert mcap in report.hard_failures     # but still blocks entry
+
+
+def test_missing_soft_gate_data_does_not_block(config):
+    # Only HARD gates fail closed on missing data — soft gates stay visible
+    # to the judge as a warning without killing the candidate pre-LLM.
+    brief = make_brief(next_earnings_date=None)
+    report = run_entry_gates(brief.snapshot, brief.catalyst, config)
+    assert report.ok
+    earnings = next(r for r in report.results if r.name == "earnings_proximity")
+    assert earnings.unverified and not earnings.hard
 
 
 def test_extreme_gap_warns_but_does_not_kill(config):

@@ -5,10 +5,13 @@ Japanese, per the project requirements.
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from hawkeye.contracts.models import (
     DecisionType,
     KillKind,
     Recommendation,
+    to_jst,
 )
 from hawkeye.sentinel.monitor import Signal
 
@@ -48,6 +51,22 @@ def _fmt(v, suffix="", nd=2):
     return f"{v:,.{nd}f}{suffix}"
 
 
+def fmt_jst(value: datetime | str) -> str:
+    """A stored timestamp as the user reads it: `2026-07-31 23:45 JST`.
+
+    Takes either a datetime or the raw ISO string straight out of the
+    ledger, since some listings print the stored column without parsing it.
+    Records written before 2026-07-31 carry a `+00:00` offset and are
+    converted here, so old and new rows read on the same clock.
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value      # hand-edited/unknown format: show it verbatim
+    return f"{to_jst(value):%Y-%m-%d %H:%M} JST"
+
+
 def render_recommendation_ja(rec: Recommendation) -> str:
     is_buy = rec.verdict.decision == DecisionType.BUY
     s = rec.brief.snapshot
@@ -55,7 +74,7 @@ def render_recommendation_ja(rec: Recommendation) -> str:
     header = "🟢 投資提案(BUY)" if is_buy else "⚪ 見送り(PASS)"
     lines.append(f"# {header}: {rec.ticker} {rec.brief.company_name}")
     lines.append("")
-    lines.append(f"- 提案ID: `{rec.id}`  作成: {rec.created_at:%Y-%m-%d %H:%M} UTC  "
+    lines.append(f"- 提案ID: `{rec.id}`  作成: {fmt_jst(rec.created_at)}  "
                  f"モデル: {rec.model}")
     lines.append(f"- 現在値: ${_fmt(s.price)}  時価総額: {_fmt((s.market_cap or 0)/1e9 if s.market_cap else None, 'B USD')}  "
                  f"20日平均売買代金: {_fmt((s.avg_dollar_volume_20d or 0)/1e6 if s.avg_dollar_volume_20d else None, 'M USD')}")
@@ -65,6 +84,19 @@ def render_recommendation_ja(rec: Recommendation) -> str:
         lines.append(f"- イベント当日の値動き: {s.gap_on_event_pct:+.1f}%  "
                      f"イベント後の推移: {_fmt(s.change_since_event_pct, '%', 1)}  "
                      f"経過: {s.days_since_event}営業日")
+    if s.eps_surprise_pct is not None or s.revenue_surprise_pct is not None:
+        lines.append(f"- EPSサプライズ: {_fmt(s.eps_surprise_pct, '%', 1)}  "
+                     f"売上サプライズ: {_fmt(s.revenue_surprise_pct, '%', 1)}"
+                     f"(コンセンサス予想比、機械計算)")
+    ia = rec.brief.insider_activity
+    if ia is not None:
+        lines.append(f"- インサイダー動向({ia.window_days}日): "
+                     f"買い{ia.buyers}名 / 売り{ia.sellers}名  "
+                     f"純株数{ia.net_shares:+,.0f}株")
+    at = rec.brief.analyst_trend
+    if at is not None:
+        cur = f"強気{at.strong_buy}/買い{at.buy}/中立{at.hold}/売り{at.sell}/強気売り{at.strong_sell}"
+        lines.append(f"- アナリスト格付け({at.period}): {cur}")
     lines.append("")
 
     # Gates
@@ -167,22 +199,65 @@ def render_scout_ja(result) -> str:
     lines = [f"# 🔭 スカウト結果 ({result.scan_start} 〜 {result.scan_end})", ""]
     f = result.funnel()
     lines.append(f"ファネル: 決算イベント {f['scanned']}件 → サプライズ選別 "
-                 f"{f['screened']}件 → 詳細取得 {f['enriched']}件 → "
+                 f"{f['screened']}件 → 既出を除外 {f['duplicates']}件 → "
+                 f"詳細取得 {f['enriched']}件 → "
                  f"ゲート通過 {f['gate_passed']}件")
+    # How much of the shortlist rests on numbers a second source confirmed.
+    # "Nobody checked" and "checked and agreed" must not read the same way.
+    v = getattr(result, "verification", None)
+    if v is not None and v.attempted:
+        line = (f"数値の照合: {v.attempted}件を Yahoo で再取得 → 確認 "
+                f"{v.verified}件 / 未確認 {v.unverified}件")
+        if v.disagreed:
+            line += f"、うちカレンダーと食い違い {v.disagreed}件"
+        lines.append(line)
+        if v.budget_exhausted:
+            lines.append(f"⚠️ 照合の上限({v.attempted}件)に達しました。"
+                         "残りはカレンダーの数値のままです"
+                         "(`scout_max_verify` で調整)。")
+    if getattr(result, "enrichment_ceiling_hit", False):
+        lines.append("")
+        lines.append("⚠️ **詳細取得の試行上限に達したため、ゲート通過候補が"
+                     "揃う前に打ち切りました。** 候補が少ないのは決算が"
+                     "静かだったからではなく、入口ゲートで落ちた銘柄が"
+                     "多かったためです(`scout_max_enrich` で調整)。")
+    if getattr(result, "window_truncated", False):
+        lines.append("")
+        lines.append("⚠️ **前回実行からの間隔が探索窓の上限を超えました。**"
+                     f" {result.scan_start} より前の決算はスキャンしていません"
+                     "(取りこぼしの可能性あり)。必要なら "
+                     "`hawkeye scout --days N` で遡って実行してください。")
     lines.append("")
     if result.passed:
         lines.append("## 候補ショートリスト(スコア順)")
         lines.append("| 順位 | ティッカー | イベント日 | EPSサプライズ | 売上サプライズ | 当日反応 | スコア |")
         lines.append("|---|---|---|---|---|---|---|")
+        untrusted_seen = False
         for i, c in enumerate(result.passed, 1):
             gap = (f"{c.brief.snapshot.gap_on_event_pct:+.1f}%"
                    if c.brief and c.brief.snapshot.gap_on_event_pct is not None
                    else "不明")
-            rev = (f"{c.revenue_surprise_pct:+.1f}%"
+            # A percentage the screen does not stand behind must not be shown
+            # as if it did — it earns no score, and the reader has to be able
+            # to see why a big number sits low in the ranking.
+            eps_mark = "" if c.eps_surprise_trusted else " ⚠"
+            rev_mark = "" if c.revenue_surprise_trusted else " ⚠"
+            untrusted_seen = untrusted_seen or bool(
+                eps_mark or (c.revenue_surprise_pct is not None and rev_mark)
+                or c.conflicting_estimates)
+            rev = (f"{c.revenue_surprise_pct:+.1f}%{rev_mark}"
                    if c.revenue_surprise_pct is not None else "-")
-            lines.append(f"| {i} | **{c.ticker}** | {c.event_date} | "
-                         f"{c.eps_surprise_pct:+.1f}% | {rev} | {gap} | {c.score} |")
+            ticker = c.ticker + ("†" if c.conflicting_estimates else "")
+            lines.append(f"| {i} | **{ticker}** | {c.event_date} | "
+                         f"{c.eps_surprise_pct:+.1f}%{eps_mark} | {rev} | "
+                         f"{gap} | {c.score} |")
         lines.append("")
+        if untrusted_seen:
+            lines.append("⚠ = その数値は採点に使っていません(分母が小さすぎる、"
+                         "または実績と予想の集計基準が食い違っている)。"
+                         "†= 決算カレンダーが同じ決算に対して矛盾する予想値を"
+                         "返したため、保守的な方を採用しています。")
+            lines.append("")
         lines.append("次の一手(検証にかける):")
         top = result.passed[0]
         lines.append("```")
@@ -202,6 +277,118 @@ def render_scout_ja(result) -> str:
     return "\n".join(lines)
 
 
+_COHORT_JA = {
+    "BUY": "採用(BUY)",
+    "TRIBUNAL_PASS": "審理で見送り",
+    "RANKING_CUTOFF": "ランキング下位",
+    "GATE_REJECT": "入口ゲート落ち",
+    "ENRICHMENT_CAP": "肉付け上限落ち",
+}
+
+
+def _num(value, suffix: str = "", digits: int = 2) -> str:
+    return "—" if value is None else f"{value:+.{digits}f}{suffix}"
+
+
+def render_drop_review_ja(
+    checkpoint: str,
+    horizon_days: int,
+    index_ticker: str,
+    results: list,
+    pending: int,
+    censored: dict,
+    cohort_table: dict,
+    gate_table: dict,
+    flagged: list,
+    min_samples: int,
+    suppressed: int = 0,
+    suppressed_reason: str = "",
+) -> str:
+    """落選候補レビューの結果(docs/MASTER_OVERVIEW.ja.md §5.2(3))."""
+    lines = [
+        f"# 🔍 落選候補レビュー — T+{horizon_days}営業日時点 ({checkpoint})",
+        "",
+        f"判定済み {len(results)}件 / 観測期間が未経過 {pending}件",
+    ]
+    censored_n = sum(censored.values())
+    if censored_n:
+        lines.append(
+            f"⚠️ **追跡不能 {censored_n}件** — 株価履歴を取得できませんでした"
+            "(上場廃止・銘柄コード変更・買収・API障害)。"
+            "取得できない銘柄は最悪の結果を出したものである場合が多く、"
+            "**これを無視すると各群の平均が実態より良く見えます**(生存者バイアス)。")
+        for cohort, n in censored.items():
+            if n:
+                lines.append(f"  - {_COHORT_JA.get(cohort, cohort)}: {n}件")
+    lines.append("")
+    lines.append(
+        f"α = 実リターン − β × {index_ticker}の同期間リターン(βは過去250営業日)、"
+        "z = α ÷ (ATR% × √営業日数)。**上振れ・下振れの両方**を数えます。")
+    lines.append("")
+
+    lines.append("## 段階別")
+    lines.append("")
+    lines.append("| 段階 | 件数 | 平均α | 中央α | 上振れ z≥1.5 | 下振れ z≤-1.5 | α算出不可 |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    for cohort, row in cohort_table.items():
+        name = _COHORT_JA.get(cohort, cohort)
+        if row["n"] < min_samples:
+            name += " ※"
+        lines.append(
+            f"| {name} | {row['n']} | {_num(row['mean_alpha'], '%')} | "
+            f"{_num(row['median_alpha'], '%')} | {row['up_outliers']} | "
+            f"{row['down_outliers']} | {row['n_alpha_missing']} |")
+    lines.append("")
+    lines.append(
+        f"※ = サンプルが{min_samples}件未満。**この段階の数字を根拠に閾値や"
+        "スコア式を変更してはいけません**(§5.2(3) 過剰最適化の歯止め)。")
+    lines.append("")
+
+    # 見出しの正確さは重要。ここに出るのは「入口ゲートで落ちた候補」だけでは
+    # なく、審理まで通った候補が個別に不合格・未検証だったゲート項目も含む。
+    lines.append("## ゲート項目別(不合格・未検証だった項目。段階は問わない)")
+    lines.append("")
+    if not gate_table:
+        lines.append("(該当なし)")
+    else:
+        lines.append("| ゲート | 件数 | 平均α | 上振れ | 下振れ |")
+        lines.append("|---|---:|---:|---:|---:|")
+        for gate, row in gate_table.items():
+            label = gate if row["n"] >= min_samples else f"{gate} ※"
+            lines.append(
+                f"| {label} | {row['n']} | {_num(row['mean_alpha'], '%')} | "
+                f"{row['up_outliers']} | {row['down_outliers']} |")
+        lines.append("")
+        lines.append(
+            "平均が高いゲートは「そのゲートが取りこぼしを生んでいる」候補です。"
+            "ただし**下振れの件数を必ず併せて見てください** — 下振れのほうが多い"
+            "ゲートは、正しく仕事をしています。")
+    lines.append("")
+
+    lines.append(f"## 要調査({len(flagged)}件、|z| ≥ 1.5)")
+    lines.append("")
+    if suppressed:
+        # 除外した件数は必ず出す。黙って隠すと「調べたが何も無かった」と
+        # 「そもそも見ていない」の区別がつかなくなる。
+        lines.append(
+            f"（この一覧からは **{suppressed}件を除外**しています — "
+            f"{suppressed_reason}）")
+        lines.append("")
+    if not flagged:
+        lines.append("(該当なし)")
+    else:
+        for r in flagged:
+            badge = "🔺" if r.direction == "up" else "🔻"
+            stage = _COHORT_JA.get(r.cohort, r.cohort)
+            gates = f" / {', '.join(r.failed_gates)}" if r.failed_gates else ""
+            lines.append(
+                f"- {badge} **{r.ticker}** α={_num(r.alpha_pct, '%')} "
+                f"z={_num(r.z, '', 1)} — {stage}{gates} / 判断日 {r.decision_date}")
+            if r.reject_reason:
+                lines.append(f"  - 落選理由: {r.reject_reason}")
+    return "\n".join(lines)
+
+
 def render_signals_ja(ticker: str, signals: list[Signal]) -> str:
     if not signals:
         return f"✅ {ticker}: シグナルなし(事前登録済みの基準に抵触なし)"
@@ -211,4 +398,149 @@ def render_signals_ja(ticker: str, signals: list[Signal]) -> str:
         lines.append(f"- {badge} [{sig.kind}] {sig.message}")
     lines.append("")
     lines.append("売却の最終判断と発注はユーザー自身が行ってください。")
+    return "\n".join(lines)
+
+
+_MISS_CATEGORY_JA = {
+    "gate_threshold_too_strict": "ゲートの基準が厳しすぎた",
+    "score_formula_wrong": "スコアの付け方が実力を捉えていなかった",
+    "enrichment_cap": "肉付け上限で見る前に落とした",
+    "data_gap": "データ欠損(基準ではなく取得の問題)",
+    "collection_gap": "収集の欠陥(判断日前に公開されていたのに持っていなかった)",
+    "unforeseeable": "予見不能(判断日より後に起きたこと)",
+    "gate_correct": "ゲートは正しかった(下振れ)",
+    "other": "その他(要記述)",
+}
+
+
+def render_drop_cycle_ja(
+    checkpoint: str,
+    measured: list,
+    investigated: list,
+    cohort_counts: dict,
+    censored: dict,
+    pending: int,
+    skipped: int,
+    remaining: dict,
+    ready: list,
+    min_samples: int,
+    previous_total: int = 0,
+) -> str:
+    """落選候補レビュー1巡分の報告(§5.2(3))。
+
+    **20件に達していなくても毎回出します。** 「今回は該当なし」も結果であり、
+    黙って何も出さないのと、見たうえで何も無かったのとは、読む側からは
+    区別がつかないためです。
+    """
+    n = len(measured) + len(investigated)
+    ups = [r for r in measured + investigated if r.z >= 1.5]
+    downs = [r for r in measured + investigated if r.z <= -1.5]
+
+    lines = [
+        f"# 🔍 落選候補レビュー — {checkpoint} の巡回結果",
+        "",
+        "## 1. 今回測ったもの",
+        "",
+        f"- 今回測定: **{n}件**(うち個別調査を行ったもの {len(investigated)}件)",
+        f"- 累計: **{previous_total + n}件**(前回まで {previous_total}件 / 今回 +{n}件)",
+    ]
+    if pending:
+        lines.append(f"- 観測期間が未経過のため今回は対象外: {pending}件"
+                     "(異常ではありません。日数が経てば自動的に対象になります)")
+    if skipped:
+        lines.append(f"- 記録済みのため再測定しなかったもの: {skipped}件"
+                     "(同じ銘柄を測り直せないようにしてあります)")
+    lines.append("")
+
+    if cohort_counts:
+        lines.append("| 落選した段階 | 件数 |")
+        lines.append("|---|---:|")
+        for cohort, count in cohort_counts.items():
+            lines.append(f"| {_COHORT_JA.get(cohort, cohort)} | {count} |")
+        lines.append("")
+
+    lines.append("## 2. 大きく動いたもの(外れ値)")
+    lines.append("")
+    lines.append(
+        "「その銘柄自身の平常の値幅に対して何倍動いたか」(z)が 1.5 以上のものを"
+        "外れ値とします。**上振れだけでなく下振れも数えます** — "
+        "下振れは「落として正解だった」証拠なので、これを見ないと"
+        "「基準を緩めよう」という方向にしか結論が出ません。")
+    lines.append("")
+    if not ups and not downs:
+        lines.append("**該当なし。** 今回測った範囲では、判断が大きく外れた銘柄は"
+                     "ありませんでした(これは正常な結果です)。")
+    else:
+        lines.append(f"- 上振れ(見送ったのに大きく上がった): **{len(ups)}件**"
+                     + (f" — {'、'.join(r.ticker for r in ups)}" if ups else ""))
+        lines.append(f"- 下振れ(落として正解だった): **{len(downs)}件**"
+                     + (f" — {'、'.join(r.ticker for r in downs)}" if downs else ""))
+    lines.append("")
+
+    lines.append("## 3. 個別に調べたもの")
+    lines.append("")
+    if not investigated:
+        lines.append("該当なし(外れ値が無かったか、すべて個別調査の対象外の段階でした)。")
+        lines.append("")
+    for r in investigated:
+        label = (_MISS_CATEGORY_JA.get(r.miss_category.value, r.miss_category.value)
+                 if r.miss_category else "未分類")
+        lines.append(f"### {r.ticker}(判断日 {r.decision_date} / "
+                     f"α {r.alpha_pct:+.2f}% / z {r.z:+.2f})")
+        lines.append("")
+        lines.append(f"- **何が起きたか**: {r.what_happened or '—'}")
+        if r.visible_evidence:
+            lines.append("- **判断時点の記録から引用できる根拠**:")
+            for e in r.visible_evidence:
+                lines.append(f"  - 「{e}」")
+        else:
+            lines.append("- **判断時点の記録から引用できる根拠**: なし"
+                         "(引用の無い説明は物語である可能性が高い点に注意)")
+        lines.append(f"- **分類**: {label}")
+        if r.proposed_change:
+            lines.append(f"- **改訂の提案**: {r.proposed_change.target} を "
+                         f"{r.proposed_change.direction} "
+                         f"({r.proposed_change.rationale})")
+        if r.notes:
+            lines.append(f"- 備考: {r.notes}")
+        lines.append("")
+
+    lines.append(f"## 4. 分類ごとの累計と、改訂案を起草するまでの残り")
+    lines.append("")
+    lines.append(f"同じ原因が **{min_samples}件** たまった分類だけが改訂案の対象です。"
+                 "1〜2件で基準をいじると、たまたま当たった1件に合わせて仕組みを"
+                 "歪めることになるためです。")
+    lines.append("")
+    lines.append("| 分類 | あと何件で起草対象になるか |")
+    lines.append("|---|---:|")
+    for key, left in sorted(remaining.items(), key=lambda kv: kv[1]):
+        label = _MISS_CATEGORY_JA.get(key, key)
+        cell = "**到達**" if left == 0 else f"あと {left} 件"
+        lines.append(f"| {label} (`{key}`) | {cell} |")
+    lines.append("")
+
+    if ready:
+        names = "、".join(f"`{k}`" for k in ready)
+        lines.append(f"➡️ **{names} が {min_samples}件に到達しました。** "
+                     "改訂案を起草し `strategy/revisions/` に保存します"
+                     "(採否を決めるのはユーザーです)。")
+    else:
+        lines.append(f"➡️ 到達した分類はありません。**改訂案は起草しません。**")
+    lines.append("")
+
+    lines.append("## 5. 測定できなかったもの")
+    lines.append("")
+    censored_n = sum(censored.values())
+    if not censored_n:
+        lines.append("該当なし。")
+    else:
+        lines.append(
+            f"⚠️ **{censored_n}件** は株価履歴を取得できず測定できませんでした"
+            "(上場廃止・銘柄コード変更・買収・API障害)。"
+            "取得できない銘柄は最悪の結果を出したものである割合が高いため、"
+            "**これを黙って除くと各群の平均が実態より良く見えます**"
+            "(生存者バイアス)。件数を必ず添えて読んでください。")
+        for cohort, count in censored.items():
+            if count:
+                lines.append(f"  - {_COHORT_JA.get(cohort, cohort)}: {count}件")
     return "\n".join(lines)

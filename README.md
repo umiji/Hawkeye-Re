@@ -16,7 +16,7 @@ Target: 50% annualized return. Honest math: that is ~3.4%/month compounded.
 With up to 8 concurrent positions and ~4-week holds, the book needs roughly
 +1.7% per position-month net — achievable only with strict asymmetry
 (reward/risk ≥ 2), ruthless kill criteria, and zero tolerance for thesis
-drift. The doctrine encodes exactly that. See docs/INVESTMENT_DOCTRINE.md.
+drift. The doctrine encodes exactly that. See strategy/INVESTMENT_DOCTRINE.md.
 
 ## How a decision is made
 
@@ -63,6 +63,8 @@ orchestrating session cannot leak the attacks to the Bull even by accident.
 
 ```bash
 export FINNHUB_API_KEY=...       # free key; needed by scout
+# or: cp .env.local.example .env.local  and fill it in — loaded
+# automatically at startup (hawkeye/envfile.py), no export needed
 # open this repo in Claude Code, then:
 /hawkeye-run
 ```
@@ -101,15 +103,41 @@ hawkeye verify                   # ledger hash-chain integrity
 Runs without any API key for everything except `evaluate` (LLM) — tests and
 the deterministic core are fully offline.
 
+## Repository layout
+
+Split by who writes the file, not by what it contains:
+
+| Directory | Written by | Tracked |
+|---|---|---|
+| `strategy/` | a human, or an agent draft a human approves | yes |
+| `docs/` | a human (system design and development notes) | yes |
+| `hawkeye/`, `tests/` | a human | yes |
+| `var/` | the system, at run time (ledger, cases, drops, reports) | **no** |
+
+`var/` locations are overridable: `HAWKEYE_VAR` moves the whole tree,
+`HAWKEYE_DB` / `HAWKEYE_CASES` / `HAWKEYE_DROPS` / `HAWKEYE_REPORTS` move
+one each. See [hawkeye/paths.py](hawkeye/paths.py).
+
 ## Documentation
+
+Investment knowledge — the standards a decision-maker reads:
 
 | Doc | Contents |
 |---|---|
+| [strategy/INVESTMENT_DOCTRINE.md](strategy/INVESTMENT_DOCTRINE.md) | Strategy, gates, sizing, base rates — every number pre-registered |
+| [strategy/VERIFICATION_PROTOCOL.md](strategy/VERIFICATION_PROTOCOL.md) | The adversarial process spec and its bias-elimination mechanisms |
+| [strategy/TRIBUNAL_ROLES.ja.md](strategy/TRIBUNAL_ROLES.ja.md) | 審査3役(Bull/Adversary/Judge)の判断基準(`prompts.py` から自動生成) |
+| [strategy/ROADMAP.md](strategy/ROADMAP.md) | Path from manual MVP to automated daily operation |
+| [strategy/STRATEGY_BACKLOG.ja.md](strategy/STRATEGY_BACKLOG.ja.md) | 「50%必達」観点での戦略・戦術レビューと優先順位付きバックログ(日本語) |
+| [strategy/revisions/](strategy/revisions/) | 落選レビューから起草された改訂案(人が承認/却下する) |
+
+System design and development — what an engineer reads:
+
+| Doc | Contents |
+|---|---|
+| [docs/MASTER_OVERVIEW.ja.md](docs/MASTER_OVERVIEW.ja.md) | **起点はここから。** To-Be全体像・As-Is差分・投資原則・ER図・シーケンス・Userワークフロー(日本語) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Service decomposition, contracts, data flow |
-| [docs/INVESTMENT_DOCTRINE.md](docs/INVESTMENT_DOCTRINE.md) | Strategy, gates, sizing, base rates — every number pre-registered |
-| [docs/VERIFICATION_PROTOCOL.md](docs/VERIFICATION_PROTOCOL.md) | The adversarial process spec and its bias-elimination mechanisms |
 | [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) | Free-tier data sources and degradation behavior |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Path from manual MVP to automated daily operation |
 | [docs/USER_GUIDE.ja.md](docs/USER_GUIDE.ja.md) | 日本語ユーザーガイド(日々の運用手順) |
 
 System documentation is English (token economy); all user-facing output —

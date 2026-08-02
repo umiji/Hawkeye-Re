@@ -9,6 +9,9 @@ Daily rhythm (docs/USER_GUIDE.ja.md):
   resolve-claim resolve a pre-registered claim TRUE/FALSE
   outcome       compute P&L + skill-vs-luck attribution for a closed trade
   calibration   book-level Brier / quadrant statistics
+  benchmark     aggregate forward-return stats: BUY vs PASS vs gate-reject
+  review-passes individual postmortem: which specific PASS/DECLINE calls
+                moved a lot afterward (complements benchmark's averages)
 """
 from __future__ import annotations
 
@@ -16,7 +19,9 @@ import argparse
 import sys
 from datetime import date
 
-from hawkeye.config import HawkeyeConfig, db_path
+from hawkeye.config import HawkeyeConfig
+from hawkeye.paths import db_path
+from hawkeye.envfile import load_local_env
 from hawkeye.contracts.models import (
     Catalyst,
     CatalystType,
@@ -24,6 +29,8 @@ from hawkeye.contracts.models import (
     Outcome,
     Recommendation,
     RecommendationStatus,
+    ScreenedCandidateStage,
+    utc_date,
 )
 from hawkeye.ledger.scoring import (
     brier_score,
@@ -35,13 +42,41 @@ from hawkeye.ledger.store import Ledger
 from hawkeye.marketdata.finnhub import CompositeProvider, FinnhubProvider
 from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
+from hawkeye.marketdata.yahoo_earnings import YahooEarningsSource
 from hawkeye.reports.render_ja import (
+    fmt_jst,
+    render_drop_cycle_ja,
+    render_drop_review_ja,
     render_recommendation_ja,
     render_scout_ja,
     render_signals_ja,
 )
-from hawkeye.scout.benchmark import cohort_of, cohort_stats, forward_return
-from hawkeye.scout.scout import run_scout
+from hawkeye.scout import drop_case, drop_cycle
+from hawkeye.scout.drop_review import (
+    CHECKPOINT_TRADING_DAYS,
+    COHORTS,
+    INVESTIGATION_COHORTS,
+    attribute_by_cohort,
+    attribute_by_gate,
+    collect_checkpoints,
+    from_recommendation,
+    from_screened,
+    outliers,
+    to_drop_review,
+    with_peer_baseline,
+)
+from hawkeye.scout.benchmark import (
+    cohort_stats,
+    collect_samples,
+    forward_return,
+    min_calendar_days_for_trading_days,
+    reason_snippet,
+)
+from hawkeye.scout.scout import (
+    build_screened_candidates,
+    run_scout,
+    scan_window,
+)
 from hawkeye.sentinel.monitor import check_position
 from hawkeye.tribunal import casefile
 from hawkeye.tribunal.pipeline import (
@@ -74,9 +109,12 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         "atr_pct_14d": args.atr_pct,
         "gap_on_event_pct": args.gap_pct,
         "days_since_event": args.days_since_event,
+        "eps_surprise_pct": args.eps_surprise_pct,
+        "revenue_surprise_pct": args.revenue_surprise_pct,
     }
     brief = build_brief(args.ticker.upper(), catalyst, _provider(),
-                        notes=args.notes or "", overrides=overrides)
+                        notes=args.notes or "", overrides=overrides,
+                        config=config)
 
     from hawkeye.tribunal.llm import AnthropicLLM
     llm = AnthropicLLM(model=config.model)
@@ -125,9 +163,12 @@ def cmd_case_open(args: argparse.Namespace) -> int:
         "atr_pct_14d": args.atr_pct,
         "gap_on_event_pct": args.gap_pct,
         "days_since_event": args.days_since_event,
+        "eps_surprise_pct": args.eps_surprise_pct,
+        "revenue_surprise_pct": args.revenue_surprise_pct,
     }
     brief = build_brief(args.ticker.upper(), catalyst, _provider(),
-                        notes=args.notes or "", overrides=overrides)
+                        notes=args.notes or "", overrides=overrides,
+                        config=config)
     gates = run_entry_gates(brief.snapshot, catalyst, config)
     ledger = _ledger()
     if not gates.ok:
@@ -152,6 +193,20 @@ def cmd_case_step(args: argparse.Namespace) -> int:
     return 0
 
 
+def _case_finalize_and_record(case: "casefile.Case", config: HawkeyeConfig) -> int:
+    rec = casefile.finalize(case, config)
+    ledger = _ledger()
+    status = (RecommendationStatus.PROPOSED
+              if rec.verdict.decision == DecisionType.BUY
+              else RecommendationStatus.SYSTEM_PASS)
+    ledger.record_recommendation(rec, status)
+    casefile.mark_complete(case, rec.id)
+    print()
+    print(render_recommendation_ja(rec))
+    print(f"\n(記録済み: {rec.id} / status={status.value})")
+    return 0
+
+
 def cmd_case_submit(args: argparse.Namespace) -> int:
     import json as _json
     try:
@@ -159,12 +214,21 @@ def cmd_case_submit(args: argparse.Namespace) -> int:
     except FileNotFoundError:
         print(f"case not found: {args.case_id}", file=sys.stderr)
         return 1
+    config = HawkeyeConfig.from_env()
+
+    if casefile.next_role(case) is None and case.recommendation_id is None:
+        # All three roles were submitted in a previous run, but recording
+        # into the ledger never got confirmed (e.g. it crashed or the DB
+        # was locked) — finish that instead of erroring "case already
+        # complete" on a case that never actually finished.
+        print("all roles already submitted; retrying ledger recording")
+        return _case_finalize_and_record(case, config)
+
     try:
-        payload = _json.loads(open(args.file).read())
+        payload = _json.loads(open(args.file, encoding="utf-8").read())
     except (OSError, _json.JSONDecodeError) as exc:
         print(f"cannot read JSON from {args.file}: {exc}", file=sys.stderr)
         return 1
-    config = HawkeyeConfig.from_env()
     try:
         role = casefile.submit(case, payload)
     except (ValueError, KeyError, TypeError) as exc:
@@ -173,21 +237,18 @@ def cmd_case_submit(args: argparse.Namespace) -> int:
         return 1
     print(f"accepted: {role}")
     if casefile.next_role(case) is None:
-        rec = casefile.finalize(case, config)
-        ledger = _ledger()
-        status = (RecommendationStatus.PROPOSED
-                  if rec.verdict.decision == DecisionType.BUY
-                  else RecommendationStatus.SYSTEM_PASS)
-        ledger.record_recommendation(rec, status)
-        print()
-        print(render_recommendation_ja(rec))
-        print(f"\n(記録済み: {rec.id} / status={status.value})")
-    else:
-        _print_step(case)
+        return _case_finalize_and_record(case, config)
+    _print_step(case)
     return 0
 
 
 def cmd_case_list(args: argparse.Namespace) -> int:
+    # Housekeeping runs here rather than as a command to remember: this is
+    # the one command /hawkeye-run always calls first (§5.2(7)/(8)). Reported
+    # rather than silent — a cleanup nobody sees is one nobody can question.
+    swept = casefile.sweep_role_workspaces()
+    if swept:
+        print(f"(完了済みケースの作業ファイルを削除: {len(swept)}件)")
     cases = casefile.list_cases()
     if not cases:
         print("(ケースなし)")
@@ -208,15 +269,43 @@ def cmd_scout(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     provider = CompositeProvider(YahooProvider(), finnhub)
-    result = run_scout(finnhub, provider, config, days_back=args.days)
-
     ledger = _ledger()
-    ledger.record_scan(
-        params={"days_back": args.days or config.scout_days_back,
-                "min_eps_surprise": config.scout_min_eps_surprise_pct},
+    # The window is derived from the previous run, so an irregular manual
+    # cadence doesn't leave unscanned days (§5.2(1)). --days forces a fixed
+    # lookback instead, for backfills and one-off exploration.
+    window = (None if args.days
+              else scan_window(date.today(), ledger.last_scan_at(), config))
+    # Discovery stays with the calendar; the EPS numbers are re-read from
+    # Yahoo before ranking (hawkeye/scout/verify.py). If yfinance is missing
+    # the source reports itself unavailable and the scan runs on the
+    # calendar's own figures rather than failing.
+    numbers = YahooEarningsSource()
+    if not numbers.available:
+        print("yfinance が未インストールのため、決算数値はカレンダーの値のまま"
+              "使います(pip install yfinance lxml)", file=sys.stderr)
+    result = run_scout(finnhub, provider, config, days_back=args.days,
+                       window=window, already_seen=ledger.seen_events(),
+                       numbers_source=numbers if numbers.available else None)
+
+    # Whatever isn't sent to the tribunal THIS run — from result.passed's
+    # tail onward — is the ranking-cutoff tier (docs/MASTER_OVERVIEW.ja.md
+    # §5.1, #4). Computed before record_scan() so it can be persisted in the
+    # same breath as the scan itself, immediately below.
+    sent_to_tribunal_n = max(args.evaluate or 0, args.open_cases or 0)
+
+    scan_id = ledger.record_scan(
+        params={"window_start": result.scan_start.isoformat(),
+                "window_end": result.scan_end.isoformat(),
+                "window_truncated": result.window_truncated,
+                "days_back_override": args.days,
+                "duplicates_skipped": result.duplicates,
+                "min_eps_surprise": config.scout_min_eps_surprise_pct,
+                **result.verification.as_dict()},
         scanned=result.scanned, screened=result.screened,
         enriched=result.enriched, gate_passed=len(result.passed),
         tickers=[c.ticker for c in result.passed])
+    ledger.record_screened_candidates(
+        scan_id, build_screened_candidates(result, scan_id, sent_to_tribunal_n))
     print(render_scout_ja(result))
 
     if args.open_cases and result.passed:
@@ -246,54 +335,410 @@ def cmd_scout(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_benchmark(args: argparse.Namespace) -> int:
+def cmd_screened_list(args: argparse.Namespace) -> int:
+    ledger = _ledger()
+    rows = ledger.screened_candidates(scan_id=args.scan_id, stage=args.stage)
+    if not rows:
+        print("(該当する落選候補の記録なし)")
+        return 0
+    stage_label = {"enrichment_cap": "肉付け上限落ち", "gate_reject": "入口ゲート落ち",
+                  "ranking_cutoff": "ランキング下位"}
+    print(f"# 落選候補一覧 ({len(rows)}件)\n")
+    print("| scan_id | 銘柄 | 段階 | スコア | 価格(基準日) | 理由 |")
+    print("|---|---|---|---|---|---|")
+    for r in rows:
+        price = f"${r.price:.2f} ({r.price_asof})" if r.price is not None else "-"
+        print(f"| {r.scan_id} | {r.ticker} | {stage_label.get(r.stage.value, r.stage.value)} "
+              f"| {r.score} | {price} | {r.reject_reason} |")
+    return 0
+
+
+def cmd_drops_report(args: argparse.Namespace) -> int:
+    """Score the funnel's rejects (docs/MASTER_OVERVIEW.ja.md §5.2(3)).
+
+    Both ledger tables are read: `screened_candidates` holds the candidates
+    dropped before the tribunal, `recommendations` the ones that reached it.
+    Reviewing only the former would leave the tribunal unscored; reviewing
+    only the latter is the blind spot §5.1 was written about.
+    """
+    config = HawkeyeConfig.from_env()
     ledger = _ledger()
     provider = _provider()
-    today = date.today()
-    samples: list[tuple[str, float]] = []
-    skipped = 0
+
+    tracked = [from_screened(c) for c in ledger.screened_candidates()]
+    for row in ledger.list():
+        rec = ledger.get(row["id"])
+        if rec is not None:
+            tracked.append(from_recommendation(rec))
+
+    results, pending, censored = collect_checkpoints(
+        tracked, provider, date.today(), config.drop_review_index_ticker,
+        checkpoint=args.checkpoint)
+    results = with_peer_baseline(results)
+
+    # The aggregates always cover every stage — they are what unfreezes the
+    # enrichment-cap settings (§5.2(6)). Only the per-name investigation
+    # queue narrows, because reading an enrichment-cap drop one at a time
+    # can't tell you what to change.
+    if args.stage == "all":
+        cohorts = None
+    elif args.stage:
+        cohorts = (args.stage,)
+    else:
+        cohorts = INVESTIGATION_COHORTS
+    flagged = outliers(results, cohorts=cohorts)
+    all_flagged = outliers(results, cohorts=None)
+    suppressed = len(all_flagged) - len(flagged)
+    reason = ("肉付け上限落ちは個別調査の対象外(落選理由が「サプライズ順で"
+              "16位以下」しかなく、1銘柄ずつ読んでも打つ手が決まらないため。"
+              "群の平均には計上済み)"
+              if cohorts is INVESTIGATION_COHORTS
+              else f"`--stage {args.stage}` で絞り込み中")
+
+    print(render_drop_review_ja(
+        checkpoint=args.checkpoint,
+        horizon_days=CHECKPOINT_TRADING_DAYS[args.checkpoint],
+        index_ticker=config.drop_review_index_ticker,
+        results=results, pending=pending, censored=censored,
+        cohort_table=attribute_by_cohort(results),
+        gate_table=attribute_by_gate(results),
+        flagged=flagged,
+        min_samples=config.drop_review_min_samples_per_category,
+        suppressed=suppressed, suppressed_reason=reason))
+    return 0
+
+
+# --- the review round (§5.2(3) [2][3][4]; driven by /hawkeye-review) --------
+
+def _tracked_candidates(ledger) -> tuple[list, dict, dict]:
+    """Everything the funnel dropped, plus the two lookups an investigation
+    needs: what our own record held at decision time, and (for gate rejects)
+    the catalyst date the news window should be anchored on."""
+    tracked = []
+    record_news: dict[str, list] = {}
+    event_dates: dict[str, date] = {}
+    for c in ledger.screened_candidates():
+        t = from_screened(c)
+        tracked.append(t)
+        record_news[c.id] = list(c.news)
+        event_dates[c.id] = c.event_date
     for row in ledger.list():
         rec = ledger.get(row["id"])
         if rec is None:
             continue
-        eval_day = rec.created_at.date()
-        if (today - eval_day).days < args.horizon:
-            skipped += 1
-            continue
-        try:
-            bars = provider.daily_history(rec.ticker, days=400)
-        except Exception:
-            skipped += 1
-            continue
-        ret = forward_return(bars, eval_day, args.horizon)
-        if ret is None:
-            skipped += 1
-            continue
-        samples.append((cohort_of(rec), ret))
+        tracked.append(from_recommendation(rec))
+        record_news[rec.id] = list(rec.brief.news) if rec.brief else []
+        if rec.brief is not None:
+            event_dates[rec.id] = rec.brief.catalyst.event_date
+    return tracked, record_news, event_dates
 
-    print(f"# 📊 コホート・ベンチマーク(評価日から{args.horizon}日後のリターン)\n")
+
+def cmd_drops_measure(args: argparse.Namespace) -> int:
+    """Score every dropped candidate whose checkpoint has elapsed.
+
+    Records all of them, not only the ones that moved: without the
+    denominator, "3 names got away from us" cannot be read as a lot or a
+    few. At T+10 the outliers are staged for investigation instead of being
+    written straight away, because the row is written once, complete — the
+    ledger has no UPDATE path by design.
+    """
+    config = HawkeyeConfig.from_env()
+    ledger = _ledger()
+    provider = _provider()
+    checkpoint = args.checkpoint
+
+    tracked, record_news, event_dates = _tracked_candidates(ledger)
+    already = ledger.recorded_drop_review_keys(checkpoint)
+
+    results, pending, censored = collect_checkpoints(
+        tracked, provider, date.today(), config.drop_review_index_ticker,
+        checkpoint=checkpoint)
+    results = with_peer_baseline(results)
+    plan = drop_cycle.plan(results, checkpoint, already_recorded=already)
+
+    reviews = [to_drop_review(r, reviewer_model=args.reviewer or "")
+               for r in plan.record_now]
+    if reviews:
+        ledger.record_drop_reviews(reviews)
+
+    queued: list[str] = []
+    for r in plan.investigate:
+        subject_id = r.screened_candidate_id or r.rec_id or ""
+        try:
+            refetched = provider.news(
+                r.ticker, limit=config.news_max_items,
+                event_date=event_dates.get(subject_id),
+                lead_days=config.news_lead_days)
+        except Exception:
+            refetched = []
+        case = drop_case.open_case(
+            r, record_at_decision=record_news.get(subject_id, []),
+            refetched=refetched, reviewer_model=args.reviewer or "")
+        drop_case.save_case(case)
+        queued.append(case.id)
+
+    total_before = len(ledger.drop_reviews()) - len(reviews)
+    drop_cycle.save_round(drop_cycle.merge_round(
+        drop_cycle.load_round(), checkpoint, plan,
+        recorded_ids=[r.id for r in reviews], queued_case_ids=queued,
+        pending=pending, censored=censored, total_before=total_before))
+
+    print(f"{checkpoint}: 記録 {len(reviews)}件 / 調査待ちに追加 {len(queued)}件 "
+          f"/ 観測期間未経過 {pending}件 / 記録済みのため対象外 "
+          f"{plan.skipped_already_recorded}件 / 測定不能 {plan.unmeasurable}件")
+    if queued:
+        print("次: hawkeye drops queue")
+    return 0
+
+
+def cmd_drops_queue(args: argparse.Namespace) -> int:
+    """Emit the investigation package for one queued case, or list the queue.
+
+    One case at a time on purpose: the caller spawns a fresh subagent per
+    name so the previous ticker's story cannot colour the next one's.
+    """
+    cases = drop_case.list_cases()
+    if not cases:
+        print("調査待ちはありません。")
+        return 0
+    if args.case_id is None:
+        print(f"調査待ち {len(cases)}件:")
+        for c in cases:
+            m = c.measurement
+            print(f"  {c.id}  {m.ticker:6s} {m.cohort:16s} "
+                  f"z={m.z:+.2f}  判断日 {m.decision_date}")
+        print(f"\n次: hawkeye drops queue --case-id {cases[0].id}")
+        return 0
+    try:
+        case = drop_case.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    print(drop_case.render_input(case))
+    print()
+    print(f"submit_with: hawkeye drops submit {case.id} --file <調査結果.json>")
+    return 0
+
+
+def cmd_drops_submit(args: argparse.Namespace) -> int:
+    """Merge one investigation into its measurement and record the row."""
+    try:
+        case = drop_case.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    try:
+        review = drop_case.submit(case, drop_case.load_reply(args.file),
+                                  reviewer_model=args.reviewer or "")
+    except ValueError as exc:
+        print(f"投稿された調査結果を受け付けられません: {exc}", file=sys.stderr)
+        return 1
+
+    ledger = _ledger()
+    ledger.record_drop_reviews([review])
+    # Only now — the staged file is what makes a failed ledger write
+    # retryable (the same ordering as the tribunal's case workspaces).
+    drop_case.discard(case.id)
+
+    state = drop_cycle.load_round()
+    state.recorded_ids.append(review.id)
+    drop_cycle.save_round(state)
+
+    label = review.miss_category.value if review.miss_category else "未分類"
+    print(f"記録しました: {review.ticker} / 分類 {label} / {review.id}")
+    remaining = len(drop_case.list_cases())
+    print("次: " + (f"hawkeye drops queue (残り {remaining}件)"
+                    if remaining else "hawkeye drops revise"))
+    return 0
+
+
+def cmd_drops_revise(args: argparse.Namespace) -> int:
+    """Report the round and say whether any cause is ready for a revision.
+
+    Always prints, threshold met or not: a review process that only speaks
+    when it has a proposal is indistinguishable from one that stopped
+    running. Drafting the revision itself is the caller's job — writing to
+    strategy/ is a human-approved act, not something a CLI does on its own.
+    """
+    config = HawkeyeConfig.from_env()
+    ledger = _ledger()
+    state = drop_cycle.load_round()
+    all_reviews = ledger.drop_reviews()
+    min_samples = config.drop_review_min_samples_per_category
+
+    this_round = [r for r in all_reviews if r.id in set(state.recorded_ids)]
+    investigated = [r for r in this_round if r.miss_category is not None]
+    measured = [r for r in this_round if r.miss_category is None]
+
+    cohort_counts: dict[str, int] = {}
+    for r in this_round:
+        cohort_counts[r.cohort] = cohort_counts.get(r.cohort, 0) + 1
+
+    ready = drop_cycle.ready_categories(all_reviews, min_samples)
+    print(render_drop_cycle_ja(
+        checkpoint=state.checkpoint or "t5/t10",
+        measured=measured, investigated=investigated,
+        cohort_counts=cohort_counts, censored=state.censored,
+        pending=state.pending, skipped=state.skipped_already_recorded,
+        remaining=drop_cycle.remaining_to_threshold(all_reviews, min_samples),
+        ready=ready, min_samples=min_samples,
+        previous_total=state.total_before))
+
+    still_queued = len(drop_case.list_cases())
+    if still_queued:
+        print(f"\n⚠️ 調査待ちが {still_queued}件 残っています "
+              "— 先に hawkeye drops queue を処理してください。")
+        return 0
+    if not args.keep_round:
+        drop_cycle.clear_round()
+    return 0
+
+
+def cmd_docs_tribunal_roles(args: argparse.Namespace) -> int:
+    """Regenerate (or verify) the readable copy of the tribunal's criteria.
+
+    The prompts stay in `prompts.py`; this only renders them. `--check` is
+    what a test and a reviewer use to catch a prompt edit that never made it
+    into the document people actually read.
+    """
+    from pathlib import Path
+
+    from hawkeye.reports.tribunal_roles import DOC_PATH, render_tribunal_roles_ja
+
+    rendered = render_tribunal_roles_ja()
+    target = Path(DOC_PATH)
+    if args.check:
+        current = target.read_text(encoding="utf-8") if target.exists() else ""
+        if current == rendered:
+            print(f"{DOC_PATH}: ✅ prompts.py と一致")
+            return 0
+        print(f"{DOC_PATH}: ❌ prompts.py とずれています — "
+              "`hawkeye docs tribunal-roles --write` で再生成してください",
+              file=sys.stderr)
+        return 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(rendered, encoding="utf-8")
+    print(f"{DOC_PATH}: 生成しました({len(rendered.splitlines())}行)")
+    return 0
+
+
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    config = HawkeyeConfig.from_env()
+    official_horizon = config.phase0_benchmark_horizon_days
+    horizon = args.horizon if args.horizon is not None else official_horizon
+    exploratory = args.horizon is not None and args.horizon != official_horizon
+
+    ledger = _ledger()
+    provider = _provider()
+    today = date.today()
+    records = [ledger.get(row["id"]) for row in ledger.list()]
+    records = [r for r in records if r is not None]
+    samples, pending, censored = collect_samples(
+        records, provider, today, horizon, source=args.source)
+
+    print(f"# 📊 コホート・ベンチマーク(評価日から{horizon}営業日後のリターン、"
+          f"対象コホート: {args.source})\n")
+    if exploratory:
+        print(f"⚠️ 探索用horizon(非公式) — Phase 0のキル基準判定には使えません。"
+              f"公式値は{official_horizon}営業日です。\n")
     if not samples:
-        print(f"対象データなし(評価から{args.horizon}日経過した記録がまだありません)")
+        print(f"対象データなし(評価から{horizon}営業日経過した記録がまだありません)")
         return 0
     stats = cohort_stats(samples)
     label = {"BUY": "🟢 BUY(推奨)", "TRIBUNAL_PASS": "⚪ 審理で見送り",
              "GATE_REJECT": "🚧 ゲートで却下"}
-    print("| コホート | 件数 | 平均 | 中央値 | 勝率 |")
-    print("|---|---|---|---|---|")
+    print("| コホート | 件数 | 平均 | 中央値 | 勝率 | 打ち切り |")
+    print("|---|---|---|---|---|---|")
     for cohort in ("BUY", "TRIBUNAL_PASS", "GATE_REJECT"):
         s = stats[cohort]
+        c = censored[cohort]
         if s["n"] == 0:
-            print(f"| {label[cohort]} | 0 | - | - | - |")
+            print(f"| {label[cohort]} | 0 | - | - | - | {c} |")
         else:
             print(f"| {label[cohort]} | {s['n']} | {s['mean']:+.2f}% | "
-                  f"{s['median']:+.2f}% | {s['win_rate']:.0%} |")
+                  f"{s['median']:+.2f}% | {s['win_rate']:.0%} | {c} |")
+    total_censored = sum(censored.values())
+    if total_censored:
+        print(f"\n⚠️ 打ち切り(株価取得失敗)が{total_censored}件あります。上場廃止・"
+              f"銘柄コード変更・買収・API障害などで価格が取得できなかった銘柄は集計"
+              f"から除外されており、往々にして最悪の結果を出した銘柄である可能性が"
+              f"高いため、各群の平均は実態より良く見えている可能性があります"
+              f"(生存者バイアス)。")
     buy, pas = stats["BUY"], stats["TRIBUNAL_PASS"]
     if buy["n"] > 0 and pas["n"] > 0:
         spread = buy["mean"] - pas["mean"]
         print(f"\nBUY − 見送り スプレッド: {spread:+.2f}%ポイント "
               f"({'✅ 絞り込みが価値を生んでいる方向' if spread > 0 else '⚠️ 絞り込みが価値を生んでいない — ロジック要見直し'})")
-    if skipped:
-        print(f"\n(スキップ: {skipped}件 — 期間未達またはデータ取得失敗)")
+    if pending:
+        print(f"\n(未経過: {pending}件 — まだ{horizon}営業日経過していません)")
+    return 0
+
+
+def cmd_review_passes(args: argparse.Namespace) -> int:
+    """Individual postmortem: which specific PASS/DECLINE calls look, in
+    hindsight, like mistakes — vs. `benchmark`'s aggregate cohort view."""
+    ledger = _ledger()
+    provider = _provider()
+    today = date.today()
+    flagged: list[dict] = []
+    pending = 0
+    censored = 0
+    review_statuses = {RecommendationStatus.SYSTEM_PASS.value,
+                       RecommendationStatus.DECLINED.value}
+    min_wait_days = min_calendar_days_for_trading_days(args.horizon)
+    for row in ledger.list():
+        if row["status"] not in review_statuses:
+            continue
+        rec = ledger.get(row["id"])
+        if rec is None:
+            continue
+        eval_day = utc_date(rec.created_at)
+        if (today - eval_day).days < min_wait_days:
+            pending += 1
+            continue
+        try:
+            bars = provider.daily_history(rec.ticker, days=400)
+        except Exception:
+            censored += 1
+            continue
+        ret = forward_return(bars, eval_day, args.horizon)
+        if ret is None:
+            censored += 1
+            continue
+        if abs(ret) >= args.threshold:
+            flagged.append({"rec": rec, "return_pct": round(ret, 2),
+                            "status": row["status"]})
+
+    flagged.sort(key=lambda d: -abs(d["return_pct"]))
+    print(f"# 🔍 見送り案件の事後レビュー(評価から{args.horizon}営業日後、"
+         f"±{args.threshold:.0f}%以上動いた銘柄)\n")
+    if not flagged:
+        print(f"該当なし(閾値{args.threshold:.0f}%を超えて動いた見送り銘柄はありません)")
+        if censored:
+            print(f"⚠️ 打ち切り(株価取得失敗): {censored}件 — "
+                 f"上場廃止・買収・API障害などの可能性")
+        if pending:
+            print(f"(未経過: {pending}件 — まだ{args.horizon}営業日経過していません)")
+        return 0
+    for item in flagged:
+        rec, ret = item["rec"], item["return_pct"]
+        arrow = "📈" if ret > 0 else "📉"
+        tag = ("見送り(判断ミスの可能性 — 上昇)" if ret > 0
+              else "見送り(結果的に正しかった可能性 — 下落)")
+        print(f"## {arrow} {rec.ticker}  {ret:+.1f}%  [{tag}]")
+        print(f"- 提案ID: {rec.id}  評価日時: {fmt_jst(rec.created_at)}")
+        print(f"- 理由: {reason_snippet(rec, item['status'])}")
+        print(f"- 詳細: hawkeye show {rec.id}")
+        print()
+    print("注意: 上昇していても「判断ミス」とは限りません。見送り後に新しい好材料が"
+         "出た可能性もあります。`hawkeye show` で当時の反証内容を確認した上で、"
+         "プロセス(ゲート閾値・反証の甘さ等)に起因するのか、単なる後知恵バイアスかを"
+         "判断してください。")
+    if censored:
+        print(f"\n⚠️ 打ち切り(株価取得失敗): {censored}件 — "
+             f"上場廃止・買収・API障害などの可能性")
+    if pending:
+        print(f"(未経過: {pending}件 — まだ{args.horizon}営業日経過していません)")
     return 0
 
 
@@ -315,7 +760,8 @@ def cmd_list(args: argparse.Namespace) -> int:
         print("(記録なし)")
         return 0
     for r in rows:
-        print(f"{r['id']}  {r['ticker']:<6}  {r['status']:<12}  {r['created_at']}")
+        print(f"{r['id']}  {r['ticker']:<6}  {r['status']:<12}  "
+              f"{fmt_jst(r['created_at'])}")
     return 0
 
 
@@ -547,6 +993,10 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--atr-pct", type=float, default=None)
     ev.add_argument("--gap-pct", type=float, default=None)
     ev.add_argument("--days-since-event", type=int, default=None)
+    ev.add_argument("--eps-surprise-pct", type=float, default=None,
+                    help="structured EPS surprise %% (if known)")
+    ev.add_argument("--revenue-surprise-pct", type=float, default=None,
+                    help="structured revenue surprise %% (if known)")
     ev.set_defaults(func=cmd_evaluate)
 
     sc = sub.add_parser("scout", help="scan earnings surprises for candidates")
@@ -559,6 +1009,93 @@ def build_parser() -> argparse.ArgumentParser:
                          "(no API key; driven by /hawkeye-run)")
     sc.add_argument("--nav", type=float, default=100_000.0)
     sc.set_defaults(func=cmd_scout)
+
+    sd = sub.add_parser("screened",
+                        help="review candidates the scout funnel dropped "
+                             "(docs/MASTER_OVERVIEW.ja.md §5.1)")
+    sd_sub = sd.add_subparsers(dest="screened_command", required=True)
+    sdl = sd_sub.add_parser("list", help="list dropped candidates")
+    sdl.add_argument("--scan-id", type=int, default=None,
+                     help="restrict to one scan (see `hawkeye scout` output)")
+    sdl.add_argument("--stage",
+                     choices=[s.value for s in ScreenedCandidateStage],
+                     default=None, help="restrict to one funnel stage")
+    sdl.set_defaults(func=cmd_screened_list)
+
+    dr = sub.add_parser("drops",
+                        help="score the candidates the funnel dropped "
+                             "(docs/MASTER_OVERVIEW.ja.md §5.2(3))")
+    dr_sub = dr.add_subparsers(dest="drops_command", required=True)
+    drr = dr_sub.add_parser(
+        "report",
+        help="alpha/z per funnel stage and per gate at a fixed checkpoint")
+    # No free-form horizon: the checkpoints are pre-registered (T+5/T+10) so
+    # a disappointing result can't be re-run at whatever horizon flatters it.
+    drr.add_argument("--checkpoint", choices=sorted(CHECKPOINT_TRADING_DAYS),
+                     default="t5",
+                     help="T+5 (default) or T+10 trading days after the drop")
+    drr.add_argument("--stage", choices=sorted(COHORTS) + ["all"],
+                     default=None,
+                     help="restrict the per-name investigation queue to one "
+                          "funnel stage ('all' includes enrichment-cap drops, "
+                          "which the default leaves out). Aggregates always "
+                          "cover every stage regardless.")
+    drr.set_defaults(func=cmd_drops_report)
+
+    # The review round (§5.2(3) [2][3][4]). Driven by /hawkeye-review, which
+    # runs in its OWN session: the round reads a lot of history and produces
+    # a lot of prose, and mixing it into /hawkeye-run would make every daily
+    # candidate cycle pay for it.
+    drm = dr_sub.add_parser(
+        "measure",
+        help="score every elapsed drop at one checkpoint and record it; "
+             "at t10, stage the outliers for investigation")
+    drm.add_argument("--checkpoint", choices=sorted(CHECKPOINT_TRADING_DAYS),
+                     required=True,
+                     help="t5 (measure and file) or t10 (measure, then queue "
+                          "the outliers for a per-name investigation)")
+    drm.add_argument("--reviewer", default="",
+                     help="engine label recorded with the rows")
+    drm.set_defaults(func=cmd_drops_measure)
+
+    drq = dr_sub.add_parser(
+        "queue", help="list the investigation queue, or emit one case's package")
+    drq.add_argument("--case-id", default=None,
+                     help="emit this case's investigation package "
+                          "(omit to list the queue)")
+    drq.set_defaults(func=cmd_drops_queue)
+
+    drs = dr_sub.add_parser(
+        "submit", help="merge one investigation into its measurement and record")
+    drs.add_argument("case_id")
+    drs.add_argument("--file", required=True,
+                     help="JSON file holding the investigation reply")
+    drs.add_argument("--reviewer", default="")
+    drs.set_defaults(func=cmd_drops_submit)
+
+    drv = dr_sub.add_parser(
+        "revise",
+        help="report the round and say whether any cause reached the "
+             "threshold for drafting a revision (prints either way)")
+    drv.add_argument("--keep-round", action="store_true",
+                     help="do not clear the round state (for re-printing)")
+    drv.set_defaults(func=cmd_drops_revise)
+
+    # Generated strategy docs. The prompts stay in prompts.py (a prompt rule
+    # and the code enforcing it only mean something together, and both engines
+    # must read the same constant) — this only renders a readable copy.
+    dc = sub.add_parser("docs", help="generate strategy documents from code")
+    dc_sub = dc.add_subparsers(dest="docs_command", required=True)
+    dtr = dc_sub.add_parser(
+        "tribunal-roles",
+        help="render strategy/TRIBUNAL_ROLES.ja.md from prompts.py")
+    dtr.add_argument("--check", action="store_true",
+                     help="verify the committed document matches prompts.py "
+                          "instead of rewriting it (exit 1 on drift)")
+    dtr.add_argument("--write", action="store_true",
+                     help="write the document (the default; accepted so the "
+                          "command printed in the document's own header works)")
+    dtr.set_defaults(func=cmd_docs_tribunal_roles)
 
     # session-mode case workflow (LLM driven by Claude Code, no API key)
     ca_p = sub.add_parser("case",
@@ -580,6 +1117,8 @@ def build_parser() -> argparse.ArgumentParser:
     co.add_argument("--atr-pct", type=float, default=None)
     co.add_argument("--gap-pct", type=float, default=None)
     co.add_argument("--days-since-event", type=int, default=None)
+    co.add_argument("--eps-surprise-pct", type=float, default=None)
+    co.add_argument("--revenue-surprise-pct", type=float, default=None)
     co.set_defaults(func=cmd_case_open)
 
     cs = ca_sub.add_parser("step", help="emit the next role's prompt package")
@@ -596,9 +1135,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     bm = sub.add_parser("benchmark",
                         help="forward returns: BUY vs PASS vs gate-reject cohorts")
-    bm.add_argument("--horizon", type=int, default=30,
-                    help="days after evaluation (default 30)")
+    bm.add_argument("--horizon", type=int, default=None,
+                    help="trading days after evaluation (default: the "
+                         "pinned official Phase-0 value, "
+                         "config.phase0_benchmark_horizon_days=30. An "
+                         "explicit value here is labeled exploratory/"
+                         "non-authoritative in the output — it is not the "
+                         "Phase-0 kill-criterion measurement)")
+    bm.add_argument("--source", choices=["scout", "manual", "all"],
+                    default="scout",
+                    help="cohort source filter (default: scout-only. Per "
+                         "strategy/ROADMAP.md, manually-picked `evaluate` "
+                         "candidates are a separate cohort and must not "
+                         "enter viability stats)")
     bm.set_defaults(func=cmd_benchmark)
+
+    rp = sub.add_parser("review-passes",
+                        help="flag individual PASS/DECLINE calls that moved "
+                             "a lot afterward (postmortem, not aggregate stats)")
+    rp.add_argument("--horizon", type=int, default=30,
+                    help="trading days after evaluation (default 30)")
+    rp.add_argument("--threshold", type=float, default=15.0,
+                    help="flag moves at or beyond this %% magnitude (default 15)")
+    rp.set_defaults(func=cmd_review_passes)
 
     sh = sub.add_parser("show", help="re-render a stored recommendation")
     sh.add_argument("rec_id")
@@ -667,6 +1226,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_local_env()
+    # Windows consoles default stdout/stderr to the system codepage (cp932
+    # for Japanese locales), which can't encode em dashes or emoji used
+    # throughout this CLI's output and help text — the same bug class fixed
+    # for file I/O in commit 01152f2, here for the console streams instead.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     args = build_parser().parse_args(argv)
     return args.func(args)
 

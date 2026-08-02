@@ -1,0 +1,810 @@
+<!doctype html>
+<html lang="ja" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hawkeye · market data probe</title>
+<style>
+/* Palette roles. Light is the default; dark is a selected set of steps for
+   the dark surface, declared under both the OS media query and the explicit
+   toggle so the toggle wins in either direction. */
+:root {
+  color-scheme: light;
+  --plane:      #f9f9f7;
+  --surface:    #fcfcfb;
+  --ink:        #0b0b0b;
+  --ink-2:      #52514e;
+  --muted:      #898781;
+  --grid:       #e1e0d9;
+  --axis:       #c3c2b7;
+  --border:     rgba(11,11,11,.10);
+  --series-1:   #2a78d6;
+  --good:       #0ca30c;
+  --good-text:  #006300;
+  --warning:    #fab219;
+  --critical:   #d03b3b;
+  --wash:       rgba(11,11,11,.035);
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #fff; --ink-2: #c3c2b7;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10);
+    --series-1: #3987e5; --good-text: #0ca30c; --wash: rgba(255,255,255,.04);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --ink: #fff; --ink-2: #c3c2b7;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10);
+  --series-1: #3987e5; --good-text: #0ca30c; --wash: rgba(255,255,255,.04);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--plane); color: var(--ink);
+  font-family: var(--sans); font-size: 14px; line-height: 1.55;
+}
+a { color: var(--series-1); }
+
+/* --- top bar ------------------------------------------------------------ */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; gap: 20px; align-items: center; flex-wrap: wrap;
+  padding: 14px 28px; background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.brand { font-weight: 650; letter-spacing: -.01em; margin-right: auto; }
+.brand span {
+  font-family: var(--mono); font-weight: 400; font-size: 11px;
+  color: var(--muted); text-transform: uppercase; letter-spacing: .12em;
+  margin-left: 10px;
+}
+form.search { display: flex; gap: 0; }
+input#ticker {
+  width: 148px; padding: 8px 12px; font-family: var(--mono); font-size: 14px;
+  text-transform: uppercase; letter-spacing: .06em;
+  color: var(--ink); background: var(--plane);
+  border: 1px solid var(--axis); border-right: none;
+  border-radius: 4px 0 0 4px; outline-offset: 2px;
+}
+input#ticker:focus-visible { outline: 2px solid var(--series-1); }
+button.go {
+  padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer;
+  color: var(--surface); background: var(--ink);
+  border: 1px solid var(--ink); border-radius: 0 4px 4px 0;
+}
+button.go:hover { background: var(--ink-2); border-color: var(--ink-2); }
+button.ghost {
+  padding: 6px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  color: var(--ink-2); background: transparent;
+  border: 1px solid var(--border); border-radius: 4px;
+}
+button.ghost:hover { background: var(--wash); }
+.status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.status.err { color: var(--critical); }
+
+/* --- layout ------------------------------------------------------------- */
+main { max-width: 1180px; margin: 0 auto; padding: 28px 28px 96px; }
+section.panel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--axis); border-radius: 3px;
+  margin-bottom: 22px; padding: 18px 22px 20px;
+}
+section.panel.hero { border-left-color: var(--series-1); }
+.panel > h2 {
+  margin: 0 0 2px; font-size: 15px; font-weight: 650; letter-spacing: -.01em;
+}
+.src {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  margin-bottom: 14px;
+}
+.note {
+  font-size: 12.5px; color: var(--ink-2); margin: 14px 0 0;
+  padding-left: 12px; border-left: 2px solid var(--grid);
+}
+.empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+.panel-error {
+  font-family: var(--mono); font-size: 12px; color: var(--critical);
+  padding: 8px 10px; border: 1px solid var(--critical); border-radius: 3px;
+  margin-bottom: 12px;
+}
+
+/* --- stat strip --------------------------------------------------------- */
+.strip {
+  display: flex; flex-wrap: wrap; gap: 0 40px;
+  padding: 4px 0 20px; margin-bottom: 22px;
+  border-bottom: 1px solid var(--border);
+}
+.stat { padding: 6px 0; }
+.stat dt {
+  font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .1em;
+}
+.stat dd { margin: 2px 0 0; font-size: 21px; font-weight: 600; }
+.stat.lead dd { font-size: 30px; letter-spacing: -.02em; }
+.stat dd small { font-size: 12px; font-weight: 400; color: var(--ink-2); }
+
+/* --- tables ------------------------------------------------------------- */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.scroll-x { overflow-x: auto; }
+th {
+  text-align: right; font-size: 11px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .07em;
+  padding: 0 10px 7px; border-bottom: 1px solid var(--axis);
+  white-space: nowrap;
+}
+th:first-child, td:first-child { text-align: left; padding-left: 2px; }
+td {
+  text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--grid);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+tr.print { cursor: pointer; }
+tr.print:hover > td { background: var(--wash); }
+tr.print.open > td { background: var(--wash); }
+td.day { font-family: var(--mono); }
+td.day .caret { color: var(--muted); display: inline-block; width: 12px; }
+tr.print.open td.day .caret { transform: rotate(90deg); }
+tr.detail > td { padding: 0 0 14px; background: var(--wash); }
+tr.detail table { font-size: 12px; }
+tr.detail th { padding-top: 12px; }
+tr.detail td.differs,
+tr.yahoo td.differs {
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  font-weight: 600;
+}
+/* The second source's reading of the print above it: same columns, tied to
+   its neighbour by a shared left border rather than a separator between. */
+tr.yahoo { cursor: default; }
+tr.yahoo > td {
+  border-top: 0;
+  padding-top: 2px;
+  background: color-mix(in srgb, var(--wash) 55%, transparent);
+}
+tr.yahoo td.day { padding-left: 12px; }
+.src-tag { margin-left: 6px; font-size: 10px; letter-spacing: .04em; }
+.dim { color: var(--muted); }
+
+/* --- badges ------------------------------------------------------------- */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
+  font-weight: 600; padding: 1px 7px; border-radius: 10px;
+  border: 1px solid var(--border); white-space: nowrap;
+}
+.badge + .badge { margin-left: 4px; }
+.badge.pass  { color: var(--good-text); border-color: var(--good); }
+.badge.flag  { color: var(--ink); background:
+                 color-mix(in srgb, var(--warning) 30%, transparent);
+               border-color: var(--warning); }
+.badge.out   { color: var(--muted); }
+.badge.bad   { color: var(--critical); border-color: var(--critical); }
+.up   { color: var(--good-text); }
+.down { color: var(--critical); }
+
+/* --- chart -------------------------------------------------------------- */
+.chart-wrap { position: relative; }
+svg.chart { display: block; width: 100%; touch-action: none; }
+svg.chart .grid  { stroke: var(--grid); stroke-width: 1; }
+svg.chart .axis  { stroke: var(--axis); stroke-width: 1; }
+svg.chart .price { fill: none; stroke: var(--series-1); stroke-width: 2;
+                   stroke-linejoin: round; stroke-linecap: round; }
+svg.chart .tick  { fill: var(--muted); font-size: 10px;
+                   font-family: var(--sans); }
+svg.chart .mark  { stroke: var(--surface); stroke-width: 2; }
+svg.chart .mark.clean   { fill: var(--series-1); }
+svg.chart .mark.flagged { fill: var(--warning); }
+svg.chart .cross { stroke: var(--axis); stroke-width: 1;
+                   stroke-dasharray: 3 3; }
+svg.chart .cursor { fill: var(--series-1); stroke: var(--surface);
+                    stroke-width: 2; }
+.tip {
+  position: absolute; pointer-events: none; opacity: 0;
+  transform: translate(-50%, -120%); transition: opacity .1s;
+  background: var(--ink); color: var(--surface); border-radius: 4px;
+  padding: 6px 9px; font-size: 12px; line-height: 1.4;
+  font-variant-numeric: tabular-nums; white-space: nowrap; z-index: 5;
+}
+.tip b { font-weight: 600; }
+.legend {
+  display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px;
+  font-size: 12px; color: var(--ink-2);
+}
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+/* The swatches are filled from CSS, not from a `fill="var(…)"` presentation
+   attribute — support for var() in those is not something to bet a legend on. */
+.legend .sw-clean { fill: var(--series-1); }
+.legend .sw-flag  { fill: var(--warning); }
+
+/* --- news / raw --------------------------------------------------------- */
+ol.news { list-style: none; margin: 0; padding: 0; }
+ol.news li { padding: 10px 0; border-bottom: 1px solid var(--grid); }
+ol.news .meta {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+}
+ol.news .head { font-weight: 600; margin: 2px 0; }
+ol.news .sum { color: var(--ink-2); font-size: 12.5px; }
+details.raw { margin-top: 14px; }
+details.raw > summary {
+  cursor: pointer; font-size: 12px; color: var(--muted);
+  font-family: var(--mono); list-style: none;
+}
+details.raw > summary::before { content: "▸ "; }
+details.raw[open] > summary::before { content: "▾ "; }
+pre {
+  margin: 10px 0 0; padding: 12px; max-height: 460px; overflow: auto;
+  background: var(--plane); border: 1px solid var(--border);
+  border-radius: 3px; font-family: var(--mono); font-size: 11.5px;
+  line-height: 1.5; color: var(--ink-2);
+}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Hawkeye<span>market data probe</span></div>
+  <form class="search" id="form">
+    <input id="ticker" name="ticker" placeholder="AAPL" autocomplete="off"
+           spellcheck="false" aria-label="ティッカー">
+    <button class="go" type="submit">取得</button>
+  </form>
+  <div class="status" id="status" role="status"></div>
+  <button class="ghost" id="theme" type="button">配色: 自動</button>
+</header>
+<main id="out"></main>
+
+<script>
+"use strict";
+
+/* ---------- formatting ---------- */
+const NA = '<span class="dim">—</span>';
+const el = (t, c, h) => { const n = document.createElement(t);
+  if (c) n.className = c; if (h !== undefined) n.innerHTML = h; return n; };
+const esc = s => String(s ?? "").replace(/[&<>"]/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const isNum = v => typeof v === "number" && isFinite(v);
+
+const num = (v, d = 2) => isNum(v) ? v.toFixed(d) : NA;
+const pct = (v, d = 1) => isNum(v) ? (v >= 0 ? "+" : "") + v.toFixed(d) + "%" : NA;
+function big(v) {
+  if (!isNum(v)) return NA;
+  const a = Math.abs(v);
+  if (a >= 1e9) return (v / 1e9).toFixed(2) + "B";
+  if (a >= 1e6) return (v / 1e6).toFixed(2) + "M";
+  if (a >= 1e3) return (v / 1e3).toFixed(1) + "K";
+  return v.toFixed(2);
+}
+const day = s => (s || "").slice(0, 10);
+const shortDay = s => day(s).slice(5).replace("-", "/");
+
+/* ---------- app ---------- */
+const out = document.getElementById("out");
+const statusEl = document.getElementById("status");
+let LAST = null;
+
+function setStatus(text, isError) {
+  statusEl.textContent = text;
+  statusEl.classList.toggle("err", !!isError);
+}
+
+document.getElementById("form").addEventListener("submit", ev => {
+  ev.preventDefault();
+  load(document.getElementById("ticker").value.trim().toUpperCase());
+});
+
+async function load(ticker) {
+  if (!ticker) return;
+  out.innerHTML = "";
+  setStatus("取得中 " + ticker + " …");
+  location.hash = ticker;
+  let data;
+  try {
+    const res = await fetch("/api/probe?ticker=" + encodeURIComponent(ticker));
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+  } catch (e) {
+    setStatus(String(e.message || e), true);
+    out.appendChild(el("section", "panel",
+      '<div class="panel-error">' + esc(e.message || e) + "</div>"));
+    return;
+  }
+  LAST = data;
+  const failed = data.calls.filter(c => !c.ok).length;
+  setStatus(data.fetched_at.replace("T", " ") + " · " + data.calls.length +
+    " requests" + (failed ? " · " + failed + " failed" : ""));
+  render(data);
+}
+
+function render(data) {
+  out.innerHTML = "";
+  const by = Object.fromEntries(data.sections.map(s => [s.id, s]));
+  out.appendChild(summaryStrip(data, by));
+  out.appendChild(pricesPanel(by.prices, by.earnings));
+  out.appendChild(earningsPanel(by.earnings));
+  out.appendChild(profilePanel(by.profile));
+  out.appendChild(insiderPanel(by.insider));
+  out.appendChild(analystPanel(by.analyst));
+  out.appendChild(newsPanel(by.news));
+  out.appendChild(callsPanel(data.calls));
+}
+
+function panel(section, hero) {
+  const p = el("section", "panel" + (hero ? " hero" : ""));
+  p.appendChild(el("h2", null, esc(section.title)));
+  p.appendChild(el("div", "src", esc(section.source)));
+  if (section.error)
+    p.appendChild(el("div", "panel-error", esc(section.error)));
+  return p;
+}
+function finish(p, section) {
+  if (section.note) p.appendChild(el("p", "note", esc(section.note)));
+  const d = el("details", "raw");
+  d.appendChild(el("summary", null, "生JSON"));
+  d.appendChild(el("pre", null,
+    esc(JSON.stringify(section.hawkeye ?? null, null, 2))));
+  p.appendChild(d);
+  return p;
+}
+
+/* ---------- summary ---------- */
+function stat(label, value, lead) {
+  const d = el("div", "stat" + (lead ? " lead" : ""));
+  d.appendChild(el("dt", null, esc(label)));
+  d.appendChild(el("dd", null, value));
+  return d;
+}
+function summaryStrip(data, by) {
+  const prof = by.profile.hawkeye || {};
+  const bars = (by.prices.hawkeye || {}).bars || [];
+  const last = bars[bars.length - 1];
+  const prints = (by.earnings.hawkeye || {}).prints || [];
+  const latest = prints.find(p => p.event && p.event.eps_actual !== null);
+  const s = el("dl", "strip");
+  s.appendChild(stat(data.ticker, esc(prof.name || "—"), true));
+  s.appendChild(stat("セクター", esc(prof.sector || "—")));
+  s.appendChild(stat("時価総額", isNum(prof.market_cap)
+    ? "$" + big(prof.market_cap) : NA));
+  s.appendChild(stat("直近終値", last
+    ? "$" + num(last.close) + " <small>" + day(last.day) + "</small>" : NA));
+  s.appendChild(stat("直近決算", latest
+    ? day(latest.date) + " <small>EPS " + num(latest.event.eps_actual) +
+      "</small>" : NA));
+  s.appendChild(stat("次回決算", esc(prof.next_earnings_date || "—")));
+  return s;
+}
+
+/* ---------- earnings ---------- */
+const COLS = ["決算日", "行数", "EPS実績", "EPS予想", "EPSサプライズ",
+  "売上実績", "売上予想", "売上サプライズ", "当日ギャップ", "スコア", "判定"];
+
+function badges(p) {
+  if (p.scheduled) return '<span class="badge out">予定・未報告</span>';
+  let h = "";
+  if (p.conflicting_estimates) h += '<span class="badge flag">⚠ 矛盾</span>';
+  if (p.eps_surprise_trusted === false)
+    h += '<span class="badge flag">⚠ EPS不信</span>';
+  if (p.revenue_surprise_trusted === false)
+    h += '<span class="badge flag">⚠ 売上不信</span>';
+  h += p.screened
+    ? '<span class="badge pass">✓ 通過</span>'
+    : '<span class="badge out" title="' + esc(p.reason || "") + '">除外</span>';
+  return h;
+}
+
+function earningsPanel(section) {
+  const p = panel(section, true);
+  const h = section.hawkeye || {};
+  const prints = h.prints || [];
+  if (!prints.length) {
+    p.appendChild(el("div", "empty", "この期間に決算行がない。"));
+    return finish(p, section);
+  }
+  const t = h.thresholds || {};
+  p.appendChild(el("div", "src",
+    esc(`${h.window.from} 〜 ${h.window.to} · 生${h.raw_rows}行 → ${prints.length}決算` +
+        ` · 閾値 EPS ${t.min_eps_surprise_pct}% / 売上 ${t.min_revenue_surprise_pct}%` +
+        ` · 信頼下限 EPS予想 $${t.min_abs_eps_estimate} / 売上サプライズ ±${t.max_trusted_revenue_surprise_pct}%`)));
+
+  const wrap = el("div", "scroll-x");
+  const table = el("table");
+  table.appendChild(el("thead", null,
+    "<tr>" + COLS.map(c => "<th>" + c + "</th>").join("") + "</tr>"));
+  const body = el("tbody");
+  prints.forEach((pr, i) => {
+    const ev = pr.event || {};
+    const row = el("tr", "print");
+    row.innerHTML =
+      '<td class="day"><span class="caret">▸</span>' + esc(day(pr.date)) +
+        '<span class="dim src-tag">Finnhub</span></td>' +
+      "<td>" + pr.row_count + "</td>" +
+      "<td>" + num(ev.eps_actual) + "</td>" +
+      "<td>" + num(ev.eps_estimate) + "</td>" +
+      "<td>" + pct(pr.eps_surprise_pct) + "</td>" +
+      "<td>" + big(ev.revenue_actual) + "</td>" +
+      "<td>" + big(ev.revenue_estimate) + "</td>" +
+      "<td>" + pct(pr.revenue_surprise_pct) + "</td>" +
+      "<td>" + pct(pr.gap_on_event_pct) + "</td>" +
+      "<td>" + (isNum(pr.score_full) ? num(pr.score_full)
+        : isNum(pr.score_partial_no_gap)
+          ? num(pr.score_partial_no_gap) + '<span class="dim">*</span>' : NA) +
+      "</td>" +
+      "<td>" + (pr.parsed === false
+        ? '<span class="badge bad">未解釈</span>' : badges(pr)) + "</td>";
+    const detail = el("tr", "detail");
+    detail.style.display = "none";
+    const cell = el("td");
+    cell.colSpan = COLS.length;
+    cell.appendChild(rawRows(pr.rows || []));
+    detail.appendChild(cell);
+    row.addEventListener("click", () => {
+      const open = detail.style.display === "none";
+      detail.style.display = open ? "" : "none";
+      row.classList.toggle("open", open);
+    });
+    body.appendChild(row);
+    const yh = yahooRow(pr);
+    if (yh) body.appendChild(yh);
+    body.appendChild(detail);
+  });
+  table.appendChild(body);
+  wrap.appendChild(table);
+  p.appendChild(wrap);
+  p.appendChild(el("p", "note",
+    "各決算は2行で並ぶ。上がFinnhubの決算カレンダー、下がYahooの決算履歴で、" +
+    "本番は2026-08-02以降、ランキングの前にEPSをYahooの値へ置き換えている。" +
+    "2つのソースで食い違う値は塗って示す。売上はYahooの決算履歴に入っていない" +
+    "ため、Yahoo行では空欄にしてある（確認できていないものを確認済みのように" +
+    "見せないため）。スコアの * 印は当日ギャップ未算入" +
+    "（本番の score_version=partial_no_gap と同じ）。" +
+    "上の行をクリックすると、その決算についてFinnhubが返した生の行が並ぶ。"));
+  return finish(p, section);
+}
+
+/* The second reading of the same print. Production replaces the calendar's
+   EPS with this one before ranking, so the two belong on adjacent rows with
+   the cells that disagree marked — that difference IS the finding. */
+function yahooRow(pr) {
+  const y = pr.yahoo;
+  if (!y) return null;
+  const row = el("tr", "print yahoo");
+  if (!y.verified) {
+    row.innerHTML =
+      '<td class="day"><span class="dim src-tag">Yahoo</span></td>' +
+      '<td colspan="' + (COLS.length - 1) + '" class="dim">' +
+      esc(y.reason || "未確認") + "</td>";
+    return row;
+  }
+  const d = new Set(y.differs || []);
+  const mark = k => d.has(k) ? ' class="differs"' : "";
+  row.innerHTML =
+    '<td class="day"><span class="dim src-tag">Yahoo</span></td>' +
+    '<td class="dim">' + NA + "</td>" +
+    "<td" + mark("eps_actual") + ">" + num(y.eps_actual) + "</td>" +
+    "<td" + mark("eps_estimate") + ">" + num(y.eps_estimate) + "</td>" +
+    "<td" + mark("eps_surprise_pct") + ">" + pct(y.eps_surprise_pct) + "</td>" +
+    /* Yahoo's earnings history carries no revenue, so those columns stay the
+       calendar's and are blanked here rather than repeated as if confirmed. */
+    '<td class="dim">' + NA + "</td>" +
+    '<td class="dim">' + NA + "</td>" +
+    '<td class="dim">' + NA + "</td>" +
+    "<td>" + pct(y.gap_on_event_pct) + "</td>" +
+    "<td>" + (isNum(y.score_full) ? num(y.score_full)
+      : isNum(y.score_partial_no_gap)
+        ? num(y.score_partial_no_gap) + '<span class="dim">*</span>' : NA) +
+    "</td>" +
+    "<td" + mark("screened") + ">" + badges(y) +
+      (d.has("screened")
+        ? '<span class="badge flag">' +
+          (y.screened ? "選別を通る" : "選別で落ちる") + "</span>" : "") +
+    "</td>";
+  return row;
+}
+
+function rawRows(rows) {
+  const keys = [];
+  rows.forEach(r => Object.keys(r).forEach(k => {
+    if (!keys.includes(k)) keys.push(k);
+  }));
+  const differs = new Set(keys.filter(k =>
+    new Set(rows.map(r => JSON.stringify(r[k]))).size > 1));
+  const wrap = el("div", "scroll-x");
+  const t = el("table");
+  t.appendChild(el("thead", null, "<tr><th>行</th>" +
+    keys.map(k => "<th>" + esc(k) + "</th>").join("") + "</tr>"));
+  const b = el("tbody");
+  rows.forEach((r, i) => {
+    b.appendChild(el("tr", null, "<td>#" + (i + 1) + "</td>" + keys.map(k =>
+      '<td class="' + (differs.has(k) ? "differs" : "") + '">' +
+      (r[k] === null || r[k] === undefined ? NA : esc(r[k])) + "</td>").join("")));
+  });
+  t.appendChild(b);
+  wrap.appendChild(t);
+  return wrap;
+}
+
+/* ---------- price chart ---------- */
+const SVG_NS = "http://www.w3.org/2000/svg";
+const svgEl = (t, attrs) => {
+  const n = document.createElementNS(SVG_NS, t);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  return n;
+};
+
+function pricesPanel(section, earnings) {
+  const p = panel(section);
+  const bars = (section.hawkeye || {}).bars || [];
+  if (bars.length < 2) {
+    p.appendChild(el("div", "empty", "日足が取得できていない。"));
+    return finish(p, section);
+  }
+  const marks = (((earnings || {}).hawkeye || {}).prints || [])
+    .filter(pr => pr.parsed !== false)
+    .map(pr => ({
+      date: day(pr.date),
+      flagged: !!(pr.conflicting_estimates ||
+        pr.eps_surprise_trusted === false || pr.revenue_surprise_trusted === false),
+      eps: (pr.event || {}).eps_actual,
+      surprise: pr.eps_surprise_pct
+    }));
+
+  const wrap = el("div", "chart-wrap");
+  const tip = el("div", "tip");
+  wrap.appendChild(tip);
+  p.appendChild(wrap);
+  p.appendChild(el("div", "legend",
+    '<span><svg width="12" height="12"><circle class="sw-clean" cx="6" cy="6" ' +
+    'r="4.5"/></svg>決算（フラグなし）</span>' +
+    '<span><svg width="12" height="12"><polygon class="sw-flag" ' +
+    'points="6,1 11,10.5 1,10.5"/></svg>⚠ 決算（矛盾または不信フラグあり）</span>' +
+    '<span class="dim">線をなぞると日次の値が出る</span>'));
+
+  // Redraw on width changes only: the redraw replaces the <svg>, which would
+  // otherwise re-trigger the observer on its own output.
+  let drawnAt = -1;
+  const draw = () => {
+    if (wrap.clientWidth === drawnAt) return;
+    drawnAt = wrap.clientWidth;
+    drawChart(wrap, tip, bars, marks);
+  };
+  draw();
+  new ResizeObserver(draw).observe(wrap);
+  return finish(p, section);
+}
+
+function drawChart(wrap, tip, bars, marks) {
+  const W = Math.max(320, wrap.clientWidth), H = 260;
+  const M = { t: 14, r: 56, b: 24, l: 8 };
+  const iw = W - M.l - M.r, ih = H - M.t - M.b;
+  const lo = Math.min(...bars.map(b => b.low));
+  const hi = Math.max(...bars.map(b => b.high));
+  const pad = (hi - lo) * 0.08 || 1;
+  const y0 = lo - pad, y1 = hi + pad;
+  const X = i => M.l + (bars.length === 1 ? iw / 2 : i / (bars.length - 1) * iw);
+  const Y = v => M.t + ih - (v - y0) / (y1 - y0) * ih;
+
+  const old = wrap.querySelector("svg.chart");
+  if (old) old.remove();
+  const svg = svgEl("svg", {
+    class: "chart", viewBox: `0 0 ${W} ${H}`, width: W, height: H,
+    role: "img", "aria-label": "日足終値の推移と決算日"
+  });
+
+  for (let k = 0; k <= 4; k++) {                      // recessive grid + ticks
+    const v = y0 + (y1 - y0) * k / 4, y = Y(v);
+    svg.appendChild(svgEl("line",
+      { class: "grid", x1: M.l, x2: M.l + iw, y1: y, y2: y }));
+    const label = svgEl("text",
+      { class: "tick", x: M.l + iw + 8, y: y + 3.5 });
+    label.textContent = v.toFixed(v > 100 ? 0 : 2);
+    svg.appendChild(label);
+  }
+  svg.appendChild(svgEl("line", { class: "axis", x1: M.l, x2: M.l + iw,
+    y1: M.t + ih, y2: M.t + ih }));
+  const step = Math.max(1, Math.floor(bars.length / 6));
+  for (let i = 0; i < bars.length; i += step) {
+    const label = svgEl("text",
+      { class: "tick", x: X(i), y: H - 6, "text-anchor": "middle" });
+    label.textContent = shortDay(bars[i].day);
+    svg.appendChild(label);
+  }
+
+  svg.appendChild(svgEl("path", { class: "price",
+    d: bars.map((b, i) => (i ? "L" : "M") + X(i) + " " + Y(b.close)).join(" ") }));
+
+  const index = new Map(bars.map((b, i) => [day(b.day), i]));
+  marks.forEach(m => {                                // first session on/after
+    let i = index.get(m.date);
+    if (i === undefined) i = bars.findIndex(b => day(b.day) >= m.date);
+    if (i === undefined || i < 0) return;
+    const x = X(i), y = Y(bars[i].close);
+    const shape = m.flagged
+      ? svgEl("polygon", { class: "mark flagged",
+          points: `${x},${y - 6} ${x + 6},${y + 4.5} ${x - 6},${y + 4.5}` })
+      : svgEl("circle", { class: "mark clean", cx: x, cy: y, r: 5 });
+    const title = svgEl("title");
+    title.textContent = `決算 ${m.date}` +
+      (isNum(m.eps) ? ` · EPS ${m.eps}` : "") +
+      (isNum(m.surprise) ? ` (${m.surprise >= 0 ? "+" : ""}${m.surprise.toFixed(1)}%)` : "") +
+      (m.flagged ? " · フラグあり" : "");
+    shape.appendChild(title);
+    svg.appendChild(shape);
+  });
+
+  const cross = svgEl("line", { class: "cross", y1: M.t, y2: M.t + ih,
+    x1: -99, x2: -99 });
+  const cursor = svgEl("circle", { class: "cursor", r: 4, cx: -99, cy: -99 });
+  svg.appendChild(cross);
+  svg.appendChild(cursor);
+
+  const move = ev => {
+    const box = svg.getBoundingClientRect();
+    const px = (ev.clientX - box.left) * (W / box.width);
+    let i = Math.round((px - M.l) / iw * (bars.length - 1));
+    i = Math.max(0, Math.min(bars.length - 1, i));
+    const b = bars[i], x = X(i), y = Y(b.close);
+    cross.setAttribute("x1", x); cross.setAttribute("x2", x);
+    cursor.setAttribute("cx", x); cursor.setAttribute("cy", y);
+    tip.innerHTML = "<b>" + day(b.day) + "</b><br>終値 " + num(b.close) +
+      "<br>出来高 " + big(b.volume);
+    tip.style.left = (x / W * 100) + "%";
+    tip.style.top = (y / H * 100) + "%";
+    tip.style.opacity = 1;
+  };
+  svg.addEventListener("pointermove", move);
+  svg.addEventListener("pointerleave", () => {
+    tip.style.opacity = 0;
+    cross.setAttribute("x1", -99); cross.setAttribute("x2", -99);
+    cursor.setAttribute("cx", -99);
+  });
+  wrap.appendChild(svg);
+}
+
+/* ---------- profile / insider / analyst / news ---------- */
+function kvPanel(section, pairs) {
+  const p = panel(section);
+  if (!pairs.length) {
+    p.appendChild(el("div", "empty",
+      "値なし（＝unverified。取得できなかったのか、本当にゼロなのかは" +
+      "下のリクエスト一覧のステータスで判断する）。"));
+    return finish(p, section);
+  }
+  const strip = el("dl", "strip");
+  strip.style.borderBottom = "none";
+  strip.style.paddingBottom = "0";
+  strip.style.marginBottom = "0";
+  pairs.forEach(([k, v]) => strip.appendChild(stat(k, v)));
+  p.appendChild(strip);
+  return finish(p, section);
+}
+
+function profilePanel(section) {
+  const h = section.hawkeye || {};
+  return kvPanel(section, Object.keys(h).length ? [
+    ["社名", esc(h.name || "—")],
+    ["セクター(Finnhub分類)", esc(h.sector || "—")],
+    ["時価総額", isNum(h.market_cap) ? "$" + big(h.market_cap) : NA],
+    ["次回決算日", esc(h.next_earnings_date || "—")]
+  ] : []);
+}
+
+function insiderPanel(section) {
+  const h = section.hawkeye;
+  if (!h) return kvPanel(section, []);
+  const net = h.net_shares;
+  const dir = net > 0 ? "up" : net < 0 ? "down" : "";
+  return kvPanel(section, [
+    ["対象期間", h.window_days + "日"],
+    ["純増減株数", '<span class="' + dir + '">' +
+      (net > 0 ? "↑ +" : net < 0 ? "↓ −" : "") + big(Math.abs(net)) + "</span>"],
+    ["買い手", h.buyers + "名"],
+    ["売り手", h.sellers + "名"]
+  ]);
+}
+
+function analystPanel(section) {
+  const h = section.hawkeye;
+  const p = panel(section);
+  if (!h) {
+    p.appendChild(el("div", "empty", "値なし（unverified）。"));
+    return finish(p, section);
+  }
+  const rows = [["強気買い", "strong_buy"], ["買い", "buy"], ["中立", "hold"],
+    ["売り", "sell"], ["強気売り", "strong_sell"]];
+  const t = el("table");
+  t.appendChild(el("thead", null, "<tr><th>推奨</th><th>" + esc(h.period) +
+    "</th><th>" + esc(h.prior_period || "前期") + "</th><th>差分</th></tr>"));
+  const b = el("tbody");
+  rows.forEach(([label, key]) => {
+    const now = h[key], before = h["prior_" + key];
+    const d = isNum(now) && isNum(before) ? now - before : null;
+    const cls = d > 0 ? "up" : d < 0 ? "down" : "dim";
+    const arrow = d > 0 ? "↑ +" : d < 0 ? "↓ " : "";
+    b.appendChild(el("tr", null,
+      "<td>" + label + "</td><td>" + (isNum(now) ? now : NA) + "</td><td>" +
+      (isNum(before) ? before : NA) + "</td><td" +
+      (d === null ? ">" + NA : ' class="' + cls + '">' + arrow + (d || 0)) +
+      "</td>"));
+  });
+  t.appendChild(b);
+  p.appendChild(t);
+  return finish(p, section);
+}
+
+function newsPanel(section) {
+  const p = panel(section);
+  const items = section.hawkeye || [];
+  if (!items.length) {
+    p.appendChild(el("div", "empty", "記事なし。"));
+    return finish(p, section);
+  }
+  const list = el("ol", "news");
+  items.forEach(n => {
+    const li = el("li");
+    li.innerHTML =
+      '<div class="meta">' + esc(day(n.published_at) || "日付不明") + " · " +
+      esc(n.source || "") + "</div>" +
+      '<div class="head">' + (n.url
+        ? '<a href="' + esc(n.url) + '" target="_blank" rel="noopener">' +
+          esc(n.headline) + "</a>"
+        : esc(n.headline)) + "</div>" +
+      (n.summary ? '<div class="sum">' + esc(n.summary) + "</div>" : "");
+    list.appendChild(li);
+  });
+  p.appendChild(list);
+  return finish(p, section);
+}
+
+/* ---------- request log ---------- */
+function callsPanel(calls) {
+  const p = panel({ title: "HTTPリクエスト一覧", source:
+    "この画面を描くために実際に投げたリクエスト（APIキーは含まれない）" });
+  const t = el("table");
+  t.appendChild(el("thead", null,
+    "<tr><th>エンドポイント</th><th>パラメータ</th><th>状態</th>" +
+    "<th>所要</th><th>件数/備考</th></tr>"));
+  const b = el("tbody");
+  calls.forEach(c => {
+    const size = c.ok
+      ? (Array.isArray(c.response) ? c.response.length + " 件"
+        : c.response && typeof c.response === "object"
+          ? Object.keys(c.response).length + " キー" : "—")
+      : esc(c.error);
+    b.appendChild(el("tr", null,
+      '<td><code>' + esc(c.endpoint) + "</code></td>" +
+      '<td style="text-align:left"><span class="dim">' +
+        esc(JSON.stringify(c.params)) + "</span></td>" +
+      "<td>" + (c.ok ? '<span class="badge pass">' + c.status + "</span>"
+        : '<span class="badge bad">' + (c.status || "ERR") + "</span>") + "</td>" +
+      "<td>" + Math.round(c.elapsed_ms) + " ms</td>" +
+      '<td style="text-align:left">' + size + "</td>"));
+  });
+  t.appendChild(b);
+  p.appendChild(t);
+  const d = el("details", "raw");
+  d.appendChild(el("summary", null, "全レスポンスの生JSON"));
+  d.appendChild(el("pre", null, esc(JSON.stringify(calls, null, 2))));
+  p.appendChild(d);
+  return p;
+}
+
+/* ---------- theme toggle ---------- */
+const themes = ["auto", "light", "dark"];
+const labels = { auto: "自動", light: "ライト", dark: "ダーク" };
+const themeBtn = document.getElementById("theme");
+function applyTheme(t) {
+  document.documentElement.setAttribute("data-theme", t);
+  themeBtn.textContent = "配色: " + labels[t];
+  localStorage.setItem("hawkeye-debug-theme", t);
+  if (LAST) render(LAST);          // re-render so the SVG picks up new roles
+}
+themeBtn.addEventListener("click", () => applyTheme(
+  themes[(themes.indexOf(document.documentElement.dataset.theme) + 1) % 3]));
+applyTheme(localStorage.getItem("hawkeye-debug-theme") || "auto");
+
+const initial = decodeURIComponent(location.hash.slice(1)).toUpperCase();
+if (initial) { document.getElementById("ticker").value = initial; load(initial); }
+else setStatus("ティッカーを入力");
+document.getElementById("ticker").focus();
+</script>
+</body>
+</html>

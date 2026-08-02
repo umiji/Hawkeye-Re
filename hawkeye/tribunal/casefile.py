@@ -19,19 +19,21 @@ attack report to the Bull because no Bull package ever contains one.
 from __future__ import annotations
 
 import json
-import os
+import shutil
+import sys
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from hawkeye import paths
 from hawkeye.config import HawkeyeConfig
 from hawkeye.contracts.models import (
     CandidateBrief,
     GateReport,
     Recommendation,
     new_id,
-    utcnow,
+    now,
 )
 from hawkeye.tribunal.pipeline import (
     assemble_recommendation,
@@ -58,7 +60,7 @@ ROLE_ORDER = ("bull", "adversary", "judge")
 
 class Case(BaseModel):
     id: str = Field(default_factory=lambda: new_id("case"))
-    created_at: str = Field(default_factory=lambda: utcnow().isoformat())
+    created_at: str = Field(default_factory=lambda: now().isoformat())
     nav: float
     open_position_count: int = 0
     brief: CandidateBrief
@@ -70,7 +72,7 @@ class Case(BaseModel):
 
 
 def cases_dir() -> Path:
-    return Path(os.environ.get("HAWKEYE_CASES", "cases"))
+    return paths.cases_dir()
 
 
 def _case_path(case_id: str) -> Path:
@@ -79,11 +81,11 @@ def _case_path(case_id: str) -> Path:
 
 def save_case(case: Case) -> None:
     cases_dir().mkdir(parents=True, exist_ok=True)
-    _case_path(case.id).write_text(case.model_dump_json(indent=2))
+    _case_path(case.id).write_text(case.model_dump_json(indent=2), encoding="utf-8")
 
 
 def load_case(case_id: str) -> Case:
-    return Case.model_validate_json(_case_path(case_id).read_text())
+    return Case.model_validate_json(_case_path(case_id).read_text(encoding="utf-8"))
 
 
 def list_cases() -> list[Case]:
@@ -92,8 +94,10 @@ def list_cases() -> list[Case]:
     out = []
     for p in sorted(cases_dir().glob("case_*.json")):
         try:
-            out.append(Case.model_validate_json(p.read_text()))
-        except Exception:
+            out.append(Case.model_validate_json(p.read_text(encoding="utf-8")))
+        except Exception as exc:
+            print(f"warning: skipping unreadable case file {p}: {exc}",
+                  file=sys.stderr)
             continue
     return out
 
@@ -133,16 +137,34 @@ def write_package(case: Case) -> Optional[dict]:
             render_bull_input(case.brief, case.gate_report),
             THESIS_SCHEMA)
     elif role == "adversary":
+        # Parse once so the Adversary argues over the same normalized
+        # numbers (clamped probabilities, renormalized scenario weights)
+        # that end up in the stored record, not the Bull's raw output.
+        # This and every later re-parse of case.thesis_raw agree ONLY
+        # because claim ids are content-derived (`claim_content_id`). While
+        # they came from a random uuid factory the three parses below —
+        # here, the Judge's package, and finalize() — each minted a
+        # different set, so the Adversary cited claim ids the Judge could
+        # not find (2026-08-01 fix). Keep ids a pure function of content.
+        thesis_for_render = parse_thesis(case.thesis_raw).model_dump(
+            mode="json")
         system, user, schema = (
             ADVERSARY_SYSTEM,
             render_adversary_input(case.brief, case.gate_report,
-                                   case.thesis_raw),
+                                   thesis_for_render),
             ATTACK_SCHEMA)
     else:
+        thesis_for_render = parse_thesis(case.thesis_raw).model_dump(
+            mode="json")
+        # Parse once so the Judge sees the same attack ids finalize() will
+        # later match `addressed[].attack_id` against (parse_attack_report
+        # is deterministic — re-parsing case.attack_raw agrees on the ids).
+        attacks_for_judge = parse_attack_report(case.attack_raw).model_dump(
+            mode="json")
         system, user, schema = (
             JUDGE_SYSTEM,
             render_judge_input(case.brief, case.gate_report,
-                               case.thesis_raw, case.attack_raw),
+                               thesis_for_render, attacks_for_judge),
             VERDICT_SCHEMA)
 
     role_dir = cases_dir() / case.id
@@ -153,9 +175,9 @@ def write_package(case: Case) -> Optional[dict]:
         "schema": role_dir / f"{role}.schema.json",
         "output": role_dir / f"{role}.out.json",   # where to write the reply
     }
-    paths["system"].write_text(system)
-    paths["input"].write_text(user)
-    paths["schema"].write_text(json.dumps(schema, indent=2))
+    paths["system"].write_text(system, encoding="utf-8")
+    paths["input"].write_text(user, encoding="utf-8")
+    paths["schema"].write_text(json.dumps(schema, indent=2), encoding="utf-8")
     return {"role": role, **{k: str(v) for k, v in paths.items()}}
 
 
@@ -180,15 +202,60 @@ def submit(case: Case, payload: dict) -> str:
 
 
 def finalize(case: Case, config: HawkeyeConfig) -> Recommendation:
-    """Deterministic tail (identical to API mode) once all roles submitted."""
+    """Deterministic tail (identical to API mode) once all roles submitted.
+
+    Does NOT mark the case complete — call mark_complete() only once the
+    caller has durably recorded the returned Recommendation (e.g. the
+    ledger insert succeeded). Marking complete first would let a ledger
+    write failure leave the case looking done with no matching ledger row;
+    next_role() already reports "complete" once all three role JSONs are
+    present (it doesn't depend on recommendation_id), so nothing here gets
+    stuck asking for a fourth role while recording is retried.
+    """
     if next_role(case) is not None:
         raise ValueError(f"case not complete: next role is {next_role(case)}")
-    rec = assemble_recommendation(
+    return assemble_recommendation(
         case.brief, case.gate_report,
         case.thesis_raw, case.attack_raw, case.verdict_raw,
         config, nav=case.nav,
         open_position_count=case.open_position_count,
         model=SESSION_MODEL_LABEL)
-    case.recommendation_id = rec.id
+
+
+def mark_complete(case: Case, recommendation_id: str) -> None:
+    """Record that `case` produced `recommendation_id`. Call only after the
+    caller has confirmed it's durably stored (e.g. ledger insert succeeded)."""
+    case.recommendation_id = recommendation_id
     save_case(case)
-    return rec
+    # Only now — the role workspace is what makes a failed ledger write
+    # retryable, and `submit()` refuses to re-answer a completed role
+    # (docs/MASTER_OVERVIEW.ja.md §5.2(7); ordering per the M5 fix).
+    _remove_role_workspace(case.id)
+
+
+def _remove_role_workspace(case_id: str) -> bool:
+    """Delete one case's per-role scratch folder. Returns whether anything
+    was there. Every file in it is either regenerated deterministically by
+    `write_package()` or already copied verbatim into the case JSON by
+    `submit()`, so there is no version worth keeping and no need for an
+    opt-out flag."""
+    workspace = cases_dir() / case_id
+    if not workspace.is_dir():
+        return False
+    shutil.rmtree(workspace)
+    return True
+
+
+def sweep_role_workspaces() -> list[str]:
+    """Remove leftover workspaces of cases whose recommendation is already in
+    the ledger; returns the case ids cleaned up.
+
+    Runs automatically rather than as a command to remember (§5.2(8)). Cases
+    still in progress are untouched — an unfinished case's workspace is its
+    resume point, not garbage.
+    """
+    removed: list[str] = []
+    for case in list_cases():
+        if case.recommendation_id and _remove_role_workspace(case.id):
+            removed.append(case.id)
+    return removed

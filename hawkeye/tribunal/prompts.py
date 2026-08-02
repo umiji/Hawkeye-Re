@@ -1,6 +1,6 @@
 """System prompts and output schemas for the tribunal agents.
 
-Design principles (see docs/VERIFICATION_PROTOCOL.md):
+Design principles (see strategy/VERIFICATION_PROTOCOL.md):
 - Roles are informationally separated: the Adversary never sees the Bull's
   private reasoning, only the written thesis; the Judge sees only the record.
 - Every role is told how it will be SCORED, not just what to produce.
@@ -129,11 +129,12 @@ VERDICT_SCHEMA: dict = {
             "items": {
                 "type": "object",
                 "properties": {
+                    "attack_id": {"type": "string"},
                     "attack_statement": {"type": "string"},
                     "response": {"type": "string"},
                     "converted_to_kill_criterion": {"type": "boolean"},
                 },
-                "required": ["attack_statement", "response",
+                "required": ["attack_id", "attack_statement", "response",
                              "converted_to_kill_criterion"],
                 "additionalProperties": False,
             },
@@ -161,6 +162,14 @@ Base rates you must respect (do not reason as if this trade is special):
   comes from asymmetry and discipline, not hit rate.
 - A story that requires the market to be "missing" something obvious in a
   liquid large-cap is usually wrong; someone selling knows something too.
+
+Data note: the dossier may include structured `eps_surprise_pct` /
+`revenue_surprise_pct` (machine-computed from reported actuals vs.
+consensus estimates — trust these over any number only implied by prose in
+the catalyst description or news text), and `insider_activity` /
+`analyst_trend` when available. A null value on these fields means
+unverified/unavailable, NOT "no activity" or "zero surprise" — never treat
+a missing field as evidence of anything.
 """
 
 BULL_SYSTEM = _SHARED_DOCTRINE + """
@@ -211,6 +220,9 @@ Attack systematically across the taxonomy (use the listed categories):
 - base_rate: does the claimed upside violate the historical base rates above?
 - timing: is the window already closed? days since event, gap size.
 - governance_accounting: management credibility, dilution, insider selling.
+  If `insider_activity` shows net selling into the move (or an analyst
+  downgrade trend in `analyst_trend`), that is direct sucker-test evidence
+  for the "informed sellers" argument — use it, don't just gesture at it.
 
 Mandatory tests:
 1. The sucker test: the Bull claims to know who is wrongly selling. Argue the
@@ -231,10 +243,14 @@ Pre-registered decision rules — these bind you:
 1. Default is PASS. BUY requires an affirmative, surviving case. PASS needs no
    justification beyond unresolved doubt; there is no penalty for passing, and
    another candidate arrives tomorrow.
-2. Every attack with severity >= 4 MUST appear in `addressed`, each either
-   (a) refuted using facts already in the record, or (b) explicitly converted
-   into a kill criterion / accepted risk with a monitoring plan
-   (converted_to_kill_criterion=true). An unaddressed severe attack = PASS.
+2. Every attack with severity >= 4 in attack_report MUST appear in
+   `addressed`, citing its `id` field as `attack_id` (copy it exactly — do
+   not paraphrase or invent one). Each must be either (a) refuted using
+   facts already in the record, or (b) explicitly converted into a kill
+   criterion / accepted risk with a monitoring plan
+   (converted_to_kill_criterion=true). An attack whose severity>=4 id is
+   missing from `addressed` = PASS, even if you believe you addressed it in
+   prose elsewhere.
 3. If the Adversary's short case is more convincing than the Bull's long case
    on the same facts, PASS.
 4. If the edge_type is none_identified, or the "other side" explanation failed
