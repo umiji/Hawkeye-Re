@@ -134,6 +134,110 @@ in one place. Keep §4/§5 current as capabilities land.
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-08-02(b)** Measurement + design session, **no code written**, working
+  tree clean at `a0f8419`. Started from one question — AMZN printed EPS 5.75
+  against a 1.83 consensus (+215%); how does the system treat a beat that is
+  really a one-off? — and ended with an approved data-source design. Full
+  detail, including every measured number, is in
+  `~/.claude/session-data/2026-08-02-aade8f79-session.tmp`; read that before
+  implementing.
+
+  **What the measurements showed.** AMZN's +215% is an artifact: EDGAR's 10-Q
+  (filed 22:11 UTC, ~2h after the 8-K) shows non-operating income of $53.4B
+  against $27.5B of operating income; normalized, the beat is ≈+6.7%. AAPL is
+  the same failure in the opposite direction and it broke my reasoning: Apple's
+  release says diluted EPS 2.02 "included a favorable impact of $0.11 from
+  tariff refunds" — 2.02−0.11 = **1.91 exactly**, which is what Finnhub (and
+  Earnings Whispers) report. The one-off sat **inside gross margin**, so
+  `NonoperatingIncomeExpense` ($0.572B) shows nothing: **checking only the
+  non-operating box to conclude "no one-off" is a method error.** An unbiased
+  50-name survey off the 2026-07-27..31 calendar (stride-sampled, deliberately
+  NOT filtered by the screen under test) then gave the real base rates:
+  **reported EPS disagrees between Yahoo and Finnhub in 25% of names, and the
+  source choice flips the 5% screen verdict in 19% — but 6 of those 9 flips
+  have IDENTICAL actual EPS.** The damage is mostly in the CONSENSUS, not the
+  actual. Four of them (TBBK/PCAR/CARR/TRS) sit on the 5% boundary with
+  consensus differing by only 1–2%, which no fix to the actual can help.
+
+  **Three prior beliefs overturned — do not re-inherit them.** (1) "Finnhub
+  stamps the prior quarter onto AAPL" (2026-08-01 log) is wrong about the
+  value; 1.91 appears nowhere in Apple's history. What is true is that
+  `stock/earnings` attaches the SAME actual to two different period rows — a
+  period-alignment defect. (2) "Yahoo right, Finnhub wrong" is too simple:
+  on BJRI (adj 0.94/GAAP 0.86) and CDNA (0.37/2.07) **both vendors returned the
+  adjusted figure and agreed**; they diverge only where no adjusted EPS is
+  published. And INVH is the counter-example that kills any "Finnhub is street
+  basis" rule — it compared a 0.37 FFO-style actual against a 0.1771 EPS
+  estimate for +108.9%, mixing bases inside one row. (3) My own mid-session
+  claim that structured data suffices and prose extraction is unnecessary is
+  refuted by AAPL. Also flagged for revisit: last session's celebrated
+  `test_verification_recovers_a_name_the_calendar_wrongly_screened_out` —
+  AAPL's like-for-like beat is ~+1%, so that "recovery" may have admitted a
+  one-off-inflated false positive.
+
+  **Decisions.** A beat requires **both** sources to agree it is a beat.
+  Neither vendor is "the source of the actual" — agreement (75%) is the answer;
+  divergence escalates to the company's own filing. **Non-GAAP is never
+  computed**, only read: company-published value → else GAAP minus a disclosed
+  per-share one-off → else `unadjusted` and passed to the tribunal as a known
+  unknown. If Finnhub's duplicate rows disagree on the actual (AMZN 1.88 vs
+  1.97) its actual is unusable for that print — **never pick whichever row
+  matches Yahoo**, since matching is not evidence of correctness. Thresholds
+  come from measured gaps, not invention: escalate to the 8-K when actuals
+  differ by >2% and >$0.01 (the distribution has a clean gap between 1.1% and
+  2.9%); flag `consensus_disputed` when estimates differ by >5% (gap between
+  3.50% and 5.18%) and **rank on the conservative reading** — extending the
+  existing collapse-to-conservative rule across vendors, so BIIB ranks +20%
+  not +77%. An actual disagreement is resolvable by a document; **a consensus
+  disagreement is resolvable by nothing, because no primary source for
+  consensus exists anywhere.** Guidance: case-split, never a gate, small
+  positive weight, **absence is neutral not a penalty**; it is tribunal
+  material rather than a discovery signal (accepted consequence: a name with
+  mediocre EPS and excellent guidance is never surfaced).
+
+  **The enabler.** `yfinance`'s `earnings_estimate` / `revenue_estimate` /
+  `eps_trend` return 0q and +1q consensus with `numberOfAnalysts` and
+  low/high — so consensus can be **pre-registered before the print**. That is
+  what gives revenue a second opinion (after the print, Finnhub is the only
+  source and Yahoo's calendar carries no revenue at all), what makes the
+  agreed n≥3 floor implementable (INVH's EPS consensus has **n=1**), and what
+  fixes vintage — BIIB's estimate moved 3.98→2.15 over 90 days, so vendor
+  disagreement is plausibly *when* they sampled, not *how*. Guidance has **no
+  structured source at all** (`company-guidance` returns HTML, `eps-estimate`
+  / `revenue-estimate` / `price-target` 403), and Finnhub cannot supply an
+  analyst count or range on this tier, so the double-confirmation is
+  **asymmetric**: Yahoo gives a distribution, Finnhub a single point.
+
+  **Cost, since it shaped the design.** Reading every 8-K is ~8,900 tokens/name
+  and naive slicing saves only 31%; the guidance section alone is ~1,800. So
+  the read is placed at the tail of the funnel (10–15 names) and fires on
+  divergence only — ~1 reconciliation read per run, ~20k extra tokens, against
+  a tribunal that already dominates. Extraction is validated mechanically:
+  extracted GAAP EPS must equal EDGAR's `EarningsPerShareDiluted` or the
+  extraction is rejected, which catches the "read the year-ago column" failure
+  for free; no XBRL (26% of names) means `unverified`, never trusted.
+
+  **Schema decision.** The user observed correctly that everything is keyed on
+  the scan/decision axis — `ticker` is a bare TEXT column on `recommendations`
+  / `scans` / `screened_candidates` / `drop_reviews` and there is no entity
+  table, so a per-ticker history means scanning every decision record. Agreed
+  to add `securities` / `earnings_prints` / `consensus_snapshots` (additive
+  only; `verify_chain()` is unaffected by new tables). **The key must be CIK,
+  not ticker** — tickers are reused after delisting and change on renames, and
+  keying on them would silently merge two companies and re-break the
+  survivorship-bias analysis fixed on 2026-07-28. Per the user, new records
+  must **not** duplicate into their payload anything held in the new tables
+  (existing rows untouched). That is safe for invariant 1 **only if** consumed
+  snapshot rows are append-only and the decision stores the row id it used —
+  pre-registration then survives by reference instead of by copy. **Enforce
+  insert-only in the store layer, not by convention**; an UPDATE path added
+  later would break invariant 1 silently.
+
+  Session cost ~$65 (one CRITICAL warning) — all of it live measurement.
+  Nothing needs re-measuring; `basis_survey.json` in the scratchpad holds the
+  raw sample. `docs/MASTER_OVERVIEW.ja.md` §4/§5 is **not yet updated** — the
+  governance rule requires that, with approval, before implementation begins.
+
 - **2026-08-01(b)** First real session-mode run since the tree split: scout
   opened 3 cases (BJRI/ABR/CRI), all three PASSed. The run itself was fine;
   what it surfaced was not. Two convergent observations from the role
