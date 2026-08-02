@@ -13,7 +13,7 @@ is a first-class metric of the system, same as P&L.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 from hawkeye.config import HawkeyeConfig
@@ -26,6 +26,7 @@ from hawkeye.contracts.models import (
     ScreenedCandidateStage,
     utc_date,
 )
+from hawkeye.contracts.stocks import ConsensusSnapshot, EarningsPrint
 from hawkeye.gates.entry_gates import run_entry_gates
 from hawkeye.marketdata.base import MarketDataProvider
 from hawkeye.marketdata.snapshot import build_brief
@@ -34,6 +35,14 @@ from hawkeye.scout.earnings import (
     parse_calendar,
     score_candidate,      # re-exported: the ranking score lives with the screen
     screen_events,
+)
+from hawkeye.scout.prereg import resolve_stock
+from hawkeye.scout.quality import (
+    EarningsQuality,
+    assess_earnings,
+    describe_quality_en,
+    print_from_event,
+    reconstructed_consensus,
 )
 from hawkeye.scout.verify import (
     EarningsNumberSource,
@@ -67,6 +76,11 @@ class ScoutCandidate:
     brief: Optional[CandidateBrief] = None
     gate_report: Optional[GateReport] = None
     reject_reason: str = ""
+    # The three-leg reading of the quarter (EPS / revenue / guidance), when a
+    # stock store was supplied. None means the funnel ran without one and the
+    # old single-leg surprise decided the ranking — a different fact from
+    # "all three legs were checked and found nothing".
+    quality: Optional[EarningsQuality] = None
 
 
 @dataclass
@@ -188,12 +202,62 @@ def _candidate_from(screened: ScreenedEvent,
         reject_reason=reject_reason)
 
 
+@dataclass(frozen=True)
+class _QuarterContext:
+    """The stored context for one print: which company, which quarter, and
+    the consensus row the judgment is pinned to."""
+    stock_id: str
+    print_row: EarningsPrint
+    consensus_id: str
+    consensus: ConsensusSnapshot
+
+
+def _quarter_context(store, directory, event) -> Optional[_QuarterContext]:
+    """Resolve the company and the consensus this print is judged against.
+
+    A pre-registered row always wins. Only when none exists is one
+    reconstructed from what the calendar and the verification pass hold —
+    recorded as `reconstructed`, so the weaker evidence is never mistaken
+    for the stronger kind later.
+    """
+    if store is None:
+        return None
+    stock_id = resolve_stock(store, event.ticker, directory)
+    row = print_from_event(event, stock_id)
+    as_of = datetime.combine(event.day, time.max, tzinfo=timezone.utc)
+    consensus = store.consensus_in_force(stock_id, row.fiscal_quarter,
+                                         as_of=as_of)
+    if consensus is None:
+        snapshot_id = store.capture_consensus(
+            reconstructed_consensus(event, stock_id, row.fiscal_quarter))
+        consensus = store.consensus(snapshot_id)
+    return _QuarterContext(stock_id=stock_id, print_row=row,
+                           consensus_id=consensus.id, consensus=consensus)
+
+
+def _record_print(store, context: _QuarterContext) -> None:
+    """Keep the deepest reading of a quarter, and never re-record one.
+
+    Scan windows overlap by design, so the same print arrives again on the
+    next run. The table is append-only, so a repeat would raise; a shallower
+    repeat carries no new information anyway.
+    """
+    existing = store.latest_print(context.stock_id,
+                                  context.print_row.fiscal_quarter)
+    if existing is not None and existing.depth.rank >= context.print_row.depth.rank:
+        return
+    store.record_print(context.print_row.model_copy(
+        update={"consensus_snapshot_id": context.consensus_id}))
+
+
 def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConfig,
               days_back: Optional[int] = None,
               today: Optional[date] = None,
               window: Optional[ScanWindow] = None,
               already_seen: Optional[set[tuple[str, date]]] = None,
-              numbers_source: Optional[EarningsNumberSource] = None) -> ScoutResult:
+              numbers_source: Optional[EarningsNumberSource] = None,
+              stock_store=None,
+              directory=None) -> ScoutResult:
     """calendar_source: object with earnings_calendar(start, end) -> list[dict]
     provider: MarketDataProvider for enrichment (prices/profile/news).
     window: the earnings days to cover — normally built by scan_window()
@@ -259,25 +323,38 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
         attempted += 1
         event = s.event
         candidate = _candidate_from(s)   # score refined below once gap is known
+        # The three-leg reading, when a store is available. Computed before
+        # the brief because it decides what the tribunal is told AND which
+        # numbers are allowed to become structured facts; the event-day
+        # reaction only refines the score afterwards.
+        context = _quarter_context(stock_store, directory, event)
+        quality = (assess_earnings(context.print_row, context.consensus, config)
+                   if context is not None else None)
         catalyst = Catalyst(
             type=CatalystType.EARNINGS_BEAT,
-            description=_catalyst_description(s),
+            description=(describe_quality_en(quality) if quality is not None
+                         else _catalyst_description(s)),
             event_date=event.day, source="scout/finnhub-earnings-calendar")
+        if context is not None:
+            _record_print(stock_store, context)
         try:
             # Only trusted figures become structured snapshot fields: the
             # tribunal prompts tell both roles to prefer these over prose, so
             # a distrusted number here would be laundered into a fact. The
             # catalyst description still says what was measured, and why it
             # is not stood behind.
+            eps_fact = (quality.eps.scored_pct if quality is not None
+                        else s.scored_eps_pct)
+            revenue_fact = (quality.revenue.scored_pct if quality is not None
+                            else s.scored_revenue_pct)
             brief = build_brief(
                 candidate.ticker, catalyst, provider,
                 overrides={
-                    "eps_surprise_pct": (
-                        round(s.scored_eps_pct, 1)
-                        if s.scored_eps_pct is not None else None),
+                    "eps_surprise_pct": (round(eps_fact, 1)
+                                         if eps_fact is not None else None),
                     "revenue_surprise_pct": (
-                        round(s.scored_revenue_pct, 1)
-                        if s.scored_revenue_pct is not None else None)},
+                        round(revenue_fact, 1)
+                        if revenue_fact is not None else None)},
                 config=config)
         except Exception as exc:  # enrichment failure = rejection, visibly
             candidate.reject_reason = f"enrichment failed: {exc}"
@@ -286,10 +363,17 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
         candidate.brief = brief
         candidate.price = brief.snapshot.price
         candidate.price_asof = utc_date(brief.snapshot.as_of)
-        candidate.score = score_candidate(
-            s.scored_eps_pct, s.scored_revenue_pct,
-            brief.snapshot.gap_on_event_pct)
-        candidate.score_version = "full"
+        if quality is not None:
+            quality = assess_earnings(context.print_row, context.consensus,
+                                      config, brief.snapshot.gap_on_event_pct)
+            candidate.quality = quality
+            candidate.score = quality.score
+            candidate.score_version = "three_leg"
+        else:
+            candidate.score = score_candidate(
+                s.scored_eps_pct, s.scored_revenue_pct,
+                brief.snapshot.gap_on_event_pct)
+            candidate.score_version = "full"
         candidate.gate_report = run_entry_gates(brief.snapshot, catalyst,
                                                 config, today=today)
         if not candidate.gate_report.ok:

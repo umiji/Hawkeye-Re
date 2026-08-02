@@ -72,6 +72,17 @@ from hawkeye.scout.benchmark import (
     min_calendar_days_for_trading_days,
     reason_snippet,
 )
+from hawkeye.ledger.stocks import StockStore
+from hawkeye.marketdata.consensus import YahooConsensusSource
+from hawkeye.marketdata.edgar import EdgarDirectory
+from hawkeye.reports.quality_ja import render_quality_ja, render_stock_history_ja
+from hawkeye.scout.prereg import (
+    business_days_ahead,
+    capture_consensus,
+    report_line,
+    upcoming_prints,
+    warn_if_nothing_captured,
+)
 from hawkeye.scout.scout import (
     build_screened_candidates,
     run_scout,
@@ -92,6 +103,12 @@ def _provider() -> CompositeProvider:
 
 def _ledger() -> Ledger:
     return Ledger(db_path())
+
+
+def _stock_store() -> StockStore:
+    """The stock master lives in the same database as the ledger; its tables
+    are additive and outside the hash chain (§6.1)."""
+    return StockStore(db_path())
 
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
@@ -283,9 +300,15 @@ def cmd_scout(args: argparse.Namespace) -> int:
     if not numbers.available:
         print("yfinance が未インストールのため、決算数値はカレンダーの値のまま"
               "使います(pip install yfinance lxml)", file=sys.stderr)
+    # The stock master turns each print into a stored quarter judged against
+    # the consensus that was in force before it. Without a pre-registered row
+    # the funnel reconstructs one and says so — it never silently treats an
+    # after-the-fact estimate as what was knowable in advance (§6.1(D)).
     result = run_scout(finnhub, provider, config, days_back=args.days,
                        window=window, already_seen=ledger.seen_events(),
-                       numbers_source=numbers if numbers.available else None)
+                       numbers_source=numbers if numbers.available else None,
+                       stock_store=_stock_store(),
+                       directory=EdgarDirectory())
 
     # Whatever isn't sent to the tribunal THIS run — from result.passed's
     # tail onward — is the ranking-cutoff tier (docs/MASTER_OVERVIEW.ja.md
@@ -307,6 +330,13 @@ def cmd_scout(args: argparse.Namespace) -> int:
     ledger.record_screened_candidates(
         scan_id, build_screened_candidates(result, scan_id, sent_to_tribunal_n))
     print(render_scout_ja(result))
+
+    judged = [c for c in result.passed if c.quality is not None]
+    if judged:
+        print("\n## 決算の中身(EPS・売上・ガイダンスの3本柱)")
+        for candidate in judged[:max(sent_to_tribunal_n, 5)]:
+            print(render_quality_ja(candidate.quality))
+            print()
 
     if args.open_cases and result.passed:
         print("\n## セッションモード用ケース(/hawkeye-run が処理します)")
@@ -332,6 +362,87 @@ def cmd_scout(args: argparse.Namespace) -> int:
             ledger.record_recommendation(rec, status)
             print(render_recommendation_ja(rec))
             print(f"\n(記録済み: {rec.id} / status={status.value})")
+    return 0
+
+
+def cmd_consensus_capture(args: argparse.Namespace) -> int:
+    """Pre-register the consensus for prints due in the next few days.
+
+    Run this BEFORE the releases. Afterwards no second source for consensus
+    exists anywhere, so a day skipped here is a snapshot that can never be
+    taken — which is also why the window is two business days rather than
+    "tomorrow" (§6.1(D)).
+    """
+    config = HawkeyeConfig.from_env()
+    finnhub = FinnhubProvider()
+    if not finnhub.available:
+        print("コンセンサスの事前登録には FINNHUB_API_KEY が必要です",
+              file=sys.stderr)
+        return 1
+    days = args.days or config.consensus_capture_business_days
+    today = date.today()
+    window = business_days_ahead(today, days)
+    raw = finnhub.earnings_calendar(window[0], window[-1])
+    targets = upcoming_prints(raw, today=today, business_days=days)
+    if args.limit:
+        targets = targets[:args.limit]
+    print(f"対象期間: {window[0]} 〜 {window[-1]}(営業日{days}日)")
+    print(f"決算予定で実績がまだ出ていない銘柄: {len(targets)} 件")
+    if args.dry_run:
+        for item in targets:
+            print(f"- {item.report_date} {item.ticker} {item.fiscal_quarter} "
+                  f"(EPS予想 {item.eps_estimate})")
+        print("(--dry-run のため記録していません)")
+        return 0
+
+    source = YahooConsensusSource()
+    if not source.available:
+        print("yfinance が無いため、アナリスト人数と予想レンジは取得できません"
+              "(Finnhubの点推定のみ事前登録します)", file=sys.stderr)
+    report = capture_consensus(_stock_store(), targets,
+                               source if source.available else None,
+                               directory=EdgarDirectory())
+    print(report_line(report))
+    warn_if_nothing_captured(report)
+    return 0
+
+
+def cmd_stocks_show(args: argparse.Namespace) -> int:
+    store = _stock_store()
+    stock = store.stock_by_ticker(args.ticker)
+    if stock is None:
+        print(f"{args.ticker.upper()}: 銘柄マスタに記録がありません "
+              f"(まだ一度も探索に上がっていない銘柄です)")
+        return 1
+    history = store.history(stock.id)
+    print(render_stock_history_ja(history))
+    return 0
+
+
+def cmd_stocks_list(args: argparse.Namespace) -> int:
+    rows = _stock_store().stocks()
+    if not rows:
+        print("(銘柄マスタは空です。hawkeye scout か hawkeye consensus capture "
+              "を実行すると作られます)")
+        return 0
+    for stock in rows:
+        reviewed = (f"{stock.last_reviewed_fiscal_quarter}"
+                    f"({stock.last_stage_reached.value})"
+                    if stock.last_stage_reached else "未審査")
+        print(f"{stock.ticker:<8} {stock.id:<18} {reviewed:<24} {stock.name}")
+    print(f"\n計 {len(rows)} 銘柄")
+    return 0
+
+
+def cmd_stocks_rebuild(args: argparse.Namespace) -> int:
+    """Rebuild the master's review projection from the ledger.
+
+    The projection is a cache. If it ever disagrees with the ledger the
+    ledger is right, and this is how that is restored.
+    """
+    store = _stock_store()
+    rebuilt = store.rebuild_projection(_ledger())
+    print(f"台帳から {rebuilt} 銘柄の審査状況を作り直しました")
     return 0
 
 
@@ -1009,6 +1120,32 @@ def build_parser() -> argparse.ArgumentParser:
                          "(no API key; driven by /hawkeye-run)")
     sc.add_argument("--nav", type=float, default=100_000.0)
     sc.set_defaults(func=cmd_scout)
+
+    cn = sub.add_parser("consensus",
+                        help="pre-register consensus before earnings prints")
+    cn_sub = cn.add_subparsers(dest="consensus_cmd", required=True)
+    cnc = cn_sub.add_parser(
+        "capture",
+        help="snapshot the consensus for prints due in the next business days")
+    cnc.add_argument("--days", type=int, default=None,
+                     help="business days ahead to cover (default: config)")
+    cnc.add_argument("--limit", type=int, default=None,
+                     help="cap the number of names (each costs ~1s of Yahoo)")
+    cnc.add_argument("--dry-run", action="store_true",
+                     help="list the names without recording anything")
+    cnc.set_defaults(func=cmd_consensus_capture)
+
+    stk = sub.add_parser("stocks", help="the stock master (CIK-keyed)")
+    stk_sub = stk.add_subparsers(dest="stocks_cmd", required=True)
+    stks = stk_sub.add_parser(
+        "show", help="one company: prints, frozen consensus, past decisions")
+    stks.add_argument("ticker")
+    stks.set_defaults(func=cmd_stocks_show)
+    stkl = stk_sub.add_parser("list", help="every stock on record")
+    stkl.set_defaults(func=cmd_stocks_list)
+    stkr = stk_sub.add_parser(
+        "rebuild", help="rebuild the review projection from the ledger")
+    stkr.set_defaults(func=cmd_stocks_rebuild)
 
     sd = sub.add_parser("screened",
                         help="review candidates the scout funnel dropped "

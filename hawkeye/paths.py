@@ -30,9 +30,21 @@ def _dir(env_var: str, name: str) -> Path:
 
 
 def db_path() -> str:
-    """SQLite ledger. Returned as str — sqlite3.connect takes a path string."""
+    """SQLite ledger. Returned as str — sqlite3.connect takes a path string.
+
+    The containing directory is created here. SQLite will make the file but
+    not the folder, and `var/` only happens to exist in a working checkout —
+    so pointing `HAWKEYE_VAR` at a fresh location used to fail every command
+    with "unable to open database file" before it did anything at all.
+    """
     override = os.environ.get("HAWKEYE_DB")
-    return override if override else str(var_root() / "hawkeye.db")
+    # The override is returned verbatim — callers pass it to sqlite3, and
+    # round-tripping it through Path would rewrite separators on Windows.
+    resolved = override if override else str(var_root() / "hawkeye.db")
+    parent = Path(resolved).parent
+    if str(parent) and not parent.exists():
+        parent.mkdir(parents=True, exist_ok=True)
+    return resolved
 
 
 def cases_dir() -> Path:

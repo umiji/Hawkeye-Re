@@ -129,7 +129,11 @@ def verify_events(events: list[EarningsEvent],
             eps_source="yahoo",
             eps_surprise_pct_reported=found.surprise_pct,
             calendar_eps_surprise_pct=(
-                round(calendar_pct, 2) if calendar_pct is not None else None)))
+                round(calendar_pct, 2) if calendar_pct is not None else None),
+            # Kept, not discarded: "both sources agree" is what a beat now
+            # rests on, and it cannot be checked against an overwritten value.
+            calendar_eps_actual=event.eps_actual,
+            calendar_eps_estimate=event.eps_estimate))
 
     return out, VerificationStats(
         attempted=attempted, verified=verified, unverified=unverified,

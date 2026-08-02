@@ -64,6 +64,30 @@ class HawkeyeConfig:
     # past it keep the calendar's EPS, marked as such rather than dropped.
     scout_max_verify: int = 60
 
+    # --- Earnings quality: the three legs (docs/MASTER_OVERVIEW.ja.md §5.3) ---
+    # None of these were invented. They come from the gaps in the measured
+    # distribution of a 50-name sample taken on 2026-08-02: consensus
+    # disagreement clusters at 0.28-3.50% and then jumps to 5.18%, and actual
+    # disagreement runs 0.9%/1.1% (rounding) and then jumps to 2.9%.
+    earnings_consensus_dispute_pct: float = 5.0
+    earnings_actual_dispute_pct: float = 2.0
+    # Both conditions must hold: on a $0.30 EPS, one cent of rounding is 3%.
+    earnings_actual_dispute_abs_usd: float = 0.01
+    # A consensus this thin is one analyst's opinion wearing the word
+    # "consensus" — INVH's was built from exactly one, and only the
+    # pre-registered Yahoo row reveals it.
+    earnings_min_analysts: int = 3
+    # Guidance is a small bonus and never a penalty: absence is the normal
+    # case, has no structured source, and must not become a hidden gate
+    # (§5.3 決定3). Deliberately far below the EPS/revenue contributions.
+    guidance_beat_score: float = 5.0
+
+    # --- Consensus pre-registration (docs/MASTER_OVERVIEW.ja.md §6.1(D)) ---
+    # Runs are manual, so a strict T-1 window loses a print's snapshot
+    # permanently on any missed day — and a snapshot missed before the
+    # release can never be taken afterwards.
+    consensus_capture_business_days: int = 2
+
     # --- News fetch window (docs/MASTER_OVERVIEW.ja.md §5.2(5)) ---
     # Not doctrine — data-collection parameters. The window is anchored on
     # the catalyst date, not on "today": with a fixed today-minus-N window,

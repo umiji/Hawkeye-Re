@@ -44,6 +44,21 @@ def test_var_root_env_relocates_everything(monkeypatch, tmp_path):
     assert paths.reports_dir() == tmp_path / "reports"
 
 
+def test_opening_the_ledger_creates_the_var_tree(monkeypatch, tmp_path):
+    """`var/` exists in this checkout, which hid the fact that nothing
+    creates it: pointing HAWKEYE_VAR anywhere new made every command die on
+    "unable to open database file" before doing anything."""
+    from hawkeye.ledger.store import Ledger
+    from hawkeye.ledger.stocks import StockStore
+
+    fresh = tmp_path / "brand-new" / "var"
+    monkeypatch.setenv("HAWKEYE_VAR", str(fresh))
+    monkeypatch.delenv("HAWKEYE_DB", raising=False)
+
+    assert Ledger(paths.db_path()).verify_chain() is True
+    assert StockStore(paths.db_path()).stocks() == []
+
+
 def test_per_dir_env_overrides_var_root(monkeypatch, tmp_path):
     monkeypatch.setenv("HAWKEYE_VAR", str(tmp_path))
     monkeypatch.setenv("HAWKEYE_CASES", str(tmp_path / "elsewhere"))

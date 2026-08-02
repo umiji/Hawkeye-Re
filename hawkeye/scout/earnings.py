@@ -56,6 +56,17 @@ class EarningsEvent:
     # disagreement rate between the two sources accumulates as data instead
     # of being overwritten silently.
     calendar_eps_surprise_pct: Optional[float] = None
+    # The calendar's own actual and estimate, kept alongside the verified
+    # pair rather than replaced by it (2026-08-02). A beat now requires BOTH
+    # sources to say so, and that comparison is impossible against a value
+    # that was overwritten — which is what the earlier "verified wins"
+    # substitution did.
+    calendar_eps_actual: Optional[float] = None
+    calendar_eps_estimate: Optional[float] = None
+    # The source's own fiscal label (`2026-Q2`), when the calendar gave one.
+    # Preferred over the calendar quarter of the report date, which is wrong
+    # for any company whose fiscal year does not end in December.
+    fiscal_quarter: Optional[str] = None
 
 
 class ScreenedEvent(NamedTuple):
@@ -139,6 +150,21 @@ def _collapse_duplicates(events: list[EarningsEvent]) -> list[EarningsEvent]:
     return collapsed
 
 
+def _fiscal_quarter_label(row: dict) -> Optional[str]:
+    """`2026-Q2` from the calendar's own year/quarter fields, or None.
+
+    None rather than a guess: the caller can fall back to the calendar
+    quarter of the report date, but it has to know that it is doing so.
+    """
+    year, quarter = row.get("year"), row.get("quarter")
+    if not year or not quarter:
+        return None
+    try:
+        return f"{int(year)}-Q{int(quarter)}"
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_calendar(raw: list[dict]) -> list[EarningsEvent]:
     """Parse Finnhub earnings-calendar entries; skip malformed rows and
     collapse several rows describing the same print into one event."""
@@ -156,7 +182,8 @@ def parse_calendar(raw: list[dict]) -> list[EarningsEvent]:
             eps_actual=row.get("epsActual"),
             eps_estimate=row.get("epsEstimate"),
             revenue_actual=row.get("revenueActual"),
-            revenue_estimate=row.get("revenueEstimate")))
+            revenue_estimate=row.get("revenueEstimate"),
+            fiscal_quarter=_fiscal_quarter_label(row)))
     return _collapse_duplicates(events)
 
 
