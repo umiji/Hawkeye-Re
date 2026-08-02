@@ -69,7 +69,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, payload)
 
     def _send_json(self, status: int, payload: dict) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        # allow_nan=False so a future NaN leak raises here instead of shipping
+        # bare NaN, which is not valid JSON: the browser then fails to parse
+        # the whole response and the page goes blank with nothing in the
+        # server log to explain it (what happened on 2026-08-02). A visible
+        # server-side error beats a silent blank page.
+        body = json.dumps(payload, ensure_ascii=False,
+                          allow_nan=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))

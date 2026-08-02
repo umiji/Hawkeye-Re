@@ -8,6 +8,11 @@ dependencies = [
     "pydantic>=2.7",
     "httpx>=0.27",
     "python-dotenv>=1.0",
+    # Reported EPS and its consensus (hawkeye/marketdata/yahoo_earnings.py).
+    # lxml is not optional in practice: without it get_earnings_dates()
+    # raises ImportError, and that is the single surface this depends on.
+    "yfinance>=1.5",
+    "lxml>=5.0",
 ]
 
 [project.optional-dependencies]

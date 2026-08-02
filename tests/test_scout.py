@@ -267,6 +267,113 @@ def test_run_scout_skips_events_already_recorded(config):
     assert [c.ticker for c in result.passed] == ["NEW"]
 
 
+# --- the walk down the ranked screen (2026-08-02) --------------------------
+
+class PerTickerProvider:
+    """Same shape as StaticProvider, but the profile varies by ticker so a
+    test can make specific names fail an entry gate."""
+
+    def __init__(self, bars, market_caps: dict, default_cap: float = 5e9):
+        self._bars = bars
+        self._caps = market_caps
+        self._default = default_cap
+        self.enriched: list[str] = []
+
+    def daily_history(self, ticker: str, days: int = 365):
+        if days > 5:                     # the cheap price-only fetch is days=5
+            self.enriched.append(ticker)
+        return self._bars[-days:]
+
+    def profile(self, ticker: str) -> dict:
+        return {"market_cap": self._caps.get(ticker, self._default)}
+
+    def news(self, ticker: str, limit: int = 10):
+        return []
+
+
+def _entries(today, tickers_by_surprise):
+    """One calendar row per ticker, EPS surprise descending in list order."""
+    day = (today - timedelta(days=3)).isoformat()
+    return [{"symbol": t, "date": day, "epsActual": 1.0 + (0.50 - i * 0.01),
+             "epsEstimate": 1.00}
+            for i, t in enumerate(tickers_by_surprise)]
+
+
+def test_a_gate_rejection_promotes_the_next_candidate_up(config):
+    """The defect this replaced: enrichment took a fixed slice of the ranked
+    screen, so a day where the top names failed the gates sent almost nothing
+    to the tribunal while the candidates just below sat untouched."""
+    today = date.today()
+    entries = _entries(today, ["AAA", "BBB", "CCC"])
+    provider = PerTickerProvider(
+        make_bars(30, start_price=40.0, volume=2_000_000),
+        market_caps={"AAA": 1e6})        # AAA is far under min_market_cap
+
+    result = run_scout(FakeCalendar(entries), provider,
+                       replace(config, scout_target_gate_passed=1),
+                       today=today)
+
+    assert [c.ticker for c in result.rejected] == ["AAA"]
+    assert [c.ticker for c in result.passed] == ["BBB"]   # promoted from #2
+    assert result.enriched == 2                           # AAA tried, then BBB
+    assert [c.ticker for c in result.capped] == ["CCC"]   # never reached
+
+
+def test_the_walk_stops_once_the_pool_is_full(config):
+    today = date.today()
+    entries = _entries(today, ["AAA", "BBB", "CCC", "DDD"])
+    provider = PerTickerProvider(
+        make_bars(30, start_price=40.0, volume=2_000_000), market_caps={})
+
+    result = run_scout(FakeCalendar(entries), provider,
+                       replace(config, scout_target_gate_passed=2),
+                       today=today)
+
+    assert len(result.passed) == 2
+    assert result.enriched == 2
+    assert provider.enriched == ["AAA", "BBB"]    # CCC/DDD never enriched
+    assert result.enrichment_ceiling_hit is False
+
+
+def test_the_attempt_ceiling_stops_a_bad_day_and_says_so(config):
+    """A short shortlist because the budget ran out must not read the same as
+    a short one because the calendar was quiet."""
+    today = date.today()
+    entries = _entries(today, ["AAA", "BBB", "CCC", "DDD"])
+    provider = PerTickerProvider(
+        make_bars(30, start_price=40.0, volume=2_000_000),
+        market_caps={t: 1e6 for t in ("AAA", "BBB", "CCC", "DDD")})
+
+    result = run_scout(FakeCalendar(entries), provider,
+                       replace(config, scout_target_gate_passed=3,
+                               scout_max_enrich=2),
+                       today=today)
+
+    assert result.passed == []
+    assert result.enriched == 2
+    assert result.enrichment_ceiling_hit is True
+    assert [c.ticker for c in result.capped] == ["CCC", "DDD"]
+    assert "ceiling" in result.capped[0].reject_reason
+    assert "試行上限" in render_scout_ja(result)
+
+
+def test_candidates_below_the_stop_point_are_still_recorded(config):
+    """Whatever the walk did not reach still needs a row, or the drop-review
+    denominator is wrong and "3 got away" reads as neither good nor bad."""
+    today = date.today()
+    entries = _entries(today, ["AAA", "BBB", "CCC"])
+    provider = PerTickerProvider(
+        make_bars(30, start_price=40.0, volume=2_000_000), market_caps={})
+
+    result = run_scout(FakeCalendar(entries), provider,
+                       replace(config, scout_target_gate_passed=1),
+                       today=today)
+
+    assert [c.ticker for c in result.capped] == ["BBB", "CCC"]
+    assert all(c.price is not None for c in result.capped)   # cheap fetch ran
+    assert all(c.score_version == "partial_no_gap" for c in result.capped)
+
+
 def test_already_seen_is_per_event_not_per_ticker(config):
     """The same ticker reporting a *different* quarter is a new candidate."""
     today = date.today()

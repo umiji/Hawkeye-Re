@@ -41,13 +41,16 @@ from hawkeye.config import HawkeyeConfig
 from hawkeye.marketdata.finnhub import FinnhubProvider
 from hawkeye.marketdata.snapshot import event_stats
 from hawkeye.marketdata.yahoo import YahooProvider
+from hawkeye.marketdata.yahoo_earnings import YahooEarningsSource
 from hawkeye.scout.earnings import (
     EarningsEvent,
     ScreenedEvent,
+    eps_surprise_pct,
     parse_calendar,
     score_candidate,
     screen_events,
 )
+from hawkeye.scout.verify import verify_events
 
 # Finnhub symbols are uppercase alphanumerics; dots and hyphens appear on
 # class shares (BRK.B, BF-B). Anything else is a typo or an injection
@@ -139,11 +142,44 @@ class _RecordingFinnhub(FinnhubProvider):
         return cal.get("earningsCalendar", []) if isinstance(cal, dict) else []
 
 
+class _RecordingYahooEarnings(YahooEarningsSource):
+    """The real Yahoo numbers source, keeping the rows it read.
+
+    Same rule as the Finnhub side: what the page shows must be the response
+    the code actually worked from, not a second fetch that might land
+    differently. yfinance has no HTTP chokepoint we can wrap, so the capture
+    point is one level up — the rows the source parsed out of the frame.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.raw_rows: list[dict] = []
+        self.fetched = False
+
+    def _rows(self, ticker: str):
+        rows = super()._rows(ticker)
+        if not self.fetched:
+            self.fetched = True
+            self.raw_rows = [{"Earnings Date": day.isoformat(),
+                              **{str(k): v for k, v in row.items()}}
+                             for day, row in rows]
+        return rows
+
+
 # --- JSON rendering ---------------------------------------------------------
 
 def jsonable(obj: Any) -> Any:
     """Convert pydantic models, dataclasses, NamedTuples, dates and enums
     into something `json.dumps` accepts, recursively."""
+    if isinstance(obj, float) and obj != obj:
+        # NaN. json.dumps writes it out bare, which JSON.parse rejects — one
+        # of these anywhere in the payload blanks the whole page rather than
+        # blanking one cell. Yahoo's rows carry NaN for a scheduled print
+        # that has not reported yet, so this is the normal case, not an edge
+        # one. "Missing" is the honest reading and null is how it travels.
+        return None
+    if isinstance(obj, float) and obj in (float("inf"), float("-inf")):
+        return None
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
     if isinstance(obj, (date, datetime)):
@@ -189,8 +225,81 @@ def _screen_explanation(measured: ScreenedEvent,
     return "below threshold"
 
 
+def _measurements(measured: ScreenedEvent, event: EarningsEvent,
+                  config: HawkeyeConfig, bars: list) -> dict:
+    """Every number the screen derives from one event, from the production
+    functions. Called once per source so the two readings are computed by
+    exactly the same code and any difference is the data's, not ours."""
+    passes = _screened(event, config, config.scout_min_eps_surprise_pct,
+                       config.scout_min_revenue_surprise_pct) is not None
+    gap = event_stats(bars, event.day)[0] if bars else None
+    return {
+        "screened": passes,
+        "reason": "" if passes else _screen_explanation(measured, config),
+        "eps_actual": event.eps_actual,
+        "eps_estimate": event.eps_estimate,
+        "eps_surprise_pct": measured.eps_surprise_pct,
+        "revenue_surprise_pct": measured.revenue_surprise_pct,
+        "eps_surprise_trusted": measured.eps_surprise_trusted,
+        "revenue_surprise_trusted": measured.revenue_surprise_trusted,
+        "conflicting_estimates": event.conflicting_estimates,
+        "gap_on_event_pct": gap,
+        "score_partial_no_gap": score_candidate(measured.scored_eps_pct,
+                                                measured.scored_revenue_pct,
+                                                None),
+        "score_full": (score_candidate(measured.scored_eps_pct,
+                                       measured.scored_revenue_pct, gap)
+                       if gap is not None else None)}
+
+
+def _yahoo_view(event: EarningsEvent, config: HawkeyeConfig, bars: list,
+                source) -> dict:
+    """The same print as Yahoo reports it, run through the same screen.
+
+    The substitution itself is production's `verify_events`, not a copy of
+    it — a debug view that decides for itself what "verified" means would
+    stop explaining the engine and start competing with it.
+    """
+    provisional = _screened(event, config, _NO_THRESHOLD, _NO_THRESHOLD)
+    verified, stats = verify_events([event], [provisional] if provisional else [],
+                                    source, limit=1)
+    if not stats.verified:
+        return {"verified": False,
+                "reason": "Yahooに該当する決算が見つからない（未報告、"
+                          "銘柄が無い、または取得に失敗）"}
+    replaced = verified[0]
+    measured = _screened(replaced, config, _NO_THRESHOLD, _NO_THRESHOLD)
+    if measured is None:
+        return {"verified": False,
+                "reason": "Yahooの値からサプライズ率を計算できない"}
+    view = {"verified": True, "eps_source": replaced.eps_source,
+            **_measurements(measured, replaced, config, bars)}
+    view["differs"] = sorted(
+        k for k in ("eps_actual", "eps_estimate", "eps_surprise_pct",
+                    "screened", "eps_surprise_trusted")
+        if _differs(k, event, config, bars, view))
+    return view
+
+
+def _differs(key: str, calendar_event: EarningsEvent, config: HawkeyeConfig,
+             bars: list, yahoo: dict) -> bool:
+    """Whether the two sources disagree on one field, to a tolerance that
+    ignores float noise but not a real difference in the numbers."""
+    base = _screened(calendar_event, config, _NO_THRESHOLD, _NO_THRESHOLD)
+    if base is None:
+        return True
+    mine = _measurements(base, calendar_event, config, bars).get(key)
+    theirs = yahoo.get(key)
+    if isinstance(mine, bool) or isinstance(theirs, bool):
+        return mine is not theirs
+    if mine is None or theirs is None:
+        return mine is not theirs
+    return abs(float(mine) - float(theirs)) > 0.005
+
+
 def _print_view(rows: list[dict], event: Optional[EarningsEvent],
-                config: HawkeyeConfig, bars: list) -> dict:
+                config: HawkeyeConfig, bars: list,
+                numbers_source=None) -> dict:
     """One earnings print: its raw rows, the single event they collapse
     to, and every number the screen would derive from it."""
     view: dict = {"rows": rows, "row_count": len(rows)}
@@ -216,31 +325,15 @@ def _print_view(rows: list[dict], event: Optional[EarningsEvent],
                    " or estimate is zero)")
         return view
 
-    passes = _screened(event, config, config.scout_min_eps_surprise_pct,
-                       config.scout_min_revenue_surprise_pct) is not None
-    gap = event_stats(bars, event.day)[0] if bars else None
-    view.update(
-        parsed=True,
-        event=event,
-        screened=passes,
-        reason="" if passes else _screen_explanation(measured, config),
-        eps_surprise_pct=measured.eps_surprise_pct,
-        revenue_surprise_pct=measured.revenue_surprise_pct,
-        eps_surprise_trusted=measured.eps_surprise_trusted,
-        revenue_surprise_trusted=measured.revenue_surprise_trusted,
-        conflicting_estimates=event.conflicting_estimates,
-        gap_on_event_pct=gap,
-        score_partial_no_gap=score_candidate(measured.scored_eps_pct,
-                                             measured.scored_revenue_pct,
-                                             None),
-        score_full=(score_candidate(measured.scored_eps_pct,
-                                    measured.scored_revenue_pct, gap)
-                    if gap is not None else None))
+    view.update(parsed=True, event=event,
+                **_measurements(measured, event, config, bars))
+    if numbers_source is not None:
+        view["yahoo"] = _yahoo_view(event, config, bars, numbers_source)
     return view
 
 
-def build_prints(rows: list[dict], config: HawkeyeConfig,
-                 bars: list) -> list[dict]:
+def build_prints(rows: list[dict], config: HawkeyeConfig, bars: list,
+                 numbers_source=None) -> list[dict]:
     """Group raw calendar rows by the print they describe, newest first.
 
     Grouping mirrors `_collapse_duplicates`' key — (symbol, day) — so a
@@ -261,7 +354,7 @@ def build_prints(rows: list[dict], config: HawkeyeConfig,
         except ValueError:
             parsed_day = None
         event = events.get((symbol, parsed_day)) if parsed_day else None
-        view = _print_view(group, event, config, bars)
+        view = _print_view(group, event, config, bars, numbers_source)
         view["symbol"], view["date"] = symbol, day
         views.append(view)
     views.sort(key=lambda v: v["date"], reverse=True)
@@ -288,7 +381,8 @@ def _profile_section(provider: _RecordingFinnhub, ticker: str) -> Section:
 
 def _earnings_section(provider: _RecordingFinnhub, ticker: str,
                       config: HawkeyeConfig, bars: list,
-                      calendar_days: int) -> Section:
+                      calendar_days: int,
+                      numbers_source=None) -> Section:
     today = date.today()
     start = today - timedelta(days=calendar_days)
     end = today + timedelta(days=_CALENDAR_AHEAD)
@@ -298,14 +392,16 @@ def _earnings_section(provider: _RecordingFinnhub, ticker: str,
         rows = provider.earnings_calendar_for(ticker, start, end)
     except httpx.HTTPError as exc:
         error = f"{type(exc).__name__}: {exc}"
+    prints = build_prints(rows, config, bars, numbers_source)
     return Section(
-        id="earnings", title="決算カレンダー（1決算=1行に畳む前と後）",
-        source="Finnhub /calendar/earnings",
+        id="earnings", title="決算カレンダー（Finnhub と Yahoo の読みを並べる）",
+        source="Finnhub /calendar/earnings + Yahoo (yfinance) earnings_dates",
         calls=_since(provider, mark), error=error,
         hawkeye={
             "window": {"from": start.isoformat(), "to": end.isoformat()},
             "raw_rows": len(rows),
-            "prints": build_prints(rows, config, bars),
+            "yahoo_rows": getattr(numbers_source, "raw_rows", []),
+            "prints": prints,
             "thresholds": {
                 "min_eps_surprise_pct": config.scout_min_eps_surprise_pct,
                 "min_revenue_surprise_pct":
@@ -315,11 +411,15 @@ def _earnings_section(provider: _RecordingFinnhub, ticker: str,
                     config.scout_max_trusted_revenue_surprise_pct}},
         note="スカウト本体は銘柄を指定せず日付範囲で全銘柄を取得する。ここは"
              "同じエンドポイントを1銘柄に絞っただけで、解釈は本番と同じ関数"
-             "（parse_calendar / screen_events / score_candidate）が行う。"
-             "なお銘柄を指定した場合、Finnhubは from をどれだけ過去に置いても"
-             "「直近1回の決算＋今後の予定日」しか返さない（2026-08-01に実測）。"
-             "過去数四半期を並べて確認する用途には、このエンドポイントは"
-             "使えない。")
+             "（parse_calendar / screen_events / score_candidate / "
+             "verify_events）が行う。2026-08-02以降、本番はEPSの実績と予想を"
+             "Yahooから取り直しており、この表はその置き換え前後を並べたもの。"
+             "サプライズ率はYahooが公表した値をそのまま使う（表示上の丸めた"
+             "予想値から計算すると値がずれるため）。なお銘柄を指定した場合、"
+             "Finnhubは from をどれだけ過去に置いても「直近1回の決算＋今後の"
+             "予定日」しか返さない（2026-08-01に実測）。Yahoo側は過去25回分"
+             "程度まで遡れるので、Finnhubに無い過去の決算はYahoo列だけが"
+             "埋まる。")
 
 
 def _insider_section(provider: _RecordingFinnhub, ticker: str) -> Section:
@@ -400,7 +500,9 @@ def probe_ticker(ticker: str, *, config: Optional[HawkeyeConfig] = None,
     except Exception as exc:                  # noqa: BLE001 — report, never fail
         price_error = f"{type(exc).__name__}: {exc}"
 
-    earnings = _earnings_section(finnhub, symbol, config, bars, calendar_days)
+    numbers = _RecordingYahooEarnings()
+    earnings = _earnings_section(finnhub, symbol, config, bars, calendar_days,
+                                 numbers if numbers.available else None)
     latest = _latest_print_date(earnings)
 
     sections = [

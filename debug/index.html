@@ -150,10 +150,21 @@ tr.print.open td.day .caret { transform: rotate(90deg); }
 tr.detail > td { padding: 0 0 14px; background: var(--wash); }
 tr.detail table { font-size: 12px; }
 tr.detail th { padding-top: 12px; }
-tr.detail td.differs {
+tr.detail td.differs,
+tr.yahoo td.differs {
   background: color-mix(in srgb, var(--warning) 22%, transparent);
   font-weight: 600;
 }
+/* The second source's reading of the print above it: same columns, tied to
+   its neighbour by a shared left border rather than a separator between. */
+tr.yahoo { cursor: default; }
+tr.yahoo > td {
+  border-top: 0;
+  padding-top: 2px;
+  background: color-mix(in srgb, var(--wash) 55%, transparent);
+}
+tr.yahoo td.day { padding-left: 12px; }
+.src-tag { margin-left: 6px; font-size: 10px; letter-spacing: .04em; }
 .dim { color: var(--muted); }
 
 /* --- badges ------------------------------------------------------------- */
@@ -403,7 +414,8 @@ function earningsPanel(section) {
     const ev = pr.event || {};
     const row = el("tr", "print");
     row.innerHTML =
-      '<td class="day"><span class="caret">▸</span>' + esc(day(pr.date)) + "</td>" +
+      '<td class="day"><span class="caret">▸</span>' + esc(day(pr.date)) +
+        '<span class="dim src-tag">Finnhub</span></td>' +
       "<td>" + pr.row_count + "</td>" +
       "<td>" + num(ev.eps_actual) + "</td>" +
       "<td>" + num(ev.eps_estimate) + "</td>" +
@@ -430,16 +442,62 @@ function earningsPanel(section) {
       row.classList.toggle("open", open);
     });
     body.appendChild(row);
+    const yh = yahooRow(pr);
+    if (yh) body.appendChild(yh);
     body.appendChild(detail);
   });
   table.appendChild(body);
   wrap.appendChild(table);
   p.appendChild(wrap);
   p.appendChild(el("p", "note",
-    "スコアの * 印は当日ギャップ未算入（本番の score_version=partial_no_gap と同じ）。" +
-    "行をクリックすると、その決算についてFinnhubが返した生の行が並び、" +
-    "行ごとに食い違う値が塗られる。"));
+    "各決算は2行で並ぶ。上がFinnhubの決算カレンダー、下がYahooの決算履歴で、" +
+    "本番は2026-08-02以降、ランキングの前にEPSをYahooの値へ置き換えている。" +
+    "2つのソースで食い違う値は塗って示す。売上はYahooの決算履歴に入っていない" +
+    "ため、Yahoo行では空欄にしてある（確認できていないものを確認済みのように" +
+    "見せないため）。スコアの * 印は当日ギャップ未算入" +
+    "（本番の score_version=partial_no_gap と同じ）。" +
+    "上の行をクリックすると、その決算についてFinnhubが返した生の行が並ぶ。"));
   return finish(p, section);
+}
+
+/* The second reading of the same print. Production replaces the calendar's
+   EPS with this one before ranking, so the two belong on adjacent rows with
+   the cells that disagree marked — that difference IS the finding. */
+function yahooRow(pr) {
+  const y = pr.yahoo;
+  if (!y) return null;
+  const row = el("tr", "print yahoo");
+  if (!y.verified) {
+    row.innerHTML =
+      '<td class="day"><span class="dim src-tag">Yahoo</span></td>' +
+      '<td colspan="' + (COLS.length - 1) + '" class="dim">' +
+      esc(y.reason || "未確認") + "</td>";
+    return row;
+  }
+  const d = new Set(y.differs || []);
+  const mark = k => d.has(k) ? ' class="differs"' : "";
+  row.innerHTML =
+    '<td class="day"><span class="dim src-tag">Yahoo</span></td>' +
+    '<td class="dim">' + NA + "</td>" +
+    "<td" + mark("eps_actual") + ">" + num(y.eps_actual) + "</td>" +
+    "<td" + mark("eps_estimate") + ">" + num(y.eps_estimate) + "</td>" +
+    "<td" + mark("eps_surprise_pct") + ">" + pct(y.eps_surprise_pct) + "</td>" +
+    /* Yahoo's earnings history carries no revenue, so those columns stay the
+       calendar's and are blanked here rather than repeated as if confirmed. */
+    '<td class="dim">' + NA + "</td>" +
+    '<td class="dim">' + NA + "</td>" +
+    '<td class="dim">' + NA + "</td>" +
+    "<td>" + pct(y.gap_on_event_pct) + "</td>" +
+    "<td>" + (isNum(y.score_full) ? num(y.score_full)
+      : isNum(y.score_partial_no_gap)
+        ? num(y.score_partial_no_gap) + '<span class="dim">*</span>' : NA) +
+    "</td>" +
+    "<td" + mark("screened") + ">" + badges(y) +
+      (d.has("screened")
+        ? '<span class="badge flag">' +
+          (y.screened ? "選別を通る" : "選別で落ちる") + "</span>" : "") +
+    "</td>";
+  return row;
 }
 
 function rawRows(rows) {

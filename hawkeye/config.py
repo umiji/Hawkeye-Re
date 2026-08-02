@@ -36,8 +36,18 @@ class HawkeyeConfig:
     scout_days_back: int = 7                # scan window for earnings events
     scout_min_eps_surprise_pct: float = 5.0
     scout_min_revenue_surprise_pct: float = 0.0
-    scout_max_enrich: int = 15              # candidates enriched with price data
-                                            # (bounds free-tier API usage)
+    # How many gate-passing candidates one scan tries to assemble. The
+    # shortlist is ranked among these, and only the top few are ever argued,
+    # so this is the size of the pool the ranking gets to choose from —
+    # enrichment is what reveals the event-day reaction, worth up to 25 of
+    # the score's points, and a pool of 3 would make that term decorative.
+    scout_target_gate_passed: int = 15
+    # Attempt ceiling, so a day where almost everything fails the gates
+    # cannot walk the whole calendar. 3x the target: past that the screen is
+    # into progressively weaker surprises and the run should say it stopped
+    # short rather than grind through the free tier. Reaching this before
+    # the target is reported, never silent.
+    scout_max_enrich: int = 45
     # A surprise percentage is only as good as its denominator. Below this
     # absolute consensus the ratio measures the estimate, not the beat — a
     # REIT reporting FFO carries a GAAP EPS consensus near zero, which is why
@@ -47,6 +57,12 @@ class HawkeyeConfig:
     # revenue for lenders), which reads as a several-hundred-percent beat.
     # Past this, the number is treated as unverified rather than as a beat.
     scout_max_trusted_revenue_surprise_pct: float = 50.0
+    # How many names one scan re-reads from Yahoo before ranking
+    # (hawkeye/scout/verify.py). Not a doctrine number — a run-duration
+    # budget: ~1s per name, and 120 sequential calls measured 2026-08-02 at
+    # 62 req/min with no rate limiting, so 60 costs about a minute. Names
+    # past it keep the calendar's EPS, marked as such rather than dropped.
+    scout_max_verify: int = 60
 
     # --- News fetch window (docs/MASTER_OVERVIEW.ja.md §5.2(5)) ---
     # Not doctrine — data-collection parameters. The window is anchored on

@@ -202,6 +202,25 @@ def render_scout_ja(result) -> str:
                  f"{f['screened']}件 → 既出を除外 {f['duplicates']}件 → "
                  f"詳細取得 {f['enriched']}件 → "
                  f"ゲート通過 {f['gate_passed']}件")
+    # How much of the shortlist rests on numbers a second source confirmed.
+    # "Nobody checked" and "checked and agreed" must not read the same way.
+    v = getattr(result, "verification", None)
+    if v is not None and v.attempted:
+        line = (f"数値の照合: {v.attempted}件を Yahoo で再取得 → 確認 "
+                f"{v.verified}件 / 未確認 {v.unverified}件")
+        if v.disagreed:
+            line += f"、うちカレンダーと食い違い {v.disagreed}件"
+        lines.append(line)
+        if v.budget_exhausted:
+            lines.append(f"⚠️ 照合の上限({v.attempted}件)に達しました。"
+                         "残りはカレンダーの数値のままです"
+                         "(`scout_max_verify` で調整)。")
+    if getattr(result, "enrichment_ceiling_hit", False):
+        lines.append("")
+        lines.append("⚠️ **詳細取得の試行上限に達したため、ゲート通過候補が"
+                     "揃う前に打ち切りました。** 候補が少ないのは決算が"
+                     "静かだったからではなく、入口ゲートで落ちた銘柄が"
+                     "多かったためです(`scout_max_enrich` で調整)。")
     if getattr(result, "window_truncated", False):
         lines.append("")
         lines.append("⚠️ **前回実行からの間隔が探索窓の上限を超えました。**"

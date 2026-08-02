@@ -42,6 +42,7 @@ from hawkeye.ledger.store import Ledger
 from hawkeye.marketdata.finnhub import CompositeProvider, FinnhubProvider
 from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
+from hawkeye.marketdata.yahoo_earnings import YahooEarningsSource
 from hawkeye.reports.render_ja import (
     fmt_jst,
     render_drop_cycle_ja,
@@ -274,8 +275,17 @@ def cmd_scout(args: argparse.Namespace) -> int:
     # lookback instead, for backfills and one-off exploration.
     window = (None if args.days
               else scan_window(date.today(), ledger.last_scan_at(), config))
+    # Discovery stays with the calendar; the EPS numbers are re-read from
+    # Yahoo before ranking (hawkeye/scout/verify.py). If yfinance is missing
+    # the source reports itself unavailable and the scan runs on the
+    # calendar's own figures rather than failing.
+    numbers = YahooEarningsSource()
+    if not numbers.available:
+        print("yfinance が未インストールのため、決算数値はカレンダーの値のまま"
+              "使います(pip install yfinance lxml)", file=sys.stderr)
     result = run_scout(finnhub, provider, config, days_back=args.days,
-                       window=window, already_seen=ledger.seen_events())
+                       window=window, already_seen=ledger.seen_events(),
+                       numbers_source=numbers if numbers.available else None)
 
     # Whatever isn't sent to the tribunal THIS run — from result.passed's
     # tail onward — is the ranking-cutoff tier (docs/MASTER_OVERVIEW.ja.md
@@ -289,7 +299,8 @@ def cmd_scout(args: argparse.Namespace) -> int:
                 "window_truncated": result.window_truncated,
                 "days_back_override": args.days,
                 "duplicates_skipped": result.duplicates,
-                "min_eps_surprise": config.scout_min_eps_surprise_pct},
+                "min_eps_surprise": config.scout_min_eps_surprise_pct,
+                **result.verification.as_dict()},
         scanned=result.scanned, screened=result.screened,
         enriched=result.enriched, gate_passed=len(result.passed),
         tickers=[c.ticker for c in result.passed])

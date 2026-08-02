@@ -41,6 +41,21 @@ class EarningsEvent:
     revenue_actual: Optional[float]
     revenue_estimate: Optional[float]
     conflicting_estimates: bool = False   # the calendar disagreed with itself
+    # Which source the EPS figures above came from: "calendar" (Finnhub) or
+    # "yahoo". Revenue is always the calendar's — see
+    # hawkeye/marketdata/yahoo_earnings.py for why only EPS crosses over.
+    eps_source: str = "calendar"
+    # The surprise as the source PUBLISHED it. Yahoo rounds the estimate it
+    # displays but computes the surprise from full precision, so recomputing
+    # from the two displayed numbers understates the beat (BJRI 2026-07-30:
+    # 0.90/0.94 displayed, +4.95% published, +4.44% if recomputed). When this
+    # is set it wins over any computation — that rule is enforced here rather
+    # than left to callers to remember.
+    eps_surprise_pct_reported: Optional[float] = None
+    # What the calendar read before verification replaced it. Kept so the
+    # disagreement rate between the two sources accumulates as data instead
+    # of being overwritten silently.
+    calendar_eps_surprise_pct: Optional[float] = None
 
 
 class ScreenedEvent(NamedTuple):
@@ -71,6 +86,14 @@ def _surprise_pct(actual: Optional[float],
 
 
 def eps_surprise_pct(event: EarningsEvent) -> Optional[float]:
+    """The published surprise when the source gave one, else computed.
+
+    The preference is not a convenience: recomputing from a rounded estimate
+    is wrong by up to half a cent of consensus, which on a $0.90 bar is a
+    whole percentage point of "beat" (see EarningsEvent.eps_surprise_pct_reported).
+    """
+    if event.eps_surprise_pct_reported is not None:
+        return event.eps_surprise_pct_reported
     return _surprise_pct(event.eps_actual, event.eps_estimate)
 
 
