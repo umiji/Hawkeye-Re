@@ -221,7 +221,7 @@ Record decisions and insights at the end of each working session
   the scan/decision axis — `ticker` is a bare TEXT column on `recommendations`
   / `scans` / `screened_candidates` / `drop_reviews` and there is no entity
   table, so a per-ticker history means scanning every decision record. Agreed
-  to add `securities` / `earnings_prints` / `consensus_snapshots` (additive
+  to add `stocks` / `earnings_prints` / `consensus_snapshots` (additive
   only; `verify_chain()` is unaffected by new tables). **The key must be CIK,
   not ticker** — tickers are reused after delisting and change on renames, and
   keying on them would silently merge two companies and re-break the
@@ -232,6 +232,39 @@ Record decisions and insights at the end of each working session
   pre-registration then survives by reference instead of by copy. **Enforce
   insert-only in the store layer, not by convention**; an UPDATE path added
   later would break invariant 1 silently.
+
+  **Settled on review the same day** (design written up in
+  `docs/MASTER_OVERVIEW.ja.md` §5.3 + §6.1): the master is named `stocks`, not
+  `securities` — "security" collides with the information-security sense
+  throughout the code. It carries a *projection* of the LAST review only
+  (`last_reviewed_fiscal_quarter` as `2026-Q2`, `last_reviewed_at`, stage reached),
+  rebuildable from the ledger. **Holding status is deliberately NOT on the master**
+  — a stock has n positions over time, so it belongs in the `positions` projection
+  (§5.2(2), still unimplemented); the master must not depend on a table that does
+  not exist yet. Nor does it carry **point-in-time observations** (price, market
+  cap, analyst ratings) — those are frozen inside the immutable decision payload,
+  and a mutable "current price" on the master is a look-ahead path for later
+  analysis.
+  `earnings_prints` carries a `depth` (`calendar_only` → `verified` →
+  `xbrl_validated` → `release_read`) so a quarter we never looked at stays
+  distinguishable from one we looked at and found nothing in; `calendar_only` rows
+  cost nothing (the values are already in the calendar response), so any name that
+  entered the funnel keeps an unbroken quarterly history. The user proposed
+  updating one consensus row per (stock, quarter) in place and freezing it after
+  the print — **declined, with reasons**: a decision references the row by id, so
+  an update silently repoints a pre-registered recommendation at different numbers;
+  the revision path is itself the evidence behind the vintage-not-methodology
+  conclusion (BIIB 3.98 → 2.15 over 90 days); and it destroys the
+  pre-registered/reconstructed distinction. The "fix" the user wanted is a pointer
+  instead — `earnings_prints.consensus_snapshot_id` = the row in force just before
+  the print. Snapshotting for quarter Q stops when Q's print is recorded (later
+  captures belong to Q+1), and a capture identical to the newest row writes no
+  row — so in practice a term holds ONE row, and a second row exists only because
+  the estimate actually moved. Capture covers names reporting within the next
+  **2 business days**, not strictly T−1: runs are manual, and one missed day would
+  lose that print's snapshot permanently (same reasoning as the scan window in
+  §5.2(1)). Cost scales with API calls, not rows — 62 calls/min measured,
+  ~150–200 names/day at peak, so ~5–7 min per run.
 
   Session cost ~$65 (one CRITICAL warning) — all of it live measurement.
   Nothing needs re-measuring; `basis_survey.json` in the scratchpad holds the
