@@ -12,7 +12,8 @@ is a first-class metric of the system, same as P&L.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import sys
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
@@ -38,6 +39,7 @@ from hawkeye.scout.earnings import (
     screen_events,
 )
 from hawkeye.scout.prereg import resolve_stock
+from hawkeye.scout.release import read_release, release_key
 from hawkeye.scout.quality import (
     EarningsQuality,
     assess_earnings,
@@ -101,6 +103,11 @@ class ScoutResult:
     # full. Means the shortlist is short because the budget ran out, not
     # because the calendar was quiet — the two must not read the same.
     enrichment_ceiling_hit: bool = False
+    # Names whose two vendors disagree about the reported EPS and for which
+    # no reading of the company's release was available. The read happens
+    # outside this process, so naming them is how the next run gets one; the
+    # legs stay unverified until then (hawkeye/scout/release.py).
+    release_wanted: list[str] = field(default_factory=list)
 
     def funnel(self) -> dict:
         return {"scanned": self.scanned, "screened": self.screened,
@@ -263,6 +270,60 @@ def _record_print(store, context: _QuarterContext) -> None:
         update={"consensus_snapshot_id": context.consensus_id}))
 
 
+def _record_cheap_history(store, directory, events,
+                          screened_tickers: set[str]) -> int:
+    """Give every name that entered the funnel an unbroken quarterly history
+    (docs/MASTER_OVERVIEW.ja.md §6.1(C)).
+
+    Runs AFTER the enrichment walk, so a quarter that got a deeper reading
+    keeps it — the point of `depth` is to record how hard anyone looked, and
+    a shallow row appended over a deep one would understate that.
+
+    Who is in scope is deliberately narrow. Every name that passed the screen
+    is, because it entered the funnel; every name already in the master is,
+    because its history is what the master exists for. A name that is neither
+    is skipped: importing the whole earnings calendar would leave "stocks we
+    follow" meaning nothing. No API call is made — the numbers were in the
+    calendar response already.
+    """
+    if store is None:
+        return 0
+    written = 0
+    for event in events:
+        if event.eps_actual is None:
+            continue
+        known = store.stock_by_ticker(event.ticker)
+        screened_here = event.ticker in screened_tickers
+        if not screened_here and known is None:
+            continue
+        stock_id = (resolve_stock(store, event.ticker, directory)
+                    if screened_here else known.id)
+        row = print_from_event(event, stock_id)
+        if store.latest_print(stock_id, row.fiscal_quarter) is not None:
+            continue
+        # A pre-registered row always wins; record_print() pins the one in
+        # force when none is named here. Only when nothing exists is the
+        # calendar's own estimate kept, so the actuals in this row still have
+        # something to be judged against later.
+        in_force = store.consensus_in_force(stock_id, row.fiscal_quarter)
+        snapshot_id = in_force.id if in_force is not None else \
+            store.capture_consensus(
+                reconstructed_consensus(event, stock_id, row.fiscal_quarter))
+        # The depth is whatever this reading actually reached: `verified` for
+        # a name the verification pass happened to cover, `calendar_only`
+        # otherwise. Stamping every history row `calendar_only` would be as
+        # dishonest in the cheap direction as the deep one.
+        store.record_print(row.model_copy(
+            update={"consensus_snapshot_id": snapshot_id}))
+        written += 1
+    return written
+
+
+def _cik_of(store, stock_id: str) -> Optional[str]:
+    stock = store.stock(stock_id) if store is not None else None
+    return stock.cik if stock is not None else None
+
+
 def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConfig,
               days_back: Optional[int] = None,
               today: Optional[date] = None,
@@ -271,7 +332,9 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
               numbers_source: Optional[EarningsNumberSource] = None,
               stock_store=None,
               directory=None,
-              consensus_source=None) -> ScoutResult:
+              consensus_source=None,
+              facts=None,
+              release_reader=None) -> ScoutResult:
     """calendar_source: object with earnings_calendar(start, end) -> list[dict]
     provider: MarketDataProvider for enrichment (prices/profile/news).
     window: the earnings days to cover — normally built by scan_window()
@@ -281,6 +344,11 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     numbers_source: re-reads reported EPS from a second source before the
         shortlist is decided (hawkeye/scout/verify.py). Optional — without
         it the calendar's own figures stand, exactly as before.
+    facts / release_reader: the escalation of last resort
+        (hawkeye/scout/release.py). Where the two vendors report different
+        actuals, the company's own release is read and checked against
+        EDGAR's filed figure. Optional — without them a disputed leg simply
+        stays unverified, which is what it was before.
     """
     today = today or date.today()
     if window is None:
@@ -313,6 +381,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     # earnings event recurs across runs. Re-evaluating it would both waste
     # free-tier calls and double-count it in the drop statistics.
     seen = already_seen or set()
+    screened_tickers = {s.event.ticker for s in screened}
     fresh = [s for s in screened if (s.event.ticker, s.event.day) not in seen]
     duplicates = len(screened) - len(fresh)
     screened_total, screened = len(screened), fresh
@@ -328,6 +397,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     rejected: list[ScoutCandidate] = []
     attempted = 0
     stopped_at = len(screened)
+    release_budget = config.scout_max_release_reads
+    release_wanted: list[str] = []
 
     for position, s in enumerate(screened):
         if (len(passed) >= config.scout_target_gate_passed
@@ -345,6 +416,28 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                                    consensus_source)
         quality = (assess_earnings(context.print_row, context.consensus, config)
                    if context is not None else None)
+        # The escalation of last resort, and the only one that costs real
+        # money: where the two vendors report different actuals, nothing
+        # cheaper can settle it, so the company's own release is read and
+        # validated against EDGAR's filed EPS. Bounded per run; a name past
+        # the budget keeps its unverified leg rather than a guess.
+        if context is not None and release_budget > 0:
+            outcome = read_release(context.print_row, quality, release_reader,
+                                   facts, _cik_of(stock_store,
+                                                  context.stock_id))
+            if outcome is not None and outcome.reason == "no_extraction":
+                # Nothing was read, so nothing was spent. Naming the print is
+                # what lets the next run have a document to work from.
+                release_wanted.append(release_key(context.print_row))
+            elif outcome is not None:
+                release_budget -= 1
+                if outcome.accepted:
+                    context = replace(context, print_row=outcome.row)
+                    quality = assess_earnings(outcome.row, context.consensus,
+                                              config)
+                else:
+                    print(f"{candidate.ticker}: {outcome.reason}",
+                          file=sys.stderr)
         catalyst = Catalyst(
             type=CatalystType.EARNINGS_BEAT,
             description=(describe_quality_en(quality) if quality is not None
@@ -424,6 +517,9 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
             pass
         capped.append(c)
 
+    # Last, so a quarter that earned a deeper reading above keeps it.
+    _record_cheap_history(stock_store, directory, events, screened_tickers)
+
     return ScoutResult(scan_start=window.start, scan_end=window.end,
                        scanned=len(raw), screened=screened_total,
                        enriched=attempted,
@@ -431,7 +527,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                        duplicates=duplicates,
                        window_truncated=window.truncated,
                        verification=verification,
-                       enrichment_ceiling_hit=ceiling_hit)
+                       enrichment_ceiling_hit=ceiling_hit,
+                       release_wanted=release_wanted)
 
 
 def _visible_at_drop(c: ScoutCandidate) -> dict:

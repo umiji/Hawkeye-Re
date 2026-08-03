@@ -93,6 +93,29 @@ def render_quality_ja(quality: EarningsQuality) -> str:
     return "\n".join(lines)
 
 
+def render_release_requests_ja(keys: list[str], directory) -> str:
+    """決算発表文の読み取りが必要な決算の一覧と、その手順。
+
+    2ソースの実績値が食い違った銘柄は、会社自身の発表文を読まない限り
+    EPSの柱が未検証のままになります。発表文の読み取りはこのプロセスの外
+    (担当者またはエージェント)で行うため、「どのファイルを作れば次回の
+    走査が拾うか」まで書かないと手順として成立しません。
+    """
+    if not keys:
+        return ""
+    lines = ["\n## 決算発表文の読み取り待ち"
+             "(実績値が2ソースで食い違い、EPSが未検証のまま)"]
+    for key in keys:
+        lines.append(f"- {key.split('_')[0]}: {directory}/{key}.json を作成")
+    lines.append("  形式: {\"gaap_eps_diluted\": …, \"non_gaap_eps\": …, "
+                 "\"one_off_per_share\": …, \"guidance\": {…}, "
+                 "\"source_url\": …}")
+    lines.append("  ※ 抽出したGAAP EPSがEDGARの提出値と一致しない場合、"
+                 "その抽出は丸ごと棄却されます(前年同期の列を読む誤りを"
+                 "機械的に排除するため)。")
+    return "\n".join(lines)
+
+
 def render_stock_history_ja(history: StockHistory) -> str:
     """One company: what we know, when we looked, and what we decided."""
     stock = history.stock

@@ -57,3 +57,16 @@ def test_the_headline_number_is_shown_next_to_both_readings():
 
     assert "+194" in text or "+193" in text
     assert "アナリスト44人" in text
+
+
+def test_the_prints_awaiting_a_release_read_are_named_with_what_to_do():
+    """A two-pass workflow only works if the first pass says exactly which
+    file the second one will look for. "Some names need a release read" is
+    an observation; a path is an instruction."""
+    from hawkeye.reports.quality_ja import render_release_requests_ja
+
+    text = render_release_requests_ja(["AAPL_2026-07-31"], "var/releases")
+
+    assert "AAPL" in text
+    assert "var/releases" in text and "AAPL_2026-07-31.json" in text
+    assert render_release_requests_ja([], "var/releases") == ""

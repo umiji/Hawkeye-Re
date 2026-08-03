@@ -75,7 +75,14 @@ from hawkeye.scout.benchmark import (
 from hawkeye.ledger.stocks import StockStore
 from hawkeye.marketdata.consensus import YahooConsensusSource
 from hawkeye.marketdata.edgar import EdgarDirectory
-from hawkeye.reports.quality_ja import render_quality_ja, render_stock_history_ja
+from hawkeye.marketdata.edgar_facts import EdgarFacts
+from hawkeye.paths import releases_dir
+from hawkeye.reports.quality_ja import (
+    render_quality_ja,
+    render_release_requests_ja,
+    render_stock_history_ja,
+)
+from hawkeye.scout.release import DirectoryReleaseReader
 from hawkeye.scout.prereg import (
     business_days_ahead,
     capture_consensus,
@@ -310,7 +317,9 @@ def cmd_scout(args: argparse.Namespace) -> int:
                        stock_store=_stock_store(),
                        directory=EdgarDirectory(),
                        consensus_source=(YahooConsensusSource()
-                                         if numbers.available else None))
+                                         if numbers.available else None),
+                       facts=EdgarFacts(),
+                       release_reader=DirectoryReleaseReader(releases_dir()))
 
     # Whatever isn't sent to the tribunal THIS run — from result.passed's
     # tail onward — is the ranking-cutoff tier (docs/MASTER_OVERVIEW.ja.md
@@ -332,6 +341,10 @@ def cmd_scout(args: argparse.Namespace) -> int:
     ledger.record_screened_candidates(
         scan_id, build_screened_candidates(result, scan_id, sent_to_tribunal_n))
     print(render_scout_ja(result))
+
+    if result.release_wanted:
+        print(render_release_requests_ja(result.release_wanted,
+                                         releases_dir()))
 
     judged = [c for c in result.passed if c.quality is not None]
     if judged:
