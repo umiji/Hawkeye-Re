@@ -39,6 +39,7 @@ from hawkeye.scout.earnings import (
     screen_events,
 )
 from hawkeye.scout.prereg import resolve_stock
+from hawkeye.scout.triage import triage_from_gates
 from hawkeye.scout.release import read_release, release_key
 from hawkeye.scout.quality import (
     EarningsQuality,
@@ -538,6 +539,15 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
             candidate.score_version = "full"
         candidate.gate_report = run_entry_gates(brief.snapshot, catalyst,
                                                 config, today=today)
+        # Free by-product: the gates just measured price, size and liquidity,
+        # so the master can record whether this company could ever hold a
+        # position — which is what keeps tomorrow's pre-registration from
+        # spending a lookup on it (§6.1(E)). Only the structural gates count,
+        # and only when they were actually verified.
+        verdict = triage_from_gates(candidate.gate_report)
+        if verdict is not None and context is not None:
+            stock_store.record_triage(context.stock_id, verdict.is_target,
+                                      verdict.reason, on=today)
         if not candidate.gate_report.ok:
             candidate.reject_reason = "gate: " + ", ".join(
                 g.name for g in candidate.gate_report.hard_failures)

@@ -113,6 +113,17 @@ class HawkeyeConfig:
     # permanently on any missed day — and a snapshot missed before the
     # release can never be taken afterwards.
     consensus_capture_business_days: int = 2
+    # Skip pre-registering names the entry gates have already refused for a
+    # STRUCTURAL reason — below the price/market-cap/liquidity floors, i.e.
+    # companies no print could turn into a position (§6.1(E)). A live
+    # two-business-day window holds ~855 names and each costs a Yahoo call.
+    prereg_skip_non_targets: bool = True
+    # How long that verdict stands before the name is looked at again. The
+    # asymmetry decides it: a wrong exclusion loses a consensus history that
+    # can NEVER be rebuilt, a wrong inclusion costs one API call. Roughly two
+    # reporting quarters, so a company that grew past the floors is picked up
+    # within a quarter of doing so.
+    stock_triage_ttl_days: int = 90
 
     # --- News fetch window (docs/MASTER_OVERVIEW.ja.md §5.2(5)) ---
     # Not doctrine — data-collection parameters. The window is anchored on

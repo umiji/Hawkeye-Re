@@ -143,6 +143,15 @@ def render_stock_history_ja(history: StockHistory) -> str:
                      f"({stage})")
     else:
         lines.append("直近の審査: まだ審査していません")
+    # 調査対象から外れている銘柄は、コンセンサスの事前登録が止まります。
+    # 止まっている事実と、その理由・判定日が読めないと、あとから「なぜこの
+    # 銘柄だけ予想の履歴が無いのか」を追えなくなります。
+    if stock.investigation_target is False:
+        when = (stock.investigation_checked_at.date()
+                if stock.investigation_checked_at else "不明")
+        lines.append(f"調査対象: 対象外({stock.investigation_reason} / "
+                     f"判定日 {when})。コンセンサスの事前登録を行いません"
+                     f"(判定は一定期間で失効し、再度対象に戻ります)")
 
     lines.append("\n## 決算実績(記録のある四半期のみ)")
     if not history.prints:

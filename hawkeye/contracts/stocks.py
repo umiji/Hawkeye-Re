@@ -97,6 +97,17 @@ class Stock(BaseModel):
     listing_status: str = "listed"
     as_of: datetime = Field(default_factory=now)
 
+    # -- is this company worth spending lookups on at all (§6.1(E))
+    # None means nobody has judged it yet, and that is NOT "no": pre-
+    # registration includes it. Only an explicit False excludes, and only
+    # while it is recent — a snapshot not taken can never be taken, so a
+    # verdict that never expired would make one bad day permanent. The
+    # numbers behind the verdict are deliberately NOT stored (see the class
+    # docstring); the reason names the gates, for a human to read.
+    investigation_target: Optional[bool] = None
+    investigation_reason: str = ""
+    investigation_checked_at: Optional[datetime] = None
+
     # -- projection of the ledger; `hawkeye stocks rebuild` recreates it
     last_reviewed_fiscal_quarter: str = ""
     last_reviewed_at: Optional[datetime] = None

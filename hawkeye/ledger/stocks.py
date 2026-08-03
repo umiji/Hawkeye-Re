@@ -128,7 +128,13 @@ class StockStore:
                 "last_reviewed_fiscal_quarter":
                     existing.last_reviewed_fiscal_quarter,
                 "last_reviewed_at": existing.last_reviewed_at,
-                "last_stage_reached": existing.last_stage_reached})
+                "last_stage_reached": existing.last_stage_reached,
+                # Same reasoning, and load-bearing: the master row is re-put
+                # on every sighting, so a refresh that cleared the triage
+                # would make the filter hold for exactly one run.
+                "investigation_target": existing.investigation_target,
+                "investigation_reason": existing.investigation_reason,
+                "investigation_checked_at": existing.investigation_checked_at})
         self._conn.execute(
             "INSERT INTO stocks (id, cik, ticker, payload) VALUES (?, ?, ?, ?)"
             " ON CONFLICT(id) DO UPDATE SET cik = excluded.cik,"
@@ -171,6 +177,24 @@ class StockStore:
             "last_reviewed_fiscal_quarter": fiscal_quarter,
             "last_reviewed_at": reviewed_at or stock.as_of,
             "last_stage_reached": stage})
+        self._conn.execute("UPDATE stocks SET payload = ? WHERE id = ?",
+                           (updated.model_dump_json(), stock_id))
+        self._conn.commit()
+
+    def record_triage(self, stock_id: str, is_target: bool, reason: str,
+                      on: Optional[date] = None) -> None:
+        """Record whether this company is worth spending lookups on
+        (§6.1(E)). A projection like the review one — the entry gates in the
+        ledger are what it is derived from, and it can be recomputed."""
+        stock = self.stock(stock_id)
+        if stock is None:
+            return
+        checked = datetime.combine(on or date.today(), time.min,
+                                   tzinfo=timezone.utc)
+        updated = stock.model_copy(update={
+            "investigation_target": is_target,
+            "investigation_reason": reason,
+            "investigation_checked_at": checked})
         self._conn.execute("UPDATE stocks SET payload = ? WHERE id = ?",
                            (updated.model_dump_json(), stock_id))
         self._conn.commit()
@@ -358,7 +382,11 @@ class StockStore:
             payload = json.loads(row[3])
             out.append({"id": row[0], "recorded_at": row[1], "stage": row[2],
                         "event_date": payload.get("event_date"),
-                        "eps_surprise_pct": payload.get("eps_surprise_pct")})
+                        "eps_surprise_pct": payload.get("eps_surprise_pct"),
+                        # Carried so the "is this company worth following"
+                        # projection can be rebuilt from the ledger like
+                        # every other projection here (§6.1(E)).
+                        "gate_report": payload.get("gate_report")})
         return sorted(out, key=lambda d: _instant(d["recorded_at"]))
 
     # -- projection rebuild ---------------------------------------------------

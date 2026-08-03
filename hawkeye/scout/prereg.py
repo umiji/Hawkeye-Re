@@ -26,6 +26,7 @@ from hawkeye.contracts.stocks import (
     Stock,
     fiscal_quarter_of,
 )
+from hawkeye.scout.triage import is_investigation_target
 
 
 class ConsensusProvider(Protocol):
@@ -57,6 +58,11 @@ class CaptureReport:
     yahoo_missing: int = 0
     skipped_already_reported: int = 0
     nothing_to_record: int = 0
+    # Names the entry gates have already refused structurally (§6.1(E)).
+    # Reported rather than silently dropped: this is the count that says how
+    # much the filter is actually buying, and the count that would reveal it
+    # excluding too much.
+    skipped_not_target: int = 0
     tickers: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -64,6 +70,7 @@ class CaptureReport:
                 "yahoo_missing": self.yahoo_missing,
                 "skipped_already_reported": self.skipped_already_reported,
                 "nothing_to_record": self.nothing_to_record,
+                "skipped_not_target": self.skipped_not_target,
                 "tickers": list(self.tickers)}
 
 
@@ -148,8 +155,9 @@ def capture_consensus(store, prints: list[UpcomingPrint],
                       source: Optional[ConsensusProvider],
                       directory=None,
                       captured_at: Optional[datetime] = None,
-                      kind: SnapshotKind = SnapshotKind.PRE_REGISTERED
-                      ) -> CaptureReport:
+                      kind: SnapshotKind = SnapshotKind.PRE_REGISTERED,
+                      today: Optional[date] = None,
+                      config=None) -> CaptureReport:
     """Record what each source expects of every print in `prints`.
 
     Both readings go into ONE row: they are two opinions about the same
@@ -159,9 +167,20 @@ def capture_consensus(store, prints: list[UpcomingPrint],
     pre-registered, with the absent distribution visible in the row rather
     than inferred from silence.
     """
-    captured = unchanged = missing = skipped = empty = 0
+    captured = unchanged = missing = skipped = empty = not_target = 0
     touched: list[str] = []
+    filtering = bool(config is not None
+                     and getattr(config, "prereg_skip_non_targets", False))
+    day = today or date.today()
     for item in prints:
+        # Checked BEFORE the master row is created, so a name the gates have
+        # already refused costs neither a lookup nor a write. An unknown name
+        # is always a target — see hawkeye/scout/triage.py for why unknown
+        # must never read as "no".
+        if filtering and not is_investigation_target(
+                store.stock_by_ticker(item.ticker), day, config):
+            not_target += 1
+            continue
         stock_id = resolve_stock(store, item.ticker, directory)
         if store.latest_print(stock_id, item.fiscal_quarter) is not None:
             skipped += 1
@@ -205,7 +224,8 @@ def capture_consensus(store, prints: list[UpcomingPrint],
     return CaptureReport(captured=captured, unchanged=unchanged,
                          yahoo_missing=missing,
                          skipped_already_reported=skipped,
-                         nothing_to_record=empty, tickers=touched)
+                         nothing_to_record=empty,
+                         skipped_not_target=not_target, tickers=touched)
 
 
 def report_line(report: CaptureReport) -> str:
@@ -213,7 +233,9 @@ def report_line(report: CaptureReport) -> str:
     return (f"事前登録: 新規 {report.captured} 件 / 変化なし "
             f"{report.unchanged} 件 / Yahoo未取得 {report.yahoo_missing} 件 / "
             f"発表済みのため対象外 {report.skipped_already_reported} 件 / "
-            f"予想が1つも取れず記録なし {report.nothing_to_record} 件")
+            f"予想が1つも取れず記録なし {report.nothing_to_record} 件 / "
+            f"入口ゲートの構造的条件を満たさず調査対象外 "
+            f"{report.skipped_not_target} 件")
 
 
 def warn_if_nothing_captured(report: CaptureReport) -> None:

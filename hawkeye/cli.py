@@ -96,6 +96,7 @@ from hawkeye.scout.scout import (
     run_scout,
     scan_window,
 )
+from hawkeye.scout.triage import rebuild_triage
 from hawkeye.sentinel.monitor import check_position
 from hawkeye.tribunal import casefile
 from hawkeye.tribunal.pipeline import (
@@ -494,7 +495,8 @@ def cmd_consensus_capture(args: argparse.Namespace) -> int:
               "(Finnhubの点推定のみ事前登録します)", file=sys.stderr)
     report = capture_consensus(_stock_store(), targets,
                                source if source.available else None,
-                               directory=EdgarDirectory())
+                               directory=EdgarDirectory(),
+                               today=today, config=config)
     print(report_line(report))
     warn_if_nothing_captured(report)
     return 0
@@ -536,6 +538,12 @@ def cmd_stocks_rebuild(args: argparse.Namespace) -> int:
     store = _stock_store()
     rebuilt = store.rebuild_projection(_ledger())
     print(f"台帳から {rebuilt} 銘柄の審査状況を作り直しました")
+    # The same rule applies to the "worth following at all" verdict: it is
+    # read off the entry-gate reports already frozen into the drop records,
+    # so it must be rebuildable from them rather than only accumulating as
+    # the funnel happens to run.
+    triaged = rebuild_triage(store)
+    print(f"入口ゲートの記録から {triaged} 銘柄の調査対象判定を作り直しました")
     return 0
 
 
