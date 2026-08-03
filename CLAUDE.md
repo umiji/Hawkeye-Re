@@ -134,6 +134,69 @@ in one place. Keep §4/§5 current as capabilities land.
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-08-03** The Goal the previous session missed is **reached**. All four
+  gaps it listed are closed, and the two ordered pieces of work landed under
+  TDD. **375 offline tests green** (348 before); ledger chain ✅.
+
+  **What now runs in production, not only in tests.** (1) `hawkeye consensus
+  capture` write path executed for real: **841 consensus rows pre-registered**
+  for prints due 2026-08-04..05, from 855 scheduled names (52 Yahoo misses, 14
+  with no estimate at all from either source → no row, by design). Worth
+  knowing: the window is `business_days_ahead(today, 2)` = **tomorrow and the
+  day after — NOT today**, so a name reporting after today's close has no
+  pre-registration unless yesterday's run caught it. Not changed unilaterally;
+  flag it to the user. (2) `hawkeye scout` ran end to end against live
+  Finnhub/Yahoo for the first time: window 2026-07-31 only (derived from the
+  2026-08-01 run), 69 events → 14 screened → **all 14 already seen → 0
+  enriched, 0 candidates**. A legitimate run with nothing fresh to chew on,
+  not a failure. Its verification pass is the number to remember: **16 names
+  re-read from Yahoo, 13 of them materially disagreed with the calendar**.
+  (3) The **AMZN 疑似審査 actually ran** — `hawkeye case open AMZN
+  --from-earnings --event-date 2026-07-31`, then Bull / Adversary / Judge as
+  three isolated subagents, verdict 見送り (conviction 0.30), recorded as
+  `rec_83296621f94b`. The Judge's decisive finding was arithmetic inside the
+  Bull's own numbers: entry 271.58 against the Bull's own stop 243.50 is
+  −10.3% of risk for a +3.8% base case, 0.37:1. Two of the three severe
+  attacks were about **our own data**: zero verified legs, and an
+  "underreaction" edge contradicted by a headline in the Bull's own dossier.
+
+  **The one Goal item that could not be met, and why it never could.** AMZN's
+  revenue leg is still **未検証** — one consensus source. Nothing recovers a
+  snapshot after the release, so this was only ever demonstrable on a FUTURE
+  print; the 841 rows above are what makes the next one two-sourced. Do not
+  re-attempt it on AMZN Q2.
+
+  **Two features, both pre-approved designs.** (a) **The release read at the
+  tail of the funnel** (§5.3 実装順序(c), the user's explicit order):
+  `hawkeye/scout/release.py`. The read happens OUTSIDE the process — no free
+  structured source for guidance or non-GAAP exists — so the funnel **names
+  the prints it wants** (`release_wanted`, printed with the exact path) and
+  picks documents up from `var/releases/<TICKER>_<date>.json` next run. An
+  extraction is discarded whole unless its GAAP EPS equals EDGAR's filed
+  value. **Where the company published no adjustment the dispute stays open**
+  and the row still deepens: settling it with XBRL alone is the rejected
+  shortcut (XBRL says which value was FILED, never which basis the CONSENSUS
+  is on — AAPL 2.02 vs 1.91). (b) **The quarterly history gap** (§6.1(C)):
+  every screened name and every name already in the master keeps its quarter,
+  written after the enrichment walk so a deeper reading is never shallowed.
+  Effect visible immediately — `earnings_prints` went 0 → 14 rows on the first
+  production scan.
+
+  **One thing built beyond the two orders, because the Goal could not be met
+  without it**: `hawkeye case open TICKER --from-earnings`
+  (`hawkeye/scout/single.py`). AMZN's calendar rows collapse to +2.7%, so the
+  discovery screen drops the print before verification — the print this whole
+  design came from was unjudgeable in the product. The screen decides who is
+  worth looking at when nobody asked; once a person names a stock, that
+  question is answered. Same verification, same both-sources rule, same pinned
+  consensus, same recorded quarter as the funnel.
+
+  **Not done, deliberately**: `stock_id` still not back-filled (user's
+  instruction); the ledger check "do any of the 15 recorded recommendations
+  rest on numbers where the sources disagree?" is **still unrun** (now 16
+  recommendations); `test_verification_recovers_a_name_the_calendar_wrongly_
+  screened_out` still unrevisited.
+
 - **2026-08-02(c)** Implementation session: the whole of §5.3/§6.1 was built
   under TDD (`47f172c` docs, `64f41e6` core, plus this entry's commit).
   **347 offline tests green** (271 before). New surfaces: `hawkeye consensus
