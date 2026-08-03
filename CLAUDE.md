@@ -59,7 +59,7 @@ behavior descriptions, review summaries, everything.
    every role's file and nothing in code stops it from reading ahead — that
    boundary is operational discipline (SKILL.md), not a sandbox, and isn't
    fixable within this architecture (accepted 2026-07-28, see
-   `docs/MASTER_OVERVIEW.ja.md` §4 and `docs/ARCHITECTURE.md`). Don't claim
+   `docs/design/MASTER_OVERVIEW.ja.md` §4 and `docs/design/ARCHITECTURE.md`). Don't claim
    session mode has the same technical guarantee API mode does.
 5. **No autonomous trading.** The system recommends and records; the user
    executes. Don't add order placement.
@@ -79,7 +79,8 @@ rendering) · `cli`.
 
 Directories are split by *who writes the file*: `strategy/` is investment
 knowledge a human writes or approves (doctrine, protocol, roadmap, backlog,
-drafted revisions), `docs/` is system design and development notes, and
+drafted revisions), `docs/` is everything Claude and the developer write
+about the system (split into `design/` and `knowledge/` below), and
 `var/` is everything the system emits at run time (ledger, case files, drop
 measurements, reports) and is git-ignored. `hawkeye/paths.py` is the single
 place resolving `var/` locations — never hardcode a runtime path elsewhere.
@@ -87,7 +88,9 @@ Investment standards do NOT go in `.claude/` (that defines how Claude Code
 drives the system; API mode never reads it, and the judgment criteria must
 not depend on which engine runs the tribunal).
 
-Three documents carry knowledge, and they must not overlap:
+Three places carry knowledge, and they must not overlap. Cite them by full
+path (`docs/design/MASTER_OVERVIEW.ja.md`, never `docs/MASTER_OVERVIEW.ja.md`
+— the split happened on 2026-08-03 and the bare form is stale):
 
 - `docs/design/` — design and current state (`MASTER_OVERVIEW.ja.md` is the
   one to read first; `ARCHITECTURE.md`, `DATA_SOURCES.md`, `USER_GUIDE.ja.md`,
@@ -173,12 +176,13 @@ A goal that cannot be checked cannot be reached on purpose, only by luck.
 ## Governance (added 2026-07-14)
 
 Before any new feature or design change (not small bugfixes/typos), update
-`docs/MASTER_OVERVIEW.ja.md` §4 (As-Is) and §5 (gap table) — or draft a
+`docs/design/MASTER_OVERVIEW.ja.md` §4 (As-Is) and §5 (gap table) — or draft a
 short design note — and get user approval BEFORE implementing. This
 document was requested after the user flagged that prior sessions
 implemented features unilaterally without ever presenting the full
 picture (To-Be architecture, As-Is gap, and *why* the design should work)
 in one place. Keep §4/§5 current as capabilities land.
+
 ## Where the record lives (there is no session log in this file)
 
 This file is loaded in full at the start of every session, so it holds only

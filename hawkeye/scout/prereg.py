@@ -1,5 +1,5 @@
 """Pre-registering consensus for prints that have not happened yet
-(docs/MASTER_OVERVIEW.ja.md §5.3(4) / §6.1(D)).
+(docs/design/MASTER_OVERVIEW.ja.md §5.3(4) / §6.1(D)).
 
 Why this runs before the release and not after: consensus has no primary
 source anywhere in the world, so two vendors disagreeing about it can never

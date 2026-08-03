@@ -2,8 +2,8 @@
 
 Source: a 4-agent parallel review (doc-vs-code consistency, architecture
 soundness, python code quality, adversarial investment-methodology audit)
-run against the whole `hawkeye/` codebase and `docs/ARCHITECTURE.md` /
-`docs/MASTER_OVERVIEW.ja.md`. This is the first and only place the full
+run against the whole `hawkeye/` codebase and `docs/design/ARCHITECTURE.md` /
+`docs/design/MASTER_OVERVIEW.ja.md`. This is the first and only place the full
 finding list is written down — the review conversation itself has since
 ended and a separate follow-up session confirmed the raw agent output is
 not recoverable except from this file or by re-running the review. Do not
@@ -125,7 +125,7 @@ distinct from `screened`/`gate_passed`.
 **Source:** methodology-auditor.
 **Where:** `hawkeye/cli.py` — `bm.add_argument("--horizon", type=int, default=30, ...)`.
 
-**Failure scenario:** `docs/MASTER_OVERVIEW.ja.md` §5.1 explicitly names
+**Failure scenario:** `docs/design/MASTER_OVERVIEW.ja.md` §5.1 explicitly names
 this exact trap ("観測期間を記録開始前に決めて書き残す") as a required
 safeguard for the *proposed* missed-candidate feature — but the
 *already-shipped* `benchmark`/`review-passes` commands have the identical
@@ -265,7 +265,7 @@ not what the orchestrator *reads*.
 **Status:** user's explicit ruling — "this can't be fixed within the
 architecture (a subagent always inherits its parent session's access), so
 disclose it honestly rather than pretend otherwise." Documented in
-`CLAUDE.md` invariant 4, `docs/ARCHITECTURE.md`, `docs/MASTER_OVERVIEW.ja.md`
+`CLAUDE.md` invariant 4, `docs/design/ARCHITECTURE.md`, `docs/design/MASTER_OVERVIEW.ja.md`
 §4. **Do not attempt a code fix without new instruction** — the
 methodology-auditor's suggested mitigation (log the exact subagent
 invocation prompt into the case directory for post-hoc audit) was
@@ -420,7 +420,7 @@ fixed.
 ### L3. §5.1 (missed-candidate feature, not yet implemented) proposes storing the reject-pile record outside the hash chain — a structural self-dealing risk in the proposal itself (OPEN — design note for whenever §5.1 is implemented, not current code)
 
 **Source:** architect agent, F14.
-**Where:** `docs/MASTER_OVERVIEW.ja.md` §5.1, §6 — proposes treating the
+**Where:** `docs/design/MASTER_OVERVIEW.ja.md` §5.1, §6 — proposes treating the
 new table like `scans` (append-only, outside the journal's hash chain).
 
 **Concern:** this table would become the denominator for the Phase-0 kill
@@ -488,7 +488,7 @@ cross-check would close this partially without a second LLM call.
 **Source:** doc-vs-code-consistency agent, first review pass. Not yet
 corrected in the docs.
 
-1. **`docs/MASTER_OVERVIEW.ja.md`'s "現時点で「記録に残っていないもの」"
+1. **`docs/design/MASTER_OVERVIEW.ja.md`'s "現時点で「記録に残っていないもの」"
    table** overstates the gap for the ranking-cutoff stage: it says
    "残らない" (nothing survives), but bare ticker symbols *do* survive in
    `scans.tickers` for that stage (confirmed against the live `hawkeye.db`)
@@ -498,15 +498,15 @@ corrected in the docs.
 2. Same table cites "2026-07-22の実行" for the 28→15 enrichment example;
    the matching scan in `hawkeye.db` is actually dated 2026-07-21. Figures
    (28/15/13) are correct, only the date label is off by a day.
-3. `docs/ARCHITECTURE.md` states "Judge sees the full written record and
+3. `docs/design/ARCHITECTURE.md` states "Judge sees the full written record and
    may not introduce new facts" in the same breath as claims that *are*
    code-enforced (visibility scoping). The "no new facts" rule itself is
    still prompt-only (`JUDGE_SYSTEM` text), not mechanically checked —
    distinct from the severity>=4-addressed rule, which *is* now
    code-enforced via `attack_id` matching (fixed same day as this review).
-4. `docs/ARCHITECTURE.md`'s post-trade event chain
+4. `docs/design/ARCHITECTURE.md`'s post-trade event chain
    (`user_decision → entry_trade → sentinel_signal → claim_resolution → exit_trade → outcome`)
-   disagrees with `docs/MASTER_OVERVIEW.ja.md` §7.2's sequence diagram,
+   disagrees with `docs/design/MASTER_OVERVIEW.ja.md` §7.2's sequence diagram,
    which shows `hawkeye close` (exit_trade) *before* `hawkeye claims`/
    `resolve-claim` (claim_resolution) — the opposite order. No code
    enforces either order (`cmd_resolve_claim`/`cmd_close` are independent,

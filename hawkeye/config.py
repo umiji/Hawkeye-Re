@@ -71,7 +71,7 @@ class HawkeyeConfig:
     # which is the honest reading — rather than guessing at them.
     scout_max_release_reads: int = 3
 
-    # --- Earnings quality: the three legs (docs/MASTER_OVERVIEW.ja.md §5.3) ---
+    # --- Earnings quality: the three legs (docs/design/MASTER_OVERVIEW.ja.md §5.3) ---
     # None of these were invented. They come from the gaps in the measured
     # distribution of a 50-name sample taken on 2026-08-02: consensus
     # disagreement clusters at 0.28-3.50% and then jumps to 5.18%, and actual
@@ -108,7 +108,7 @@ class HawkeyeConfig:
     # (§5.3 決定3). Deliberately far below the EPS/revenue contributions.
     guidance_beat_score: float = 5.0
 
-    # --- Consensus pre-registration (docs/MASTER_OVERVIEW.ja.md §6.1(D)) ---
+    # --- Consensus pre-registration (docs/design/MASTER_OVERVIEW.ja.md §6.1(D)) ---
     # Runs are manual, so a strict T-1 window loses a print's snapshot
     # permanently on any missed day — and a snapshot missed before the
     # release can never be taken afterwards.
@@ -132,7 +132,7 @@ class HawkeyeConfig:
     # within a quarter of doing so.
     stock_triage_ttl_days: int = 90
 
-    # --- News fetch window (docs/MASTER_OVERVIEW.ja.md §5.2(5)) ---
+    # --- News fetch window (docs/design/MASTER_OVERVIEW.ja.md §5.2(5)) ---
     # Not doctrine — data-collection parameters. The window is anchored on
     # the catalyst date, not on "today": with a fixed today-minus-N window,
     # a candidate whose earnings landed near max_event_age_days could have
@@ -152,7 +152,7 @@ class HawkeyeConfig:
     # an override for exploration, but its output is labeled non-authoritative.
     phase0_benchmark_horizon_days: int = 30
 
-    # --- Drop-candidate review (docs/MASTER_OVERVIEW.ja.md §5.2(3)) ---
+    # --- Drop-candidate review (docs/design/MASTER_OVERVIEW.ja.md §5.2(3)) ---
     # Measurement parameters, not doctrine numbers: invariant 7 governs the
     # investment rules, and these describe how the screen is *scored*. The
     # checkpoints (T+5/T+10 trading days), the 250-day beta window and the

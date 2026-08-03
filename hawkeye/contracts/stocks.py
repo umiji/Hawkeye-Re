@@ -1,5 +1,5 @@
 """Stock-centric contracts: the master, its quarterly prints, and the
-consensus that was in force before each of them (docs/MASTER_OVERVIEW.ja.md
+consensus that was in force before each of them (docs/design/MASTER_OVERVIEW.ja.md
 §6.1).
 
 Three properties are load-bearing and are enforced by the storage layer

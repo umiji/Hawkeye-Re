@@ -1,5 +1,5 @@
 """Not pre-registering consensus for names that could never pass the entry
-gates (docs/MASTER_OVERVIEW.ja.md §6.1(E)).
+gates (docs/design/MASTER_OVERVIEW.ja.md §6.1(E)).
 
 Pre-registration costs one Yahoo call per name and covers every US company
 reporting in the next two business days — 855 of them on 2026-08-03. A large

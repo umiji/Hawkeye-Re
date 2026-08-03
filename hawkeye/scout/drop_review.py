@@ -1,6 +1,6 @@
 """Drop-candidate review — was the screen right to drop it?
 
-docs/MASTER_OVERVIEW.ja.md §5.2(3) (which supersedes the earlier, coarser
+docs/design/MASTER_OVERVIEW.ja.md §5.2(3) (which supersedes the earlier, coarser
 §5.1 [2] sketch). The ledger records every candidate the funnel dropped, but
 a record nobody scores teaches nothing. This module is the scoring half:
 measure each dropped candidate at two fixed checkpoints and attribute the

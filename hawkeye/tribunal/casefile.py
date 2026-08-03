@@ -229,7 +229,7 @@ def mark_complete(case: Case, recommendation_id: str) -> None:
     save_case(case)
     # Only now — the role workspace is what makes a failed ledger write
     # retryable, and `submit()` refuses to re-answer a completed role
-    # (docs/MASTER_OVERVIEW.ja.md §5.2(7); ordering per the M5 fix).
+    # (docs/design/MASTER_OVERVIEW.ja.md §5.2(7); ordering per the M5 fix).
     _remove_role_workspace(case.id)
 
 

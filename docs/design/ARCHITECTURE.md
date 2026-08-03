@@ -69,7 +69,7 @@ not measurable while most of the reject pile is unrecorded, and a missed winner
 is invisible by construction. Note the asymmetry — a bad buy is bounded by the
 stop; a missed winner is unbounded *and* silent. Recording every scanned
 candidate, plus a market/beta baseline so cohort returns can be split into alpha
-and beta, is a pending design: `docs/MASTER_OVERVIEW.ja.md` §5.1 (not yet
+and beta, is a pending design: `docs/design/MASTER_OVERVIEW.ja.md` §5.1 (not yet
 implemented). The comparison over what *is* recorded had its own bugs until
 2026-07-28: manual `evaluate` picks leaked into the viability cohorts, and a
 failed price-history fetch was silently dropped rather than counted as

@@ -1,6 +1,6 @@
 """Provider interface for market data.
 
-Free-tier constraint (see docs/DATA_SOURCES.md): Yahoo Finance (no key) for
+Free-tier constraint (see docs/design/DATA_SOURCES.md): Yahoo Finance (no key) for
 prices, Finnhub (free key) for profile/news/earnings. Every provider degrades
 gracefully — missing data surfaces as None and is flagged by the gates as
 unverified rather than silently passing.

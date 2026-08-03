@@ -304,7 +304,7 @@ def render_drop_review_ja(
     suppressed: int = 0,
     suppressed_reason: str = "",
 ) -> str:
-    """落選候補レビューの結果(docs/MASTER_OVERVIEW.ja.md §5.2(3))."""
+    """落選候補レビューの結果(docs/design/MASTER_OVERVIEW.ja.md §5.2(3))."""
     lines = [
         f"# 🔍 落選候補レビュー — T+{horizon_days}営業日時点 ({checkpoint})",
         "",

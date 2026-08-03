@@ -200,7 +200,7 @@ class FinnhubProvider:
         earnings landed near the freshness limit could have its earnings
         coverage pushed out of `limit` by newer, unrelated headlines — so
         the tribunal argued over a candidate without ever seeing the report
-        it was supposed to be reacting to (docs/MASTER_OVERVIEW.ja.md
+        it was supposed to be reacting to (docs/design/MASTER_OVERVIEW.ja.md
         §5.2(5)). With `event_date` the window starts just before the event
         and the items kept are the ones nearest to it.
         """

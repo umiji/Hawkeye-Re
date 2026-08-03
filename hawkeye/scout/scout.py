@@ -123,7 +123,7 @@ class ScoutResult:
                 "enriched": self.enriched, "gate_passed": len(self.passed)}
 
 
-# --- scan window (docs/MASTER_OVERVIEW.ja.md §5.2(1)) -----------------------
+# --- scan window (docs/design/MASTER_OVERVIEW.ja.md §5.2(1)) -----------------------
 
 @dataclass(frozen=True)
 class ScanWindow:
@@ -281,7 +281,7 @@ def _record_print(store, context: _QuarterContext) -> None:
 def _record_cheap_history(store, directory, events,
                           screened_tickers: set[str]) -> int:
     """Give every name that entered the funnel an unbroken quarterly history
-    (docs/MASTER_OVERVIEW.ja.md §6.1(C)).
+    (docs/design/MASTER_OVERVIEW.ja.md §6.1(C)).
 
     Runs AFTER the enrichment walk, so a quarter that got a deeper reading
     keeps it — the point of `depth` is to record how hard anyone looked, and
@@ -557,7 +557,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
 
     passed.sort(key=lambda c: -c.score)
 
-    # #2 in docs/MASTER_OVERVIEW.ja.md §5.1: candidates below where the walk
+    # #2 in docs/design/MASTER_OVERVIEW.ja.md §5.1: candidates below where the walk
     # stopped never get a full brief — one cheap price-only fetch each (not
     # the full multi-call enrichment) so they're still trackable, instead of
     # vanishing with no record at all. Which of the two bounds stopped the
@@ -603,7 +603,7 @@ def _visible_at_drop(c: ScoutCandidate) -> dict:
     Empty when the candidate never got a brief — dropped at the enrichment
     cap, or enrichment itself failed. Absence is therefore "never looked",
     which is a different fact from "looked and found nothing"; the stage
-    field is what distinguishes them (docs/MASTER_OVERVIEW.ja.md §5.2(5)).
+    field is what distinguishes them (docs/design/MASTER_OVERVIEW.ja.md §5.2(5)).
     """
     if c.brief is None:
         return {}
@@ -629,7 +629,7 @@ def _measured(c: ScoutCandidate) -> dict:
 def build_screened_candidates(
     result: ScoutResult, scan_id: int, sent_to_tribunal_n: int = 0,
 ) -> list[ScreenedCandidate]:
-    """Convert everything run_scout() dropped (docs/MASTER_OVERVIEW.ja.md
+    """Convert everything run_scout() dropped (docs/design/MASTER_OVERVIEW.ja.md
     §5.1, stages #2-#4) into persistable records for
     Ledger.record_screened_candidates(). `sent_to_tribunal_n` is the one
     piece run_scout() itself can't know — how many of `result.passed` this

@@ -1,4 +1,4 @@
-"""Judging a quarter on three legs (docs/MASTER_OVERVIEW.ja.md §5.3).
+"""Judging a quarter on three legs (docs/design/MASTER_OVERVIEW.ja.md §5.3).
 
 Every case here is a name that was actually measured on 2026-08-02, because
 the whole design came out of those measurements rather than out of theory:

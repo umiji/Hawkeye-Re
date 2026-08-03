@@ -353,7 +353,7 @@ class Ledger:
 
     def last_scan_at(self) -> Optional[datetime]:
         """When the most recent scan ran — the anchor for the next scan's
-        lookback window (docs/MASTER_OVERVIEW.ja.md §5.2(1))."""
+        lookback window (docs/design/MASTER_OVERVIEW.ja.md §5.2(1))."""
         row = self._conn.execute(
             "SELECT ts FROM scans ORDER BY id DESC LIMIT 1").fetchone()
         if not row:
@@ -475,7 +475,7 @@ class Ledger:
                 " tickers FROM scans ORDER BY id").fetchall()
         ]
 
-    # -- screened-but-dropped candidates (docs/MASTER_OVERVIEW.ja.md §5.1) ---
+    # -- screened-but-dropped candidates (docs/design/MASTER_OVERVIEW.ja.md §5.1) ---
 
     def record_screened_candidates(self, scan_id: int,
                                    candidates: list[ScreenedCandidate]) -> None:
@@ -521,7 +521,7 @@ class Ledger:
                        for r in self._conn.execute(q, args).fetchall()),
                       key=lambda c: _instant(c.recorded_at))
 
-    # -- drop-candidate reviews (docs/MASTER_OVERVIEW.ja.md §5.2(3)) ---------
+    # -- drop-candidate reviews (docs/design/MASTER_OVERVIEW.ja.md §5.2(3)) ---------
 
     def record_drop_reviews(self, reviews: list[DropReview]) -> str:
         """Persist a batch of scored/investigated drops; returns the batch id.

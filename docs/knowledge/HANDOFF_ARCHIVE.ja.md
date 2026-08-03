@@ -96,7 +96,7 @@ Record decisions and insights at the end of each working session
   quarter deepens by APPENDING a row per `depth`, never by rewriting one.
 
   **Four things only implementation revealed** (all fixed; detail in
-  `docs/MASTER_OVERVIEW.ja.md` §5.3(8)). (1) **Yahoo's estimate periods are
+  `docs/design/MASTER_OVERVIEW.ja.md` §5.3(8)). (1) **Yahoo's estimate periods are
   relative to today, not to the last print** — measured on AMZN three days
   after its Q2 release, `0q` read 1.956 while the consensus that print was
   judged against was 1.83, and the row's own growth field said +0.3% where Q2
@@ -228,7 +228,7 @@ Record decisions and insights at the end of each working session
   later would break invariant 1 silently.
 
   **Settled on review the same day** (design written up in
-  `docs/MASTER_OVERVIEW.ja.md` §5.3 + §6.1): the master is named `stocks`, not
+  `docs/design/MASTER_OVERVIEW.ja.md` §5.3 + §6.1): the master is named `stocks`, not
   `securities` — "security" collides with the information-security sense
   throughout the code. It carries a *projection* of the LAST review only
   (`last_reviewed_fiscal_quarter` as `2026-Q2`, `last_reviewed_at`, stage reached),
@@ -262,7 +262,7 @@ Record decisions and insights at the end of each working session
 
   Session cost ~$65 (one CRITICAL warning) — all of it live measurement.
   Nothing needs re-measuring; `basis_survey.json` in the scratchpad holds the
-  raw sample. `docs/MASTER_OVERVIEW.ja.md` §4/§5 is **not yet updated** — the
+  raw sample. `docs/design/MASTER_OVERVIEW.ja.md` §4/§5 is **not yet updated** — the
   governance rule requires that, with approval, before implementation begins.
 
 - **2026-08-01(b)** First real session-mode run since the tree split: scout
@@ -373,7 +373,7 @@ Record decisions and insights at the end of each working session
   test docstrings updated to say this plainly.
 
 - **2026-07-29** User recovered the full architecture review finding list
-  at `docs/ARCHITECTURE_REVIEW_BACKLOG.md` (the 2026-07-28(b) entry below
+  at `docs/design/ARCHITECTURE_REVIEW_BACKLOG.md` (the 2026-07-28(b) entry below
   had marked it unrecoverable — that note is now stale, read the backlog
   file instead). Worked through it in two rounds, prioritizing
   integrity/consistency findings first per user request: (1) H1 — Adversary
@@ -469,7 +469,7 @@ Record decisions and insights at the end of each working session
   instruction not to. User's call: this can't be fixed within the
   architecture (a subagent always inherits its parent session's access), so
   disclose it honestly rather than pretend otherwise — documented in
-  `docs/MASTER_OVERVIEW.ja.md` §4, `docs/ARCHITECTURE.md`, and invariant 4
+  `docs/design/MASTER_OVERVIEW.ja.md` §4, `docs/design/ARCHITECTURE.md`, and invariant 4
   above. 81/81 offline tests green (79 prior + 2 new; `test_llm_auth.py`
   still excluded, pre-existing unrelated collection failure, still
   out of scope). The remaining ~19 architecture findings and the
@@ -515,7 +515,7 @@ Record decisions and insights at the end of each working session
   silent-pass gate behavior) — fixed to anchor exactly on `end`.
   Separately, the methodology audit found the *already-shipped*
   `hawkeye benchmark` cohort comparison — the actual Phase 0 kill-criterion
-  measurement — had the same two failure modes `docs/MASTER_OVERVIEW.ja.md`
+  measurement — had the same two failure modes `docs/design/MASTER_OVERVIEW.ja.md`
   §5.1 warns about for the *proposed* future feature: manual `evaluate`
   picks were never filtered out of viability stats despite
   `strategy/ROADMAP.md` requiring it, and any ticker whose price history fetch
@@ -562,7 +562,7 @@ Record decisions and insights at the end of each working session
   feature with no single presentation of the full picture (To-Be
   architecture, As-Is gap, investment principle, data model, user
   workflows) — described feeling unable to oversee direction. Wrote
-  `docs/MASTER_OVERVIEW.ja.md`: requirements recap, honest explanation of
+  `docs/design/MASTER_OVERVIEW.ja.md`: requirements recap, honest explanation of
   *why* the design should improve returns (bias removal via role
   separation, asymmetric R:R enforcement, EV hurdle separating "good
   story" from "good trade", mechanical candidate sourcing, calibration/

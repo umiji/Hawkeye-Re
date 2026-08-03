@@ -175,7 +175,7 @@ class GateReport(BaseModel):
         # Fail closed: an unverified hard gate is data we don't have, not
         # data that cleared the bar. Letting it through would silently trade
         # away the liquidity/size/freshness floor the hard gate exists to
-        # enforce (see docs/MASTER_OVERVIEW.ja.md, "入口ゲート「未検証」の
+        # enforce (see docs/design/MASTER_OVERVIEW.ja.md, "入口ゲート「未検証」の
         # 実質素通り" fix, 2026-07-28).
         return [r for r in self.results if r.hard and (not r.passed or r.unverified)]
 
@@ -191,7 +191,7 @@ class GateReport(BaseModel):
 
 # ---------------------------------------------------------------------------
 # Screened-but-dropped candidates (missed-candidate tracking,
-# docs/MASTER_OVERVIEW.ja.md §5.1) — every candidate the scout funnel drops
+# docs/design/MASTER_OVERVIEW.ja.md §5.1) — every candidate the scout funnel drops
 # past the surprise screen, recorded at drop time so the Phase-0 "BUY beats
 # reject pile" comparison isn't limited to only the final tribunal-PASS
 # stage. Recording at drop time (not re-fetching prices later) avoids
@@ -240,7 +240,7 @@ class ScreenedCandidate(BaseModel):
     # What was visible at drop time. Enrichment already fetched these, and
     # they were then discarded for every dropped candidate — so a later drop
     # review had no way to reconstruct the qualitative picture the decision
-    # was actually made against (docs/MASTER_OVERVIEW.ja.md §5.2(5)). Kept
+    # was actually made against (docs/design/MASTER_OVERVIEW.ja.md §5.2(5)). Kept
     # at no extra API cost. Empty for the enrichment_cap stage, which is
     # dropped before any of this is fetched — absence here means "never
     # looked", not "looked and found nothing".
@@ -250,7 +250,7 @@ class ScreenedCandidate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Drop-candidate review (docs/MASTER_OVERVIEW.ja.md §5.2(3))
+# Drop-candidate review (docs/design/MASTER_OVERVIEW.ja.md §5.2(3))
 # ---------------------------------------------------------------------------
 
 class MissCategory(str, Enum):

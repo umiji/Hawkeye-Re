@@ -1,6 +1,6 @@
 """Hawkeye CLI — the manual operating surface for the MVP.
 
-Daily rhythm (docs/USER_GUIDE.ja.md):
+Daily rhythm (docs/design/USER_GUIDE.ja.md):
   evaluate      run one candidate through gates -> tribunal -> risk officer
   decide        record the user's Yes/No on a proposal
   record-entry  record the fill the user executed
@@ -388,7 +388,7 @@ def cmd_scout(args: argparse.Namespace) -> int:
                        release_reader=DirectoryReleaseReader(releases_dir()))
 
     # Whatever isn't sent to the tribunal THIS run — from result.passed's
-    # tail onward — is the ranking-cutoff tier (docs/MASTER_OVERVIEW.ja.md
+    # tail onward — is the ranking-cutoff tier (docs/design/MASTER_OVERVIEW.ja.md
     # §5.1, #4). Computed before record_scan() so it can be persisted in the
     # same breath as the scan itself, immediately below.
     sent_to_tribunal_n = max(args.evaluate or 0, args.open_cases or 0)
@@ -576,7 +576,7 @@ def cmd_screened_list(args: argparse.Namespace) -> int:
 
 
 def cmd_drops_report(args: argparse.Namespace) -> int:
-    """Score the funnel's rejects (docs/MASTER_OVERVIEW.ja.md §5.2(3)).
+    """Score the funnel's rejects (docs/design/MASTER_OVERVIEW.ja.md §5.2(3)).
 
     Both ledger tables are read: `screened_candidates` holds the candidates
     dropped before the tribunal, `recommendations` the ones that reached it.
@@ -1260,7 +1260,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sd = sub.add_parser("screened",
                         help="review candidates the scout funnel dropped "
-                             "(docs/MASTER_OVERVIEW.ja.md §5.1)")
+                             "(docs/design/MASTER_OVERVIEW.ja.md §5.1)")
     sd_sub = sd.add_subparsers(dest="screened_command", required=True)
     sdl = sd_sub.add_parser("list", help="list dropped candidates")
     sdl.add_argument("--scan-id", type=int, default=None,
@@ -1272,7 +1272,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     dr = sub.add_parser("drops",
                         help="score the candidates the funnel dropped "
-                             "(docs/MASTER_OVERVIEW.ja.md §5.2(3))")
+                             "(docs/design/MASTER_OVERVIEW.ja.md §5.2(3))")
     dr_sub = dr.add_subparsers(dest="drops_command", required=True)
     drr = dr_sub.add_parser(
         "report",

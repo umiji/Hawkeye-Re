@@ -1,4 +1,4 @@
-"""The stock-centric tables (docs/MASTER_OVERVIEW.ja.md §6.1).
+"""The stock-centric tables (docs/design/MASTER_OVERVIEW.ja.md §6.1).
 
 Everything here defends one property: a decision references a consensus row
 BY ID instead of copying the numbers into its payload (the user's explicit

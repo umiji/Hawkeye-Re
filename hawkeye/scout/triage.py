@@ -1,5 +1,5 @@
 """Deciding whether a company is worth following at all
-(docs/MASTER_OVERVIEW.ja.md §6.1(E)).
+(docs/design/MASTER_OVERVIEW.ja.md §6.1(E)).
 
 This is not a judgment about a quarter — that is `quality.py`. It is the
 cheaper question underneath it: could a position in this name ever exist?

@@ -1,5 +1,5 @@
 """Storage for the stock master, its earnings prints, and consensus
-snapshots (docs/MASTER_OVERVIEW.ja.md §6.1).
+snapshots (docs/design/MASTER_OVERVIEW.ja.md §6.1).
 
 Additive: these tables live in the same SQLite file as the decision ledger
 but are not part of its hash chain — `Ledger.verify_chain()` is unaffected by

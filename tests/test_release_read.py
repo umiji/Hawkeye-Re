@@ -1,5 +1,5 @@
 """Reading the company's own release when the two vendors' actuals disagree
-(docs/MASTER_OVERVIEW.ja.md §5.3 実装順序(c) — the escalation at the tail of
+(docs/design/MASTER_OVERVIEW.ja.md §5.3 実装順序(c) — the escalation at the tail of
 the funnel).
 
 The measured base rate is 21% (10 of 48 names): the two vendors report a

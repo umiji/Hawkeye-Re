@@ -1,5 +1,5 @@
 """An unbroken quarterly history for every name that entered the funnel
-(docs/MASTER_OVERVIEW.ja.md §6.1(C)).
+(docs/design/MASTER_OVERVIEW.ja.md §6.1(C)).
 
 Until now a quarter was recorded only for candidates that reached enrichment.
 A stock picked in Q1, screened out in Q2 and Q3, then picked again in Q4 had

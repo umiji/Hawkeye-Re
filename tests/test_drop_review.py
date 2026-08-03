@@ -1,4 +1,4 @@
-"""Drop-candidate review — docs/MASTER_OVERVIEW.ja.md §5.2(3).
+"""Drop-candidate review — docs/design/MASTER_OVERVIEW.ja.md §5.2(3).
 
 Fully offline: every price series is synthetic and the provider is a stub.
 """

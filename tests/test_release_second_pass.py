@@ -1,5 +1,5 @@
 """The second pass of the release-read workflow: a print held open until a
-document arrives (docs/MASTER_OVERVIEW.ja.md §5.3 実装順序(c)).
+document arrives (docs/design/MASTER_OVERVIEW.ja.md §5.3 実装順序(c)).
 
 The read happens outside this process, so the funnel names the prints it
 wants and picks the documents up on a LATER run. That only works if the
