@@ -77,9 +77,18 @@ _MATERIAL_DISAGREEMENT_PCT = 1.0
 
 def verification_targets(events: list[EarningsEvent],
                          screened: list[ScreenedEvent],
-                         limit: int) -> list[tuple[str, date]]:
-    """(ticker, day) keys to verify, in priority order, capped at `limit`."""
-    kept = [(s.event.ticker, s.event.day) for s in screened]
+                         limit: int,
+                         always: Optional[list[tuple[str, date]]] = None
+                         ) -> list[tuple[str, date]]:
+    """(ticker, day) keys to verify, in priority order, capped at `limit`.
+
+    `always` goes first and is the caller naming a print outright — a person
+    asking about one stock. The screen decides who is worth looking at when
+    nobody asked; once someone has asked, that question is answered.
+    """
+    kept = list(always or []) + [(s.event.ticker, s.event.day)
+                                 for s in screened]
+    kept = list(dict.fromkeys(kept))
     kept_set = set(kept)
     suspect = [(e.ticker, e.day) for e in events
                if e.conflicting_estimates and (e.ticker, e.day) not in kept_set]
@@ -90,6 +99,7 @@ def verify_events(events: list[EarningsEvent],
                   screened: list[ScreenedEvent],
                   source: Optional[EarningsNumberSource],
                   limit: int,
+                  always: Optional[list[tuple[str, date]]] = None,
                   ) -> tuple[list[EarningsEvent], VerificationStats]:
     """Return `events` with verified EPS substituted, plus what happened.
 
@@ -100,8 +110,9 @@ def verify_events(events: list[EarningsEvent],
     if source is None or limit <= 0:
         return events, VerificationStats()
 
-    targets = verification_targets(events, screened, limit)
-    eligible = len(verification_targets(events, screened, len(events) + 1))
+    targets = verification_targets(events, screened, limit, always)
+    eligible = len(verification_targets(events, screened, len(events) + 1,
+                                        always))
     wanted = set(targets)
     attempted = verified = unverified = disagreed = 0
 

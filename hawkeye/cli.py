@@ -83,6 +83,7 @@ from hawkeye.reports.quality_ja import (
     render_stock_history_ja,
 )
 from hawkeye.scout.release import DirectoryReleaseReader
+from hawkeye.scout.single import judge_ticker
 from hawkeye.scout.prereg import (
     business_days_ahead,
     capture_consensus,
@@ -172,8 +173,58 @@ def _print_step(case: "casefile.Case") -> None:
     print(f"submit_with: hawkeye case submit {case.id} --file {package['output']}")
 
 
+def _rounded(value):
+    return round(value, 1) if value is not None else None
+
+
+def _judged_earnings(args: argparse.Namespace):
+    """The three-leg reading of a named stock's latest quarter, or None.
+
+    Same path the funnel uses — same second source, same both-sources-agree
+    rule, same pinned consensus — so a stock a person named arrives at the
+    tribunal on exactly the evidence a discovered one would.
+    """
+    finnhub = FinnhubProvider()
+    if not finnhub.available:
+        print("--from-earnings には FINNHUB_API_KEY が必要です", file=sys.stderr)
+        return None
+    numbers = YahooEarningsSource()
+    return judge_ticker(
+        args.ticker, finnhub, HawkeyeConfig.from_env(),
+        report_date=(date.fromisoformat(args.event_date)
+                     if args.event_date else None),
+        numbers_source=numbers if numbers.available else None,
+        stock_store=_stock_store(), directory=EdgarDirectory(),
+        consensus_source=YahooConsensusSource() if numbers.available else None,
+        facts=EdgarFacts(),
+        release_reader=DirectoryReleaseReader(releases_dir()))
+
+
 def cmd_case_open(args: argparse.Namespace) -> int:
     config = HawkeyeConfig.from_env()
+    judged = _judged_earnings(args) if args.from_earnings else None
+    if args.from_earnings:
+        if judged is None:
+            print(f"{args.ticker}: 決算カレンダーに実績のある行が見つかりません"
+                  f"(--event-date で発表日を指定してください)", file=sys.stderr)
+            return 1
+        print(render_quality_ja(judged.quality))
+        if judged.release_wanted:
+            print(render_release_requests_ja([judged.release_wanted],
+                                             releases_dir()))
+        args.description = judged.catalyst_description
+        args.event_date = judged.event.day.isoformat()
+        args.source = args.source or "scout/finnhub-earnings-calendar"
+        # Only a confirmed beat becomes a structured fact. The prompts tell
+        # both roles to prefer these over prose, so an unverified leg placed
+        # here would be laundered into a fact.
+        args.eps_surprise_pct = _rounded(judged.quality.eps.scored_pct)
+        args.revenue_surprise_pct = _rounded(judged.quality.revenue.scored_pct)
+    elif not (args.description and args.event_date):
+        print("--description と --event-date が必要です"
+              "(または --from-earnings で決算から生成してください)",
+              file=sys.stderr)
+        return 1
     catalyst = Catalyst(
         type=CatalystType(args.catalyst),
         description=args.description,
@@ -1256,10 +1307,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     co = ca_sub.add_parser("open", help="run gates and open a case")
     co.add_argument("ticker")
-    co.add_argument("--catalyst", required=True,
+    co.add_argument("--catalyst", default=CatalystType.EARNINGS_BEAT.value,
                     choices=[c.value for c in CatalystType])
-    co.add_argument("--description", required=True)
-    co.add_argument("--event-date", required=True, help="YYYY-MM-DD")
+    # Free text and a date, UNLESS --from-earnings supplies both from the
+    # three-leg reading of the actual print (§5.3). Judging a stock a person
+    # named on hand-typed prose would be a second, weaker standard of
+    # evidence living beside the funnel's.
+    co.add_argument("--description", default="")
+    co.add_argument("--event-date", default=None, help="YYYY-MM-DD")
+    co.add_argument("--from-earnings", action="store_true",
+                    help="judge this ticker's latest print on the three legs "
+                         "(EPS/revenue/guidance) and use that as the catalyst")
     co.add_argument("--source", default="")
     co.add_argument("--notes", default="")
     co.add_argument("--nav", type=float, default=100_000.0)
