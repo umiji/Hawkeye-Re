@@ -80,6 +80,25 @@ class HawkeyeConfig:
     earnings_actual_dispute_pct: float = 2.0
     # Both conditions must hold: on a $0.30 EPS, one cent of rounding is 3%.
     earnings_actual_dispute_abs_usd: float = 0.01
+    # Whether a disputed ACTUAL makes the EPS leg unverified (2026-08-03(b):
+    # changed from True to False). It no longer does, for three reasons.
+    #
+    # (1) The judgment is already doubly conservative: the smaller actual is
+    #     compared against the larger consensus, so a beat under dispute is a
+    #     beat under EITHER vendor's reading of EITHER number.
+    # (2) The old rule was inconsistent with what sits next to it — ONE
+    #     source's actual is accepted (`single_source_actual` never blocked),
+    #     while two sources that disagree were refused. Having more
+    #     information made the leg worse.
+    # (3) Invariant 6 governs MISSING data. A dispute is not missing data;
+    #     `no_actual` still blocks and always will.
+    #
+    # It is not a silent pass: the flag stays on the leg, the Japanese report
+    # and the tribunal's own catalyst text both name the disagreement and the
+    # two figures, and the release read is still requested for it.
+    # Measured cost of the old rule: 21% of prints (10 of 48 on 2026-08-02)
+    # lost their EPS leg to this, in a system that has produced no BUY yet.
+    earnings_actual_dispute_blocks: bool = False
     # A consensus this thin is one analyst's opinion wearing the word
     # "consensus" — INVH's was built from exactly one, and only the
     # pre-registered Yahoo row reveals it.

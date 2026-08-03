@@ -30,7 +30,10 @@ _VERDICT = {
     QuarterVerdict.UNVERIFIED: "判定不能(EPSが検証できていない)",
 }
 _FLAG = {
-    "actual_disputed": "実績値が2ソースで食い違い、発表文で決着させる必要あり",
+    "actual_disputed": "実績値が2ソースで食い違い(小さい方の実績×大きい方の"
+                       "予想で評価しているため、どちらの数字でも成立する読み"
+                       "だが、GAAP/調整後のどちらの基準かは未決着。発表文の"
+                       "読み取り待ち)",
     "finnhub_actual_conflict": "Finnhubが同じ決算に矛盾する実績値を返しており、"
                                "同社の実績は使用不能",
     "single_source_actual": "実績値のソースが1つだけ",
@@ -69,6 +72,16 @@ def render_leg_ja(leg: LegVerdict) -> str:
     if leg.analysts is not None:
         head += f" [アナリスト{leg.analysts}人]"
     lines = [head]
+    # 実績値そのものが割れている場合は、両方の数字を出す。2026-08-03(b) 以降、
+    # 食い違ったままでも(保守的な読みで)上振れ判定になり得るので、読み手が
+    # 「何と何が食い違っているのか」を目で確認できないと検算のしようがない。
+    if "actual_disputed" in leg.flags:
+        pair = [f"Yahoo {v:g}" for v in (leg.actual_yahoo,) if v is not None]
+        pair += [f"Finnhub {v:g}" for v in (leg.actual_finnhub,)
+                 if v is not None]
+        if pair:
+            lines.append(f"    実績値: {' / '.join(pair)}"
+                         f"(評価に使ったのは {leg.actual:g})")
     lines += [f"    - {_flag_ja(f)}" for f in leg.flags]
     return "\n".join(lines)
 

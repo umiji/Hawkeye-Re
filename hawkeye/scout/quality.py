@@ -78,6 +78,12 @@ class LegVerdict:
     yahoo_surprise_pct: Optional[float] = None
     finnhub_surprise_pct: Optional[float] = None
     actual: Optional[float] = None
+    # Each vendor's own actual, kept apart from the resolved one. Since a
+    # disputed leg can now be scored (2026-08-03(b)), the two figures have to
+    # remain readable — they are what the disagreement IS, and both the
+    # tribunal's brief and the Japanese report name them.
+    actual_yahoo: Optional[float] = None
+    actual_finnhub: Optional[float] = None
     sources: int = 0                       # consensus sources compared
     analysts: Optional[int] = None
     basis: Optional[EpsBasis] = None
@@ -162,7 +168,9 @@ def _assess_leg(leg: str, actual: Optional[float], actual_flags: list[str],
                 finnhub_estimate: Optional[float],
                 analysts: Optional[int], config,
                 min_abs_estimate: Optional[float] = None,
-                basis: Optional[EpsBasis] = None) -> LegVerdict:
+                basis: Optional[EpsBasis] = None,
+                actual_yahoo: Optional[float] = None,
+                actual_finnhub: Optional[float] = None) -> LegVerdict:
     flags = list(actual_flags)
     estimates = [v for v in (yahoo_estimate, finnhub_estimate) if v is not None]
     yahoo_pct = _pct(actual, yahoo_estimate)
@@ -183,20 +191,37 @@ def _assess_leg(leg: str, actual: Optional[float], actual_flags: list[str],
     if len(readings) == 2 and (readings[0] > 0) != (readings[1] > 0):
         flags.append("sources_disagree_on_direction")
 
-    status = _leg_status(readings, estimates, flags)
+    status = _leg_status(readings, estimates, flags, _blocking(config))
     return LegVerdict(leg=leg, status=status, surprise_pct=conservative,
                       yahoo_surprise_pct=yahoo_pct,
                       finnhub_surprise_pct=finnhub_pct, actual=actual,
+                      actual_yahoo=actual_yahoo, actual_finnhub=actual_finnhub,
                       sources=len(estimates), analysts=analysts, basis=basis,
                       flags=tuple(flags))
 
 
-_BLOCKING_FLAGS = ("actual_disputed", "no_actual", "thin_coverage",
-                   "estimate_too_small", "single_source_consensus")
+_BLOCKING_FLAGS = ("no_actual", "thin_coverage", "estimate_too_small",
+                   "single_source_consensus")
+
+
+def _blocking(config) -> tuple[str, ...]:
+    """Which flags make a leg unverified, under the doctrine in force.
+
+    Only one of them is a switch. A disputed ACTUAL stopped blocking on
+    2026-08-03(b) — the reading is already the smaller actual against the
+    larger consensus, so a beat under dispute holds under either vendor's
+    numbers, and refusing it while accepting a SINGLE-source actual made more
+    information count for less. See `config.earnings_actual_dispute_blocks`
+    for the full rationale; this function exists so the rule is one config
+    diff and not an edit scattered through the judgment.
+    """
+    if getattr(config, "earnings_actual_dispute_blocks", False):
+        return _BLOCKING_FLAGS + ("actual_disputed",)
+    return _BLOCKING_FLAGS
 
 
 def _leg_status(readings: list[float], estimates: list[float],
-                flags: list[str]) -> LegStatus:
+                flags: list[str], blocking: tuple[str, ...]) -> LegStatus:
     """Unverified beats every other reading.
 
     A leg that cannot be confirmed must not be scored as a beat OR written
@@ -205,7 +230,7 @@ def _leg_status(readings: list[float], estimates: list[float],
     """
     if not estimates and not readings:
         return LegStatus.ABSENT if not flags else LegStatus.UNVERIFIED
-    if any(flag in _BLOCKING_FLAGS for flag in flags) or not readings:
+    if any(flag in blocking for flag in flags) or not readings:
         return LegStatus.UNVERIFIED
     if min(readings) > 0:
         return LegStatus.BEAT
@@ -269,6 +294,29 @@ _EN_STATUS = {LegStatus.BEAT: "beat", LegStatus.MISS: "missed",
 _EN_LEG = {"eps": "EPS", "revenue": "Revenue", "guidance": "Guidance"}
 
 
+def _dispute_line_en(quality: "EarningsQuality") -> str:
+    """What the reader has to know when a scored leg rests on two figures
+    that disagree.
+
+    Since 2026-08-03(b) such a leg CAN be a beat, so the weakness has to be
+    stated where the numbers are, not left to be inferred from a flag. Both
+    actuals are named: the gap is usually GAAP against the street's adjusted
+    basis, which is a fact about the quarter the Adversary should be able to
+    attack directly.
+    """
+    leg = quality.eps
+    if "actual_disputed" not in leg.flags:
+        return ""
+    figures = " vs ".join(f"{v:g}" for v in (leg.actual_yahoo,
+                                             leg.actual_finnhub)
+                          if v is not None)
+    return (f" NOTE: the two data vendors report DIFFERENT EPS actuals for "
+            f"this quarter ({figures}). The reading above takes the smaller "
+            f"actual against the larger consensus, so it holds under either "
+            f"vendor's numbers — but the basis is not settled, and the "
+            f"company's own release has been requested to settle it.")
+
+
 def _leg_line_en(leg: LegVerdict) -> str:
     head = f"{_EN_LEG.get(leg.leg, leg.leg)} {_EN_STATUS[leg.status]} consensus"
     if leg.surprise_pct is not None:
@@ -298,7 +346,7 @@ def describe_quality_en(quality: "EarningsQuality") -> str:
     tail = ("A leg marked UNVERIFIED is a known unknown: it earns no ranking "
             "score and must not be argued as a beat.")
     return (f"Earnings quality on three legs (a beat requires BOTH sources to "
-            f"agree): {legs}. {tail}")
+            f"agree): {legs}. {tail}{_dispute_line_en(quality)}")
 
 
 def print_from_event(event: EarningsEvent, stock_id: str,
@@ -399,7 +447,9 @@ def assess_earnings(print_row: EarningsPrint,
         consensus.eps_finnhub if consensus else None,
         consensus.eps_analysts if consensus else None, config,
         min_abs_estimate=config.scout_min_abs_eps_estimate,
-        basis=print_row.eps_basis)
+        basis=print_row.eps_basis,
+        actual_yahoo=print_row.eps_yahoo,
+        actual_finnhub=print_row.eps_finnhub_usable)
 
     revenue_actual, revenue_flags = _resolve_actual(
         print_row.revenue_xbrl or print_row.revenue_release,

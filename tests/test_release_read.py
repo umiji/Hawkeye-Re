@@ -81,8 +81,14 @@ def test_an_extraction_that_disagrees_with_the_filing_is_not_stored():
     assert outcome.row.depth is PrintDepth.VERIFIED     # unchanged
     assert outcome.row.eps_release is None
     assert outcome.row.guidance is None
+    # The dispute is untouched, which is the point: nothing was settled, so
+    # the leg still says the two vendors disagree and still asks for a
+    # document. (Since 2026-08-03(b) it is scored on the conservative
+    # reading meanwhile rather than being withheld — see
+    # `config.earnings_actual_dispute_blocks`.)
     quality = assess_earnings(outcome.row, _consensus(), _config())
-    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert "actual_disputed" in quality.eps.flags
+    assert needs_release_read(quality)
 
 
 def test_an_extraction_with_nothing_to_check_it_against_is_not_believed():
@@ -139,7 +145,8 @@ def test_a_release_naming_no_adjustment_leaves_the_dispute_open():
     assert outcome.row.eps_basis is EpsBasis.UNADJUSTED
     assert "no_published_adjustment" in outcome.row.contamination_flags
     quality = assess_earnings(outcome.row, _consensus(), _config())
-    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert "actual_disputed" in quality.eps.flags       # still not settled
+    assert quality.eps.basis is EpsBasis.UNADJUSTED
 
 
 def test_guidance_from_the_release_survives_an_unsettled_eps_leg():
@@ -319,7 +326,13 @@ def test_a_rejected_extraction_leaves_the_recorded_reading_shallow(tmp_path):
 
     row = store.latest_print(store.stock_by_ticker("AAPL").id, "2026-Q3")
     assert row.depth is PrintDepth.VERIFIED
-    assert result.passed[0].quality.eps.status is LegStatus.UNVERIFIED
+    assert "actual_disputed" in result.passed[0].quality.eps.flags
+    # A document WAS read here, so this is not the "nobody has read it yet"
+    # case and the print is not re-requested. The rejection reason goes to
+    # stderr; a wait already open stays open until the file is corrected or
+    # the age bound closes it.
+    assert result.release_wanted == []
+    assert result.release_settled == []
 
 
 def test_a_print_nobody_has_read_yet_is_reported_rather_than_guessed(tmp_path):
@@ -373,4 +386,5 @@ def test_the_funnel_still_runs_without_a_release_reader(tmp_path):
         today=today, stock_store=store,
         numbers_source=FakeNumbers({"AAPL": _yahoo("AAPL", day)}))
 
-    assert result.passed[0].quality.eps.status is LegStatus.UNVERIFIED
+    assert "actual_disputed" in result.passed[0].quality.eps.flags
+    assert result.release_wanted == []      # nowhere to send the request

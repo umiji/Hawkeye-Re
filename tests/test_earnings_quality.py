@@ -12,6 +12,7 @@ quietly.
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import date
 
 from hawkeye.config import HawkeyeConfig
@@ -84,17 +85,92 @@ def test_a_disputed_consensus_is_ranked_on_the_conservative_reading():
     assert round(quality.eps.surprise_pct, 1) == -35.2
 
 
-def test_disagreeing_actuals_are_unverified_until_the_release_settles_it():
+def test_disagreeing_actuals_are_judged_on_the_smaller_of_the_two():
     """AAPL: Yahoo 2.02 (matches the filing), Finnhub 1.91 (= 2.02 - 0.11 of
-    tariff refunds). Neither is wrong; the bases differ. Until the release is
-    read, the number is not a fact and cannot buy a ranking slot."""
+    tariff refunds). Neither is wrong; the bases differ.
+
+    Doctrine change of 2026-08-03(b) (`earnings_actual_dispute_blocks`): the
+    dispute no longer makes the leg unverified. Judging it on the SMALLER
+    actual against the LARGER consensus means the beat holds under either
+    vendor's reading of either number — which is strictly stronger evidence
+    than the single-source actual this system already accepts. The flag stays
+    on the leg and the release is still asked for.
+    """
     quality = assess_earnings(
         a_print(eps_yahoo=2.02, eps_finnhub=[1.91]),
         a_consensus(eps_avg=1.89, eps_finnhub=1.89), CONFIG)
 
-    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert quality.eps.status is LegStatus.BEAT
+    assert quality.eps.actual == 1.91                   # the conservative one
+    assert round(quality.eps.surprise_pct, 2) == 1.06
     assert "actual_disputed" in quality.eps.flags
+    assert quality.score > 0.0
+
+
+def test_a_dispute_that_only_the_larger_reading_survives_is_not_a_beat():
+    """The conservative rule has to bite, not merely be stated: where the
+    smaller actual lands below consensus, the leg is not a beat no matter how
+    good the other vendor's number looks."""
+    quality = assess_earnings(
+        a_print(eps_yahoo=1.30, eps_finnhub=[0.95]),
+        a_consensus(eps_avg=1.00, eps_finnhub=1.00), CONFIG)
+
+    assert quality.eps.actual == 0.95
+    assert quality.eps.status is LegStatus.MISS
+    assert "actual_disputed" in quality.eps.flags
+
+
+def test_a_disputed_actual_is_still_worth_reading_the_release_for():
+    """Scoring the leg conservatively is not the same as settling it. The
+    document is what turns "true under both readings" into "this is the
+    number", and it also fixes the basis — so the escalation must survive
+    the doctrine change that stopped the dispute blocking."""
+    from hawkeye.scout.release import needs_release_read
+
+    quality = assess_earnings(
+        a_print(eps_yahoo=2.02, eps_finnhub=[1.91]),
+        a_consensus(eps_avg=1.89, eps_finnhub=1.89), CONFIG)
+
+    assert needs_release_read(quality)
+
+
+def test_the_tribunal_is_told_the_two_sources_disagreed():
+    """The prompts tell the Bull and the Adversary to prefer structured
+    numbers over prose, so a figure that is now allowed to score has to carry
+    its weakness in the same place they are looking."""
+    from hawkeye.scout.quality import describe_quality_en
+
+    text = describe_quality_en(assess_earnings(
+        a_print(eps_yahoo=2.02, eps_finnhub=[1.91]),
+        a_consensus(eps_avg=1.89, eps_finnhub=1.89), CONFIG))
+
+    assert "actual_disputed" in text
+    assert "2.02" in text and "1.91" in text
+    assert "conservative" in text.lower()
+
+
+def test_the_old_blocking_behaviour_is_one_config_flag_away():
+    """A doctrine change is a config diff (invariant 7). Flipping it back has
+    to restore the previous judgment exactly, or the flag is decoration."""
+    blocking = dataclasses.replace(CONFIG, earnings_actual_dispute_blocks=True)
+
+    quality = assess_earnings(
+        a_print(eps_yahoo=2.02, eps_finnhub=[1.91]),
+        a_consensus(eps_avg=1.89, eps_finnhub=1.89), blocking)
+
+    assert quality.eps.status is LegStatus.UNVERIFIED
     assert quality.score == 0.0
+
+
+def test_a_leg_with_no_actual_at_all_is_still_unverified():
+    """The change is narrow. Invariant 6 is about MISSING data, and missing
+    is still missing: two readings that disagree are more information than
+    one, but no readings are none."""
+    quality = assess_earnings(
+        a_print(), a_consensus(eps_avg=1.00, eps_finnhub=1.00), CONFIG)
+
+    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert "no_actual" in quality.eps.flags
 
 
 def test_a_penny_of_rounding_is_not_a_dispute():
