@@ -97,6 +97,102 @@ def test_the_fiscal_quarter_falls_back_to_the_calendar_quarter():
     assert prints[0].fiscal_quarter == "2026-Q3"
 
 
+# --- today's own prints, after a gap ---------------------------------------
+
+def test_the_window_starts_tomorrow_when_the_run_is_daily():
+    """The normal case, unchanged. Today's US prints land this evening JST
+    and yesterday's run already pre-registered them; asking again would
+    spend ~150 lookups to re-read rows we hold."""
+    from hawkeye.scout.prereg import capture_window
+
+    today = date(2026, 8, 3)
+    yesterday = datetime(2026, 8, 2, 10, 0, tzinfo=timezone.utc)
+
+    window = capture_window(today, yesterday, business_days=2, gap_days=2)
+
+    assert window == [date(2026, 8, 4), date(2026, 8, 5)]
+
+
+def test_a_gap_since_the_last_run_pulls_todays_prints_back_in():
+    """The window is derived from the machine's LOCAL date (JST) while the
+    calendar's dates are US market dates, and `business_days_ahead` always
+    starts counting from tomorrow — so a 10:08 JST run on 2026-08-03 asked
+    about US 08-04..05, and US 08-03's prints (which begin ~20:00 JST that
+    evening) were never captured and never could be. After a gap, today is
+    included; it is safe by construction because a row carrying an actual is
+    dropped anyway, so a print that has already happened cannot slip in as a
+    "pre-registration"."""
+    from hawkeye.scout.prereg import capture_window
+
+    today = date(2026, 8, 3)
+    three_days_ago = datetime(2026, 7, 31, 10, 0, tzinfo=timezone.utc)
+
+    window = capture_window(today, three_days_ago, business_days=2,
+                            gap_days=2)
+
+    assert window == [today, date(2026, 8, 4), date(2026, 8, 5)]
+
+
+def test_the_first_run_ever_includes_today():
+    from hawkeye.scout.prereg import capture_window
+
+    window = capture_window(date(2026, 8, 3), None, business_days=2,
+                            gap_days=2)
+
+    assert window[0] == date(2026, 8, 3)
+
+
+def test_a_print_landing_today_is_pre_registered_only_when_asked_for():
+    rows = [{"symbol": "TODAY", "date": "2026-08-03", "epsEstimate": 1.0},
+            {"symbol": "TOMORROW", "date": "2026-08-04", "epsEstimate": 1.0}]
+
+    without = upcoming_prints(rows, today=date(2026, 8, 3), business_days=2)
+    with_today = upcoming_prints(rows, today=date(2026, 8, 3),
+                                 business_days=2, include_today=True)
+
+    assert [p.ticker for p in without] == ["TOMORROW"]
+    assert [p.ticker for p in with_today] == ["TODAY", "TOMORROW"]
+
+
+def test_todays_print_that_already_reported_is_still_refused():
+    """The safety this whole rule rests on: including today cannot admit a
+    reconstruction, because a row with an actual on it never survives."""
+    rows = [{"symbol": "DONE", "date": "2026-08-03", "epsEstimate": 1.0,
+             "epsActual": 1.2}]
+
+    prints = upcoming_prints(rows, today=date(2026, 8, 3), business_days=2,
+                             include_today=True)
+
+    assert prints == []
+
+
+def test_the_last_capture_is_read_from_the_pre_registered_rows(tmp_path):
+    """No new table for "when did capture last run": the newest
+    pre-registered snapshot answers it. A run that captured nothing leaves
+    the clock where it was, which errs toward INCLUDING today — the safe
+    direction, since a missed snapshot is unrecoverable and a wasted lookup
+    is not."""
+    from hawkeye.contracts.stocks import ConsensusSnapshot, SnapshotKind
+    from hawkeye.ledger.stocks import StockStore
+
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    assert store.last_pre_registration_at() is None
+
+    store.capture_consensus(ConsensusSnapshot(
+        stock_id="cik:0000000001", ticker="AAA", fiscal_quarter="2026-Q3",
+        captured_at=datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc),
+        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.0))
+    # A reconstruction is written by the funnel AFTER a print, so it says
+    # nothing about when pre-registration last ran.
+    store.capture_consensus(ConsensusSnapshot(
+        stock_id="cik:0000000002", ticker="BBB", fiscal_quarter="2026-Q3",
+        captured_at=datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc),
+        kind=SnapshotKind.RECONSTRUCTED, eps_avg=1.0))
+
+    assert store.last_pre_registration_at() == datetime(
+        2026, 8, 2, 9, 0, tzinfo=timezone.utc)
+
+
 # --- capture --------------------------------------------------------------
 
 def make_store(tmp_path) -> StockStore:

@@ -85,8 +85,8 @@ from hawkeye.reports.quality_ja import (
 from hawkeye.scout.release import DirectoryReleaseReader, parse_release_key
 from hawkeye.scout.single import judge_ticker
 from hawkeye.scout.prereg import (
-    business_days_ahead,
     capture_consensus,
+    capture_window,
     report_line,
     upcoming_prints,
     warn_if_nothing_captured,
@@ -475,12 +475,22 @@ def cmd_consensus_capture(args: argparse.Namespace) -> int:
         return 1
     days = args.days or config.consensus_capture_business_days
     today = date.today()
-    window = business_days_ahead(today, days)
+    store = _stock_store()
+    # Normally tomorrow onward. After a gap the window also covers today,
+    # whose US prints land this evening JST and would otherwise fall between
+    # two runs permanently (§6.1(D)).
+    window = capture_window(
+        today, store.last_pre_registration_at(), business_days=days,
+        gap_days=config.consensus_capture_include_today_after_days)
+    include_today = window[0] == today
     raw = finnhub.earnings_calendar(window[0], window[-1])
-    targets = upcoming_prints(raw, today=today, business_days=days)
+    targets = upcoming_prints(raw, today=today, business_days=days,
+                              include_today=include_today)
     if args.limit:
         targets = targets[:args.limit]
-    print(f"対象期間: {window[0]} 〜 {window[-1]}(営業日{days}日)")
+    print(f"対象期間: {window[0]} 〜 {window[-1]}(営業日{days}日)"
+          + ("(前回の事前登録から日が空いているため、本日発表分も対象に"
+             "含めています)" if include_today else ""))
     print(f"決算予定で実績がまだ出ていない銘柄: {len(targets)} 件")
     if args.dry_run:
         for item in targets:
@@ -493,7 +503,7 @@ def cmd_consensus_capture(args: argparse.Namespace) -> int:
     if not source.available:
         print("yfinance が無いため、アナリスト人数と予想レンジは取得できません"
               "(Finnhubの点推定のみ事前登録します)", file=sys.stderr)
-    report = capture_consensus(_stock_store(), targets,
+    report = capture_consensus(store, targets,
                                source if source.available else None,
                                directory=EdgarDirectory(),
                                today=today, config=config)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from typing import Any, Optional
@@ -25,8 +26,8 @@ from hawkeye.contracts.models import to_jst
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     EarningsPrint,
-    PrintDepth,
     ReviewStage,
+    SnapshotKind,
     Stock,
     fiscal_quarter_of,
 )
@@ -108,6 +109,34 @@ class StockStore:
         self._conn = sqlite3.connect(path)
         self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(_SCHEMA)
+        self._conn.commit()
+        self._add_ticker_columns()
+
+    def _add_ticker_columns(self) -> None:
+        """Expose the ticker as a column on the two payload-keyed tables.
+
+        A VIRTUAL generated column, not a stored one: it needs no back-fill,
+        cannot drift from the payload it is computed from, and writes not one
+        byte to any recorded row — which matters here, because the
+        append-only triggers would refuse an UPDATE anyway. Purely for
+        reading: everything in the code goes through the payload.
+        """
+        if sqlite3.sqlite_version_info < (3, 31):
+            print("SQLite が古いため、決算・コンセンサスの表に ticker 列を"
+                  "追加できません(読みやすさのためだけの列なので、動作には"
+                  "影響しません)", file=sys.stderr)
+            return
+        for table in ("earnings_prints", "consensus_snapshots"):
+            # table_xinfo, not table_info: a generated column is hidden and
+            # does not appear in the latter, so the check would say "absent"
+            # on every open and the ALTER would fail on the second one.
+            columns = {row[1] for row in
+                       self._conn.execute(f"PRAGMA table_xinfo({table})")}
+            if "ticker" in columns:
+                continue
+            self._conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN ticker TEXT GENERATED "
+                f"ALWAYS AS (json_extract(payload, '$.ticker')) VIRTUAL")
         self._conn.commit()
 
     def close(self) -> None:
@@ -228,6 +257,26 @@ class StockStore:
              snapshot.model_dump_json()))
         self._conn.commit()
         return snapshot.id
+
+    def last_pre_registration_at(self) -> Optional[datetime]:
+        """When consensus was last pre-registered, or None.
+
+        Read off the snapshots themselves rather than from a run log: the
+        rows ARE the record of the run. Reconstructions are excluded because
+        the funnel writes those AFTER a print, so counting them would report
+        a capture run that never happened.
+
+        A run that captured nothing (every estimate unchanged) writes no row
+        and so leaves this where it was — which errs toward treating the next
+        run as "after a gap". That is the safe direction: a snapshot missed
+        before a print can never be taken, and a redundant lookup costs one
+        API call.
+        """
+        rows = self._conn.execute(
+            "SELECT captured_at FROM consensus_snapshots WHERE kind = ?",
+            (SnapshotKind.PRE_REGISTERED.value,)).fetchall()
+        instants = [_instant(r[0]) for r in rows]
+        return max(instants) if instants else None
 
     def consensus(self, snapshot_id: str) -> Optional[ConsensusSnapshot]:
         row = self._conn.execute(

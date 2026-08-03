@@ -316,3 +316,53 @@ def test_the_hash_chain_stays_green_alongside_the_new_tables(tmp_path):
         report_date=date(2026, 7, 31), depth=PrintDepth.CALENDAR_ONLY))
 
     assert ledger.verify_chain() is True
+
+
+# --- readability: the ticker as a column ----------------------------------
+
+def test_the_two_payload_tables_expose_the_ticker_as_a_column(tmp_path):
+    """Both tables are keyed on `stock_id` (a CIK), which is unreadable at a
+    SQL prompt. The column is GENERATED and VIRTUAL: no back-fill, no way to
+    drift from the payload, and not one byte written to a recorded row —
+    which matters, because the append-only triggers would refuse an UPDATE.
+    """
+    db = str(tmp_path / "hawkeye.db")
+    st = StockStore(db)
+    st.put_stock(make_stock())
+    st.capture_consensus(make_consensus(ticker="AMZN"))
+    st.record_print(EarningsPrint(
+        stock_id="cik:0001018724", ticker="AMZN", fiscal_quarter="2026-Q2",
+        report_date=date(2026, 7, 31), depth=PrintDepth.CALENDAR_ONLY))
+
+    conn = sqlite3.connect(db)
+    assert conn.execute(
+        "SELECT ticker FROM earnings_prints").fetchone()[0] == "AMZN"
+    assert conn.execute(
+        "SELECT ticker FROM consensus_snapshots").fetchone()[0] == "AMZN"
+
+
+def test_the_column_is_added_to_a_database_that_predates_it(tmp_path):
+    """Every existing database was created without it, so the migration has
+    to be the same code path as a fresh one — and running twice must not
+    fail."""
+    db = str(tmp_path / "hawkeye.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE earnings_prints (id TEXT PRIMARY KEY, stock_id TEXT,"
+        " fiscal_quarter TEXT, report_date TEXT, depth TEXT,"
+        " consensus_snapshot_id TEXT, payload TEXT);"
+        "CREATE TABLE consensus_snapshots (id TEXT PRIMARY KEY,"
+        " stock_id TEXT, fiscal_quarter TEXT, captured_at TEXT, kind TEXT,"
+        " payload TEXT);")
+    conn.commit()
+    conn.close()
+
+    StockStore(db)
+    st = StockStore(db)                       # the migration runs again
+    st.put_stock(make_stock())
+    st.record_print(EarningsPrint(
+        stock_id="cik:0001018724", ticker="AMZN", fiscal_quarter="2026-Q2",
+        report_date=date(2026, 7, 31), depth=PrintDepth.CALENDAR_ONLY))
+
+    assert sqlite3.connect(db).execute(
+        "SELECT ticker FROM earnings_prints").fetchone()[0] == "AMZN"

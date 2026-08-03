@@ -90,6 +90,29 @@ def business_days_ahead(today: date, count: int) -> list[date]:
     return days
 
 
+def capture_window(today: date, last_capture_at: Optional[datetime],
+                   business_days: int, gap_days: int) -> list[date]:
+    """The report dates one capture run covers.
+
+    Normally tomorrow onward, because today's US prints land this evening
+    JST and yesterday's run already pre-registered them. After a gap they
+    are added back: the window is computed from the machine's LOCAL date
+    (JST) while the calendar's dates are US market dates, and
+    `business_days_ahead` always starts from tomorrow — so a morning run on
+    day D asks about D+1 and D+2, and US day D's prints (which begin around
+    20:00 JST that same evening) are never captured by it.
+
+    Including today is safe by construction rather than by care: a calendar
+    row carrying an actual is refused below, so a print that has already
+    happened can never enter as a "pre-registration".
+    """
+    ahead = business_days_ahead(today, business_days)
+    if last_capture_at is None:
+        return [today] + ahead
+    since = (today - last_capture_at.date()).days
+    return ([today] + ahead) if since >= gap_days else ahead
+
+
 def _fiscal_quarter(row: dict, day: date) -> str:
     """The source's own fiscal label when it has one.
 
@@ -106,15 +129,18 @@ def _fiscal_quarter(row: dict, day: date) -> str:
     return fiscal_quarter_of(day)
 
 
-def upcoming_prints(raw: list[dict], today: date,
-                    business_days: int) -> list[UpcomingPrint]:
+def upcoming_prints(raw: list[dict], today: date, business_days: int,
+                    include_today: bool = False) -> list[UpcomingPrint]:
     """Calendar rows for releases still ahead of us, inside the window.
 
     A row that already carries an actual is excluded: capturing consensus
     after the fact is reconstruction, and pooling the two would make
-    "pre-registered" an unverifiable claim (§6.1 要点2).
+    "pre-registered" an unverifiable claim (§6.1 要点2). That exclusion is
+    also what makes `include_today` safe — see `capture_window`.
     """
     window = set(business_days_ahead(today, business_days))
+    if include_today:
+        window.add(today)
     out: list[UpcomingPrint] = []
     for row in raw:
         symbol = (row.get("symbol") or "").strip().upper()

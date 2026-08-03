@@ -118,6 +118,13 @@ class HawkeyeConfig:
     # companies no print could turn into a position (§6.1(E)). A live
     # two-business-day window holds ~855 names and each costs a Yahoo call.
     prereg_skip_non_targets: bool = True
+    # After this many days without a capture run, the window also covers
+    # TODAY's prints. It normally starts tomorrow, because today's US prints
+    # land in the evening JST and yesterday's run already registered them —
+    # but a gap means nobody did, and the window is built from the local
+    # (JST) date while the calendar's days are US market days, so today's
+    # prints would otherwise fall permanently between the two runs.
+    consensus_capture_include_today_after_days: int = 2
     # How long that verdict stands before the name is looked at again. The
     # asymmetry decides it: a wrong exclusion loses a consensus history that
     # can NEVER be rebuilt, a wrong inclusion costs one API call. Roughly two
