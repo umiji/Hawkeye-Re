@@ -192,6 +192,9 @@ def _assess_leg(leg: str, actual: Optional[float], actual_flags: list[str],
         flags.append("sources_disagree_on_direction")
 
     status = _leg_status(readings, estimates, flags, _blocking(config))
+    if status is LegStatus.MISS and "actual_disputed" in flags:
+        status = _disputed_miss_status(actual_yahoo, actual_finnhub,
+                                       estimates)
     return LegVerdict(leg=leg, status=status, surprise_pct=conservative,
                       yahoo_surprise_pct=yahoo_pct,
                       finnhub_surprise_pct=finnhub_pct, actual=actual,
@@ -202,6 +205,35 @@ def _assess_leg(leg: str, actual: Optional[float], actual_flags: list[str],
 
 _BLOCKING_FLAGS = ("no_actual", "thin_coverage", "estimate_too_small",
                    "single_source_consensus")
+
+
+def _disputed_miss_status(actual_yahoo: Optional[float],
+                          actual_finnhub: Optional[float],
+                          estimates: list[float]) -> LegStatus:
+    """Whether a MISS read off the conservative actual is actually provable.
+
+    A beat and a miss are not symmetric here, and the asymmetry is the whole
+    reason a disputed leg may be scored at all. The leg is judged on the
+    SMALLER actual, so:
+
+    - a beat under it is a beat under the larger one too — established;
+    - a miss under it says nothing about the larger one, which may well be a
+      beat. AAPL's 2.02 and 1.91 differ by a one-off; a company that took a
+      CHARGE instead shows the same gap the other way round.
+
+    So a miss has to hold for the LARGER actual as well. Otherwise the leg
+    goes back to unverified — scoring zero rather than subtracting, because
+    our inability to tell which figure is comparable must never read as the
+    company having done badly (invariant 6).
+    """
+    actuals = [v for v in (actual_yahoo, actual_finnhub) if v is not None]
+    if len(actuals) < 2 or not estimates:
+        return LegStatus.UNVERIFIED
+    readings = [p for p in (_pct(max(actuals), e) for e in estimates)
+                if p is not None]
+    if readings and max(readings) < 0:
+        return LegStatus.MISS
+    return LegStatus.UNVERIFIED
 
 
 def _blocking(config) -> tuple[str, ...]:

@@ -108,16 +108,36 @@ def test_disagreeing_actuals_are_judged_on_the_smaller_of_the_two():
 
 
 def test_a_dispute_that_only_the_larger_reading_survives_is_not_a_beat():
-    """The conservative rule has to bite, not merely be stated: where the
-    smaller actual lands below consensus, the leg is not a beat no matter how
-    good the other vendor's number looks."""
+    """The conservative rule has to bite, not merely be stated: the smaller
+    actual lands below consensus, so no beat is established.
+
+    Nor is a MISS. A beat and a miss are not symmetric under a dispute — the
+    leg is judged on the smaller actual, so a beat under it holds under the
+    larger one too, while a miss under it says nothing about the larger one
+    (a company that took a CHARGE shows AAPL's gap in reverse). Calling it a
+    miss would SUBTRACT points, i.e. our inability to tell which figure is
+    comparable would read as the company having done badly.
+    """
     quality = assess_earnings(
         a_print(eps_yahoo=1.30, eps_finnhub=[0.95]),
         a_consensus(eps_avg=1.00, eps_finnhub=1.00), CONFIG)
 
     assert quality.eps.actual == 0.95
+    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert "actual_disputed" in quality.eps.flags
+    assert quality.score == 0.0
+
+
+def test_a_miss_both_vendors_agree_on_still_subtracts():
+    """The other half of the same rule: when even the LARGER actual missed,
+    the miss is established and costs what a beat of that size would earn."""
+    quality = assess_earnings(
+        a_print(eps_yahoo=0.80, eps_finnhub=[0.60]),
+        a_consensus(eps_avg=1.00, eps_finnhub=1.00), CONFIG)
+
     assert quality.eps.status is LegStatus.MISS
     assert "actual_disputed" in quality.eps.flags
+    assert quality.score < 0.0
 
 
 def test_a_disputed_actual_is_still_worth_reading_the_release_for():
