@@ -82,7 +82,7 @@ from hawkeye.reports.quality_ja import (
     render_release_requests_ja,
     render_stock_history_ja,
 )
-from hawkeye.scout.release import DirectoryReleaseReader
+from hawkeye.scout.release import DirectoryReleaseReader, parse_release_key
 from hawkeye.scout.single import judge_ticker
 from hawkeye.scout.prereg import (
     business_days_ahead,
@@ -345,11 +345,24 @@ def cmd_scout(args: argparse.Namespace) -> int:
         return 1
     provider = CompositeProvider(YahooProvider(), finnhub)
     ledger = _ledger()
+    today = date.today()
     # The window is derived from the previous run, so an irregular manual
     # cadence doesn't leave unscanned days (§5.2(1)). --days forces a fixed
     # lookback instead, for backfills and one-off exploration.
     window = (None if args.days
-              else scan_window(date.today(), ledger.last_scan_at(), config))
+              else scan_window(today, ledger.last_scan_at(), config))
+    # Prints an earlier run asked for a release document about. They are
+    # looked up by name even though the window has moved past them, because
+    # the document arrives between runs and nothing else would ever read it.
+    # The wait ends where the entry gates would refuse the trade anyway.
+    release_max_age = min_calendar_days_for_trading_days(
+        config.max_event_age_days)
+    expired = ledger.expire_release_requests(today, release_max_age)
+    if expired:
+        print(f"発表文の読み取り待ちのうち {expired} 件は、決算からの経過日数が"
+              f"エントリー基準({config.max_event_age_days}営業日)を超えたため"
+              f"打ち切りました", file=sys.stderr)
+    held_open = ledger.open_release_requests(today, release_max_age)
     # Discovery stays with the calendar; the EPS numbers are re-read from
     # Yahoo before ranking (hawkeye/scout/verify.py). If yfinance is missing
     # the source reports itself unavailable and the scan runs on the
@@ -364,6 +377,7 @@ def cmd_scout(args: argparse.Namespace) -> int:
     # after-the-fact estimate as what was knowable in advance (§6.1(D)).
     result = run_scout(finnhub, provider, config, days_back=args.days,
                        window=window, already_seen=ledger.seen_events(),
+                       held_open=held_open, today=today,
                        numbers_source=numbers if numbers.available else None,
                        stock_store=_stock_store(),
                        directory=EdgarDirectory(),
@@ -392,6 +406,19 @@ def cmd_scout(args: argparse.Namespace) -> int:
     ledger.record_screened_candidates(
         scan_id, build_screened_candidates(result, scan_id, sent_to_tribunal_n))
     print(render_scout_ja(result))
+
+    # Open the waits this run asked for, and close the ones whose document
+    # arrived. Asking again for a print already open is deliberately a no-op
+    # in the ledger, so the bound keeps counting from the first ask.
+    ledger.request_release_reads(
+        [parse_release_key(key) for key in result.release_wanted])
+    ledger.resolve_release_reads(
+        [parse_release_key(key) for key in result.release_settled], "read")
+    if result.reopened:
+        names = ", ".join(f"{t} ({d})" for t, d in result.reopened)
+        print(f"\n発表文の到着を待っていた決算を再評価しました: {names}")
+        if result.release_settled:
+            print(f"  うち決着: {', '.join(result.release_settled)}")
 
     if result.release_wanted:
         print(render_release_requests_ja(result.release_wanted,

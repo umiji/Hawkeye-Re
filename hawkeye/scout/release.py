@@ -146,6 +146,20 @@ def release_key(row: EarningsPrint) -> str:
     return f"{row.ticker.upper()}_{row.report_date.isoformat()}"
 
 
+def parse_release_key(key: str) -> tuple[str, date]:
+    """The inverse of `release_key`, for the record that holds a print open.
+
+    The ledger stores the ticker and the report date as columns rather than
+    the joined string, so the age bound is a date comparison rather than
+    string surgery — and so a malformed key fails here, where the caller can
+    see it, instead of silently never matching anything.
+    """
+    ticker, _, day = key.rpartition("_")
+    if not ticker:
+        raise ValueError(f"not a release key: {key!r}")
+    return ticker.upper(), date.fromisoformat(day)
+
+
 class DirectoryReleaseReader:
     """Extractions dropped in a folder, one JSON per print.
 
