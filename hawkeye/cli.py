@@ -39,6 +39,7 @@ from hawkeye.ledger.scoring import (
     thesis_accuracy,
 )
 from hawkeye.ledger.store import Ledger
+from hawkeye.marketdata import offline
 from hawkeye.marketdata.finnhub import CompositeProvider, FinnhubProvider
 from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
@@ -86,8 +87,36 @@ from hawkeye.tribunal.pipeline import (
 from hawkeye.gates.entry_gates import run_entry_gates
 
 
-def _provider() -> CompositeProvider:
-    return CompositeProvider(YahooProvider(), FinnhubProvider())
+def _provider():
+    """Live providers, unless an offline data file is configured.
+
+    Offline mode exists for environments with no provider access at all
+    (egress policy, no API key). It changes where the numbers come from —
+    never what the gates do with them; a field absent from the file stays
+    None and is flagged unverified exactly as a provider gap would be.
+    """
+    path = offline.offline_path()
+    if path is None:
+        return CompositeProvider(YahooProvider(), FinnhubProvider())
+    print(f"WARNING: {offline.ENV_VAR} is set — market data is being read "
+          f"from {path}, NOT from a market-data provider. These numbers are "
+          f"hand-supplied and cannot be independently re-derived.",
+          file=sys.stderr)
+    return offline.load_offline_provider(path)
+
+
+def _notes_with_provenance(notes: str) -> str:
+    """Stamp hand-supplied market data into the record that stores it.
+
+    Without this a ledger row from offline mode is indistinguishable from
+    one built on fetched data, which is the one thing a reader must be
+    able to tell apart.
+    """
+    path = offline.offline_path()
+    if path is None:
+        return notes
+    note = offline.provenance_note(path)
+    return f"{notes}\n\n{note}" if notes else note
 
 
 def _ledger() -> Ledger:
@@ -113,7 +142,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         "revenue_surprise_pct": args.revenue_surprise_pct,
     }
     brief = build_brief(args.ticker.upper(), catalyst, _provider(),
-                        notes=args.notes or "", overrides=overrides,
+                        notes=_notes_with_provenance(args.notes or ""),
+                        overrides=overrides,
                         config=config)
 
     from hawkeye.tribunal.llm import AnthropicLLM
@@ -167,7 +197,8 @@ def cmd_case_open(args: argparse.Namespace) -> int:
         "revenue_surprise_pct": args.revenue_surprise_pct,
     }
     brief = build_brief(args.ticker.upper(), catalyst, _provider(),
-                        notes=args.notes or "", overrides=overrides,
+                        notes=_notes_with_provenance(args.notes or ""),
+                        overrides=overrides,
                         config=config)
     gates = run_entry_gates(brief.snapshot, catalyst, config)
     ledger = _ledger()
