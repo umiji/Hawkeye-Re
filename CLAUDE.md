@@ -134,6 +134,76 @@ in one place. Keep §4/§5 current as capabilities land.
 Record decisions and insights at the end of each working session
 (newest first).
 
+- **2026-08-05** First session-mode run in an environment with **no market
+  data access at all** — the container's egress policy 403s
+  `query1.finance.yahoo.com` and there is no Finnhub key. Candidate was
+  SPCX. Four things worth carrying forward.
+
+  **(1) `SpaceX is private` is out of date, and so was the price story.**
+  SpaceX IPO'd 2026-06-12 on NASDAQ as `SPCX` at $135 (largest IPO on
+  record). Do not answer from memory on listing status. Worse, the *price
+  narrative* assembled from news search was wrong in a way that survived
+  two rounds of my own checking: search summaries said "-8% on 08-04 then
+  -8.2% on 08-05, roughly -16% over two sessions", and I passed that into
+  the case description. The user's actual bars showed 08-04 **+9.4%** (a
+  pre-announcement rally into an after-close print) and 08-05 -13.61%.
+  Only the bar series settled it. Treat news-derived price moves as
+  claims to be checked against bars, never as inputs.
+
+  **(2) The catalyst classification was contradicted by the data, and the
+  Bull is what caught it.** I recommended `earnings_overreaction` and the
+  user accepted it. But 07-31 closed $108.37 and 08-05 closed $108.27 —
+  net repricing of **-0.09%**. The 08-05 -13.61% unwound the +15.7%
+  two-day rally *into* the print; the market's verdict on the earnings
+  themselves was flat. "Overreaction to fade" had no overreaction. The
+  lesson is procedural: classify the catalyst from the bar series, not
+  from the narrative, and re-check the classification after the data
+  arrives rather than only before.
+
+  **(3) Latent defect, NOT fixed — after-close announcements select the
+  wrong event bar.** `event_stats` takes the first bar with
+  `day >= event_date`. For a print released after the close on day D, the
+  reaction session is D+1, but passing `event_date=D` selects D — i.e.
+  the *pre-announcement* session — and reports its move as
+  `gap_on_event_pct`. Since the prompts tell Bull and Adversary to prefer
+  structured fields over prose, that laundered number would have entered
+  as fact (same failure class as the 2026-08-01(b) surprise-rate work).
+  `scout.previous_business_day` only guards the pre-market case ("wait for
+  today's close"), not this one. Worked around here by passing
+  `event_date = 2026-08-05` (the repricing session) by hand. A real fix
+  needs a before/after-market flag on the catalyst; Finnhub's calendar
+  dates AMC prints on the announcement day, so scout is exposed to this
+  today.
+
+  **(4) Offline mode is structurally biased toward PASS — do not let it
+  into the Phase-0 statistics.** New `hawkeye/marketdata/offline.py`
+  (`HAWKEYE_OFFLINE_DATA` → JSON bars/profile) exists because
+  `build_brief` always calls a live provider and `build_snapshot` raises
+  on empty bars; the `--price/--market-cap/...` flags are overrides
+  applied *on top of* provider data, not a replacement. Containments:
+  never the default, warns on stderr, absent fields stay `unverified` so
+  hard gates still fail closed (verified — the run correctly refused to
+  compute a gap while the reaction bar was missing), and the input file's
+  SHA-256 is stamped into the brief's notes. **But** the Adversary's
+  severity-5 kill shot was precisely "every number here is unverified
+  hand-supplied data", and the Judge sustained it as decisive. That attack
+  is available in *every* offline-mode run regardless of the candidate, so
+  offline runs cannot be read as evidence about a candidate's merit and
+  must be excluded from the BUY-vs-PASS cohort comparison that Phase 0's
+  kill criterion depends on. Exclusion is not yet implemented (recorded in
+  MASTER_OVERVIEW §5). Also note the digest supports *checking*, not
+  *recovery*: the input file lives in git-ignored `var/`, so losing the
+  environment leaves a hash with nothing to compare against — same shape
+  as the 2026-08-01 `cases/` loss.
+
+  Verdict: PASS, conviction 0.12, scenario-weighted -5.4%. The Bull filed
+  `edge_type=none_identified` ("I cannot build an honest long case"),
+  which decision rule 4 makes an automatic PASS on its own. Ledger chain
+  verified; `rec_2720aac5561d`. 286 offline tests green (271 + 15 new).
+  **The ledger in a fresh remote container is empty and ephemeral** —
+  `var/` is git-ignored, so past records are absent and new ones die with
+  the container; artifacts were exported to the user instead.
+
 - **2026-08-01(b)** First real session-mode run since the tree split: scout
   opened 3 cases (BJRI/ABR/CRI), all three PASSed. The run itself was fine;
   what it surfaced was not. Two convergent observations from the role
