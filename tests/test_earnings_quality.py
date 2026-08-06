@@ -258,15 +258,21 @@ def test_a_near_zero_consensus_cannot_buy_a_ranking_slot():
     assert quality.score == 0.0
 
 
-def test_only_one_consensus_source_cannot_confirm_a_beat():
-    """Without a pre-registered Yahoo row there is one opinion, and one
-    opinion cannot satisfy "both sources agree" — it is recorded and passed
-    on as unverified rather than treated as a beat."""
+def test_one_consensus_source_is_recorded_as_thin_but_no_longer_vetoes():
+    """Rewritten on 2026-08-05 with the move to one source of numbers.
+
+    It used to assert the opposite, and that was right while two vendors
+    supplied consensus: one opinion could not satisfy "both sources agree".
+    With EarningsWhispers as the only source there is never a second opinion,
+    so the veto stopped selecting anything. What survives is the disclosure —
+    the flag rides on the leg and reaches the tribunal — and the switch to
+    put the veto back (`earnings_single_source_consensus_blocks`).
+    """
     quality = assess_earnings(
         a_print(eps_yahoo=1.20, eps_finnhub=[1.20]),
         a_consensus(eps_avg=None, eps_analysts=None, eps_finnhub=1.00), CONFIG)
 
-    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert quality.eps.status is LegStatus.BEAT
     assert "single_source_consensus" in quality.eps.flags
     assert quality.eps.surprise_pct == 20.0        # still reported
 
@@ -334,6 +340,80 @@ def test_guidance_above_consensus_earns_a_small_bonus():
     assert with_guidance.guidance.status is LegStatus.BEAT
     assert (with_guidance.score - without.score
             == CONFIG.guidance_beat_score)
+
+
+def test_one_consensus_source_still_lets_a_beat_count():
+    """With EarningsWhispers as the one source of numbers (2026-08-05), every
+    consensus is single-source. Keeping the old veto would mark every leg of
+    every name unverified — a rule that can never be satisfied is not a
+    safety rule, it is an off switch.
+    """
+    quality = assess_earnings(
+        a_print(eps_finnhub=[1.20], revenue_finnhub=1.05e9),
+        a_consensus(eps_avg=1.00, eps_finnhub=None,
+                    revenue_avg=1.0e9, revenue_finnhub=None), CONFIG)
+
+    assert quality.eps.status is LegStatus.BEAT
+    # The thinness is still on the record; only its veto is gone.
+    assert "single_source_consensus" in quality.eps.flags
+
+
+def test_the_single_source_veto_can_be_switched_back_on():
+    strict = dataclasses.replace(
+        CONFIG, earnings_single_source_consensus_blocks=True)
+    quality = assess_earnings(
+        a_print(eps_finnhub=[1.20], revenue_finnhub=1.05e9),
+        a_consensus(eps_avg=1.00, eps_finnhub=None,
+                    revenue_avg=1.0e9, revenue_finnhub=None), strict)
+
+    assert quality.eps.status is LegStatus.UNVERIFIED
+
+
+def test_full_year_guidance_is_never_scored_against_a_quarterly_consensus():
+    """ADM guided FY2026 EPS of $5.15-$5.60 while the quarterly consensus sat
+    near $1.20. Comparing the two reads as a +360% guidance beat that the
+    company never gave — the numbers are simply for different periods.
+
+    The yardstick this system captures is next quarter's consensus, so a
+    full-year range has nothing here to be compared against, and saying so is
+    the only honest outcome (invariant 6).
+    """
+    quality = assess_earnings(
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+                revenue_finnhub=1.05e9,
+                guidance=GuidanceReading(period="FY2026", eps_low=5.15,
+                                         eps_high=5.60)),
+        a_consensus(next_quarter_eps_avg=1.20), CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "guidance_period_not_comparable" in quality.guidance.flags
+    assert quality.guidance.surprise_pct is None
+
+
+def test_guidance_for_a_quarter_other_than_the_next_one_is_not_compared():
+    quality = assess_earnings(
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+                revenue_finnhub=1.05e9,
+                guidance=GuidanceReading(period="2027-Q1", eps_low=2.10,
+                                         eps_high=2.30)),
+        a_consensus(next_quarter_eps_avg=2.00), CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "guidance_period_not_comparable" in quality.guidance.flags
+
+
+def test_guidance_with_no_period_label_is_still_compared():
+    """Readings recorded before the period was carried (and the agent-supplied
+    ones in var/releases/) have no label. Refusing those would drop guidance
+    this system already holds, so an unlabelled range keeps its old meaning:
+    it is taken as next quarter's."""
+    quality = assess_earnings(
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+                revenue_finnhub=1.05e9,
+                guidance=GuidanceReading(eps_low=2.10, eps_high=2.30)),
+        a_consensus(next_quarter_eps_avg=2.00), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
 
 
 def test_revenue_guidance_counts_when_the_company_gives_no_eps_range():

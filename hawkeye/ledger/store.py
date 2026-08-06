@@ -19,6 +19,7 @@ import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
+from hawkeye.contracts.stocks import ActualWait, within_wait_window
 from hawkeye.contracts.models import (
     DropReview,
     Outcome,
@@ -101,6 +102,30 @@ CREATE TABLE IF NOT EXISTS release_requests (
     resolved_at  TEXT NOT NULL DEFAULT '',
     resolution   TEXT NOT NULL DEFAULT ''
 );
+-- Prints whose numbers have not arrived yet (hawkeye/scout/waiting.py). Its
+-- own table for the same reason release_requests has one: "we are waiting on
+-- this, and here is every time we looked and what we got" is a state, and the
+-- two tables it could otherwise hide in are append-only by design.
+--
+-- `announced_at` is written once and never moved: it is the origin of the
+-- 48-hour clock, and a later sighting overwriting it would extend the wait
+-- indefinitely, one scan at a time. `checks` accumulates one entry per read
+-- so that "the feed never had it" and "the feed kept answering with the
+-- previous quarter" stay distinguishable after the fact.
+CREATE TABLE IF NOT EXISTS earnings_actual_waits (
+    id              TEXT PRIMARY KEY,   -- TICKER_YYYY-MM-DD, one per print
+    ticker          TEXT NOT NULL,
+    report_date     TEXT NOT NULL,
+    announced_at    TEXT NOT NULL,
+    first_seen_at   TEXT NOT NULL,
+    last_checked_at TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    checks          TEXT NOT NULL DEFAULT '[]',
+    resolved_at     TEXT NOT NULL DEFAULT '',
+    resolution      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_actual_waits_open
+    ON earnings_actual_waits (resolved_at);
 """
 
 _GENESIS = "0" * 64
@@ -464,6 +489,99 @@ class Ledger:
             (now().isoformat(), cutoff))
         self._conn.commit()
         return cur.rowcount
+
+    # -- prints held open pending their own numbers ---------------------------
+
+    @staticmethod
+    def _wait_from_row(row) -> ActualWait:
+        return ActualWait(
+            ticker=row[0], report_date=date.fromisoformat(row[1]),
+            announced_at=_instant(row[2]), first_seen_at=_instant(row[3]),
+            last_checked_at=_instant(row[4]), attempts=row[5],
+            checks=json.loads(row[6]),
+            resolved_at=_instant(row[7]) if row[7] else None,
+            resolution=row[8])
+
+    def note_missing_actual(self, ticker: str, report_date: date,
+                            announced_at: datetime, reason: str,
+                            at: Optional[datetime] = None) -> ActualWait:
+        """Record that this print's numbers were looked for and not found.
+
+        Opens the wait the first time and appends a check every time. The
+        announcement time and the first sighting are written once: they are
+        what bounds the wait, and letting either move would turn a bounded
+        wait into a permanent one (the same trap release_requests documents).
+        """
+        moment = at or now()
+        key = f"{ticker.upper()}_{report_date.isoformat()}"
+        existing = self.actual_wait(ticker, report_date)
+        if existing is not None and existing.resolved_at:
+            return existing            # closed waits stay closed
+        checks = (existing.checks if existing else []) + [
+            {"at": moment.isoformat(), "reason": reason}]
+        if existing is None:
+            self._conn.execute(
+                "INSERT INTO earnings_actual_waits (id, ticker, report_date,"
+                " announced_at, first_seen_at, last_checked_at, attempts,"
+                " checks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (key, ticker.upper(), report_date.isoformat(),
+                 announced_at.isoformat(), moment.isoformat(),
+                 moment.isoformat(), 1, json.dumps(checks)))
+        else:
+            self._conn.execute(
+                "UPDATE earnings_actual_waits SET last_checked_at = ?,"
+                " attempts = attempts + 1, checks = ? WHERE id = ?",
+                (moment.isoformat(), json.dumps(checks), key))
+        self._conn.commit()
+        return self.actual_wait(ticker, report_date)
+
+    def actual_wait(self, ticker: str,
+                    report_date: date) -> Optional[ActualWait]:
+        row = self._conn.execute(
+            "SELECT ticker, report_date, announced_at, first_seen_at,"
+            " last_checked_at, attempts, checks, resolved_at, resolution"
+            " FROM earnings_actual_waits WHERE id = ?",
+            (f"{ticker.upper()}_{report_date.isoformat()}",)).fetchone()
+        return self._wait_from_row(row) if row else None
+
+    def _open_waits(self) -> list[ActualWait]:
+        return [self._wait_from_row(r) for r in self._conn.execute(
+            "SELECT ticker, report_date, announced_at, first_seen_at,"
+            " last_checked_at, attempts, checks, resolved_at, resolution"
+            " FROM earnings_actual_waits WHERE resolved_at = ''"
+            " ORDER BY report_date, ticker").fetchall()]
+
+    def open_actual_waits(self, now_at: datetime,
+                          hours: int) -> list[ActualWait]:
+        """Prints still inside the window, for the next scan to re-read."""
+        return [w for w in self._open_waits()
+                if within_wait_window(w.announced_at, now_at, hours)]
+
+    def expire_actual_waits(self, now_at: datetime,
+                            hours: int) -> list[ActualWait]:
+        """Close the waits whose 48 hours ran out; returns exactly the ones
+        closed by THIS call, so a caller can report them without counting a
+        print twice across runs."""
+        expired = [w for w in self._open_waits()
+                   if not within_wait_window(w.announced_at, now_at, hours)]
+        for wait in expired:
+            self._close(wait.ticker, wait.report_date, "expired_48h", now_at)
+        return [self.actual_wait(w.ticker, w.report_date) for w in expired]
+
+    def resolve_actual_wait(self, ticker: str, report_date: date,
+                            resolution: str,
+                            at: Optional[datetime] = None) -> None:
+        """End the wait because the numbers turned up."""
+        self._close(ticker, report_date, resolution, at or now())
+
+    def _close(self, ticker: str, report_date: date, resolution: str,
+               at: datetime) -> None:
+        self._conn.execute(
+            "UPDATE earnings_actual_waits SET resolved_at = ?, resolution = ?"
+            " WHERE id = ? AND resolved_at = ''",
+            (at.isoformat(), resolution,
+             f"{ticker.upper()}_{report_date.isoformat()}"))
+        self._conn.commit()
 
     def list_scans(self) -> list[dict]:
         return [

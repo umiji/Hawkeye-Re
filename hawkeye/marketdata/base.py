@@ -14,6 +14,18 @@ from typing import Optional, Protocol, runtime_checkable
 from hawkeye.contracts.models import AnalystTrend, InsiderActivity, NewsItem
 
 
+class CalendarUnavailable(RuntimeError):
+    """The earnings calendar could not be read at all.
+
+    Distinct from an empty result on purpose. Everything downstream — the
+    surprise screen, the funnel counts, the scan watermark that decides the
+    next window — treats "no rows" as "no company reported", so a feed that
+    times out must not be able to enter that path (found live 2026-08-03:
+    every calendar request hung while the same key answered quotes, and the
+    run printed "決算イベント 0件" and recorded the scan).
+    """
+
+
 @dataclass(frozen=True)
 class Bar:
     day: date

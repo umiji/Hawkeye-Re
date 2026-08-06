@@ -203,8 +203,7 @@ def _assess_leg(leg: str, actual: Optional[float], actual_flags: list[str],
                       flags=tuple(flags))
 
 
-_BLOCKING_FLAGS = ("no_actual", "thin_coverage", "estimate_too_small",
-                   "single_source_consensus")
+_BLOCKING_FLAGS = ("no_actual", "thin_coverage", "estimate_too_small")
 
 
 def _disputed_miss_status(actual_yahoo: Optional[float],
@@ -239,17 +238,28 @@ def _disputed_miss_status(actual_yahoo: Optional[float],
 def _blocking(config) -> tuple[str, ...]:
     """Which flags make a leg unverified, under the doctrine in force.
 
-    Only one of them is a switch. A disputed ACTUAL stopped blocking on
-    2026-08-03(b) — the reading is already the smaller actual against the
-    larger consensus, so a beat under dispute holds under either vendor's
-    numbers, and refusing it while accepting a SINGLE-source actual made more
-    information count for less. See `config.earnings_actual_dispute_blocks`
-    for the full rationale; this function exists so the rule is one config
-    diff and not an edit scattered through the judgment.
+    Two of them are switches, and both were turned off by measurement rather
+    than by preference:
+
+    - a disputed ACTUAL stopped blocking on 2026-08-03(b) — the reading is
+      already the smaller actual against the larger consensus, so a beat under
+      dispute holds under either vendor's numbers;
+    - a SINGLE-SOURCE consensus stopped blocking on 2026-08-05, when
+      EarningsWhispers became the one source of earnings numbers. Every
+      consensus is single-source now, so the rule had stopped selecting
+      anything and had become an unconditional veto.
+
+    See `config.earnings_actual_dispute_blocks` and
+    `config.earnings_single_source_consensus_blocks` for the full rationale;
+    this function exists so each doctrine change is one config diff and not an
+    edit scattered through the judgment.
     """
+    blocking = _BLOCKING_FLAGS
     if getattr(config, "earnings_actual_dispute_blocks", False):
-        return _BLOCKING_FLAGS + ("actual_disputed",)
-    return _BLOCKING_FLAGS
+        blocking += ("actual_disputed",)
+    if getattr(config, "earnings_single_source_consensus_blocks", True):
+        blocking += ("single_source_consensus",)
+    return blocking
 
 
 def _leg_status(readings: list[float], estimates: list[float],
@@ -271,6 +281,19 @@ def _leg_status(readings: list[float], estimates: list[float],
     return LegStatus.INLINE
 
 
+def _next_quarter(fiscal_quarter: str) -> str:
+    """`2026-Q2` -> `2026-Q3`; the quarter guidance is supposed to be about.
+
+    Empty when the label is not one this system produced, which makes the
+    comparison below refuse rather than guess.
+    """
+    year, _, quarter = (fiscal_quarter or "").partition("-Q")
+    if not quarter.isdigit() or not year.isdigit():
+        return ""
+    number = int(quarter)
+    return f"{int(year) + 1}-Q1" if number == 4 else f"{year}-Q{number + 1}"
+
+
 def _guidance_leg(print_row: EarningsPrint,
                   consensus: Optional[ConsensusSnapshot]) -> LegVerdict:
     """Guidance against next quarter's consensus, captured at the same moment.
@@ -280,6 +303,18 @@ def _guidance_leg(print_row: EarningsPrint,
     absence would quietly penalise the data gap rather than the company.
     """
     guidance = print_row.guidance
+    # The only yardstick captured anywhere in this system is NEXT QUARTER's
+    # consensus, so guidance for any other period has nothing here to be
+    # measured against. Left unchecked this is not a small error: ADM guided
+    # FY2026 EPS of $5.15-$5.60 against a quarterly consensus near $1.20, and
+    # the comparison came out as a +348% guidance beat the company never gave.
+    # An unlabelled reading keeps its old meaning (next quarter) so that the
+    # readings recorded before the label existed still count.
+    if guidance is not None and guidance.period and (
+            guidance.period != _next_quarter(print_row.fiscal_quarter)):
+        return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
+                          flags=("guidance_period_not_comparable",
+                                 f"guided_{guidance.period}"))
     # EPS first, revenue second. Plenty of companies guide only on sales —
     # Amazon gives net sales and operating income and never an EPS range —
     # and scoring those as "no guidance" would describe our reading rather

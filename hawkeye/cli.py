@@ -39,6 +39,7 @@ from hawkeye.ledger.scoring import (
     thesis_accuracy,
 )
 from hawkeye.ledger.store import Ledger
+from hawkeye.marketdata.base import CalendarUnavailable
 from hawkeye.marketdata.finnhub import CompositeProvider, FinnhubProvider
 from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
@@ -376,16 +377,28 @@ def cmd_scout(args: argparse.Namespace) -> int:
     # the consensus that was in force before it. Without a pre-registered row
     # the funnel reconstructs one and says so — it never silently treats an
     # after-the-fact estimate as what was knowable in advance (§6.1(D)).
-    result = run_scout(finnhub, provider, config, days_back=args.days,
-                       window=window, already_seen=ledger.seen_events(),
-                       held_open=held_open, today=today,
-                       numbers_source=numbers if numbers.available else None,
-                       stock_store=_stock_store(),
-                       directory=EdgarDirectory(),
-                       consensus_source=(YahooConsensusSource()
-                                         if numbers.available else None),
-                       facts=EdgarFacts(),
-                       release_reader=DirectoryReleaseReader(releases_dir()))
+    # A calendar that cannot answer ends the run here, before record_scan()
+    # below. The next window starts from the last recorded scan, so writing
+    # one for a window nobody managed to read would put those days out of
+    # reach permanently — and the funnel would have printed them as a quiet
+    # market (found live 2026-08-03).
+    try:
+        result = run_scout(finnhub, provider, config, days_back=args.days,
+                           window=window, already_seen=ledger.seen_events(),
+                           held_open=held_open, today=today,
+                           numbers_source=numbers if numbers.available else None,
+                           stock_store=_stock_store(),
+                           directory=EdgarDirectory(),
+                           consensus_source=(YahooConsensusSource()
+                                             if numbers.available else None),
+                           facts=EdgarFacts(),
+                           release_reader=DirectoryReleaseReader(releases_dir()))
+    except CalendarUnavailable as exc:
+        print(f"決算カレンダーを読めなかったため、走査を中止しました: {exc}",
+              file=sys.stderr)
+        print("走査は記録していないため、復旧後に再実行すれば同じ期間を"
+              "読み直します。", file=sys.stderr)
+        return 1
 
     # Whatever isn't sent to the tribunal THIS run — from result.passed's
     # tail onward — is the ranking-cutoff tier (docs/design/MASTER_OVERVIEW.ja.md
@@ -1490,7 +1503,17 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    # Every command that reads the earnings calendar fails the same way when
+    # the feed is down, and none of them can do anything useful without it.
+    # Reported as a plain message rather than a traceback, and never as a
+    # result: a command that could not look has not found nothing.
+    try:
+        return args.func(args)
+    except CalendarUnavailable as exc:
+        print(f"決算カレンダーを読めませんでした: {exc}", file=sys.stderr)
+        print("Finnhub の障害か、キーの権限切れの可能性があります。"
+              "時間をおいて再実行してください。", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

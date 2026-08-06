@@ -100,11 +100,15 @@ def test_a_verified_event_yields_a_two_source_eps_leg():
     assert quality.eps.finnhub_surprise_pct is not None
 
 
-def test_an_unverified_event_has_only_the_calendars_opinion():
+def test_a_single_source_event_says_so_on_the_leg():
+    """One source is now the normal case (2026-08-05: EarningsWhispers is the
+    only source of earnings numbers), so this no longer reads as unverified —
+    but the leg still carries how thin its consensus was, which is what the
+    tribunal and the Japanese report show."""
     quality = assess_event(an_event(), None, _config())
 
     assert quality.eps.sources == 1
-    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert quality.eps.status is LegStatus.BEAT
     assert "single_source_consensus" in quality.eps.flags
 
 

@@ -103,6 +103,34 @@ class HawkeyeConfig:
     # "consensus" — INVH's was built from exactly one, and only the
     # pre-registered Yahoo row reveals it.
     earnings_min_analysts: int = 3
+    # Whether a consensus from a single source stops a leg from counting.
+    #
+    # Turned OFF on 2026-08-05, with the move to EarningsWhispers as the one
+    # source of earnings numbers (user decision, `docs/design/
+    # MASTER_OVERVIEW.ja.md` §4). The old rule was written when two vendors
+    # supplied consensus and their agreement was free; with one vendor it is
+    # not a safety rule any more, it is an unconditional veto — every leg of
+    # every name would read "unverified" and no candidate could ever reach the
+    # tribunal. The protection it gave up is real and is recorded rather than
+    # pretended away: a vendor contradicting ITSELF (BJRI 2026-07-30, two
+    # consensus figures for one print) can no longer be caught by comparing
+    # vendors. What replaces it is narrower — the pre-registered snapshot taken
+    # BEFORE the print stays the yardstick, so a consensus revised afterwards
+    # cannot quietly lower the bar.
+    earnings_single_source_consensus_blocks: bool = False
+    # How many names one scan asks the earnings feed about. One request per
+    # print, and a scan window holds ~350 a day, so this is a run-duration and
+    # rate-limit ceiling rather than a doctrine number. Names past it are
+    # reported, never dropped silently.
+    scout_max_whispers: int = 200
+    # How long a print whose numbers have not arrived is held open before it
+    # is given up on, measured from the ANNOUNCEMENT (hawkeye/scout/
+    # waiting.py). The feed publishes a company's new quarter roughly a day
+    # late — 16 of 16 names that reported on the morning of 2026-08-05 still
+    # answered with their May quarter — so a print read once and dropped would
+    # discard exactly what the funnel is looking for. Two days covers that lag
+    # twice over while still ending the wait for data that is never coming.
+    earnings_actual_wait_hours: int = 48
     # Guidance is a small bonus and never a penalty: absence is the normal
     # case, has no structured source, and must not become a hidden gate
     # (§5.3 決定3). Deliberately far below the EPS/revenue contributions.

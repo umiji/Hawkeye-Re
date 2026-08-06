@@ -12,7 +12,7 @@ from typing import Optional
 import httpx
 
 from hawkeye.contracts.models import AnalystTrend, InsiderActivity, NewsItem
-from hawkeye.marketdata.base import Bar
+from hawkeye.marketdata.base import Bar, CalendarUnavailable
 
 _INSIDER_BUY_SELL_CODES = {"P", "S"}  # open-market purchase / sale only
 
@@ -103,15 +103,26 @@ class FinnhubProvider:
         return out
 
     def earnings_calendar(self, start: date, end: date) -> list[dict]:
-        """Raw earnings-calendar entries (all symbols) for a date range."""
+        """Raw earnings-calendar entries (all symbols) for a date range.
+
+        Raises CalendarUnavailable rather than returning [] when the feed
+        cannot be read. An empty list is a factual claim — "no company
+        reported in this window" — and the whole funnel acts on it; a
+        request that never answered has made no claim at all.
+        """
         if not self.available:
-            return []
+            raise CalendarUnavailable("FINNHUB_API_KEY が未設定です")
         try:
             cal = self._get("calendar/earnings",
                             **{"from": start.isoformat(), "to": end.isoformat()})
-        except httpx.HTTPError:
-            return []
-        return cal.get("earningsCalendar", []) if isinstance(cal, dict) else []
+        except httpx.HTTPError as exc:
+            raise CalendarUnavailable(
+                f"決算カレンダーを取得できません ({start} 〜 {end}): "
+                f"{type(exc).__name__}") from exc
+        if not isinstance(cal, dict) or "earningsCalendar" not in cal:
+            raise CalendarUnavailable(
+                f"決算カレンダーの応答が想定の形式ではありません ({start} 〜 {end})")
+        return cal.get("earningsCalendar") or []
 
     def insider_activity(self, ticker: str,
                          window_days: int = 90) -> Optional[InsiderActivity]:

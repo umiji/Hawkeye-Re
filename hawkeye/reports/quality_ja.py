@@ -47,12 +47,20 @@ _FLAG = {
     "unadjusted": "一時要因の金額が開示されておらず、GAAPのまま(未調整)",
     "guidance_not_published": "会社がガイダンスを開示していない",
     "no_forward_consensus_to_compare": "比較対象の翌四半期コンセンサスが無い",
+    "guidance_period_not_comparable": "会社が示した見通しの期間が翌四半期では"
+                                      "ないため比較していない(通期見通しを"
+                                      "翌四半期コンセンサスと比べると、期間の"
+                                      "長さの差がそのまま偽の上振れになる)",
     "on_eps": "EPSレンジの中央値で比較",
     "on_revenue": "売上レンジの中央値で比較(EPSレンジの開示が無いため)",
 }
 
 
 def _flag_ja(flag: str) -> str:
+    # `guided_FY2026` carries the period itself, so it cannot sit in the table
+    # above; without this branch the reader would see the raw flag name.
+    if flag.startswith("guided_"):
+        return f"会社が示した見通しの期間: {flag[len('guided_'):]}"
     body = flag[len("revenue_"):] if flag.startswith("revenue_") else flag
     text = _FLAG.get(body, body)
     return f"売上: {text}" if flag.startswith("revenue_") else text
