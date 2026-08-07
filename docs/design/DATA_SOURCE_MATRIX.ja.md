@@ -15,7 +15,7 @@ EW移行の判断材料として作成。**現状（As-Is）と、EW移行後の
 | # | 関門 | 何をするか | どこ |
 | --- | --- | --- | --- |
 | 1 | **銘柄トリアージ** | 会社そのものが投資対象たりうるか。ダメな会社はコンセンサスの事前登録すらしない | `hawkeye/scout/triage.py` |
-| 2 | **サプライズ・スクリーン** | サプライズ率で候補を15枠に絞る | `hawkeye/scout/earnings.py` |
+| 2 | **サプライズ・スクリーン** | サプライズ率で足切りし、スコア順に並べる（15枠に絞るのはここではなく関門4のループ） | `hawkeye/scout/earnings.py` |
 | 3 | **決算の質の判定** | EPS・売上・ガイダンスの3本柱で「良い決算だったか」を判定 | `hawkeye/scout/quality.py` |
 | 4 | **エントリーゲート** | 硬い関門4つ（1つでも落ちたら即死）＋軟らかい関門3つ（審理が重みを判断） | `hawkeye/gates/entry_gates.py` |
 | 5 | **審理（トリビューナル）** | Bull（強気の主張だけを作る役）／Adversary（書かれた論旨だけに反論する役）／Judge（記録だけで裁定する役） | `hawkeye/tribunal/` |
@@ -38,17 +38,21 @@ flowchart TD
 
     subgraph G2_BOX ["2. サプライズ・スクリーン (earnings.py)"]
         G2["・EPSサプライズ >= +5.0%<br/>・売上サプライズ >= 0.0%<br/>・スコアリング (上限50点/20点)<br/>※|EPS予想| < $0.10 や 売上サプライズ > 50% は untrusted (加点0点)"]
-        G2 --> G2_RANK{"スコア上位15枠<br/>(scout_target_gate_passed)"}
-        G2_RANK -- 16位以下 --> DROP2["スクリーニング落選"]
-        G2_RANK -- 上位15枠 --> S2["リッチ化対象候補"]
+        G2 --> G2_DEDUP{"過去の走査で記録済みか<br/>(ticker, 決算日)"}
+        G2_DEDUP -- 記録済み --> DROP2A["重複として除外<br/>(落選記録は作らない)"]
+        G2_DEDUP -- 初見 --> S2["スコア順に並べた候補列"]
     end
 
     S2 --> G3
 
-    subgraph G3_BOX ["3. 決算の質の判定 (quality.py)"]
-        G3{"3本柱評価<br/>・EPSの柱 (実績 vs 予想)<br/>・売上の柱 (実績 vs 予想)<br/>・ガイダンスの柱 (新ガイダンス vs +1q)"}
-        G3 -- 総合 FAIL / 必須数値欠損 --> DROP3["質判定落ち (FAIL)"]
-        G3 -- PASS / WARN --> S3["質評価クリア候補"]
+    subgraph G3_BOX ["3-4. スコア順に1件ずつ 肉付け→質判定→ゲート (scout.py のループ)"]
+        G3["上位から順に処理する。**上位15件の固定スライスではない**"]
+        G3 --> G3Q["決算の質の判定 (quality.py)<br/>3本柱でスコアを確定させる<br/>※ここで落選する経路は無い"]
+        G3Q --> G3_STOP{"打ち切り条件"}
+        G3_STOP -- "ゲート通過が15件<br/>(scout_target_gate_passed)" --> S3["審理対象の候補プール"]
+        G3_STOP -- "試行が45件<br/>(scout_max_enrich)" --> S3
+        G3_STOP -- "まだ余地あり" --> G4
+        G3_STOP -- "打ち切り後の残り" --> DROP3["肉付け上限落ち<br/>(一度も評価していない)"]
     end
 
     S3 --> G4
@@ -77,14 +81,23 @@ flowchart TD
         G6 -- クリア --> BUY_ORDER["最終注文指示書 (BUY)"]
     end
 
-    DROP1 --> REC1["[SQLiteテーブル] stocks<br/>(payload JSON 内の investigation_target / triage_reason)"]
-    DROP2 --> REC2["[SQLiteテーブル] scans & screened_candidates<br/>(stage = 'screened')"]
-    DROP3 --> REC3["[SQLiteテーブル] screened_candidates & earnings_prints<br/>(payload JSON 内の quality_report)"]
-    DROP4 --> REC4["[SQLiteテーブル] screened_candidates<br/>(payload JSON 内の gate_report)"]
-    DROP5 --> REC5["[SQLiteテーブル] screened_candidates<br/>(payload JSON 内の tribunal/brief/verdict)"]
-    DROP6 --> REC6["[SQLiteテーブル] recommendations<br/>(status = 'vetoed' / risk_verdict)"]
-    BUY_ORDER --> REC7["[SQLiteテーブル] recommendations<br/>(status = 'buy' / 注文指示書)"]
+    DROP1 --> REC1["[SQLite] stocks<br/>(payload の investigation_target / investigation_reason)"]
+    DROP2A --> REC2["記録しない<br/>(前回の走査で既に落選記録がある。二重計上を避ける)"]
+    DROP3 --> REC3["[SQLite] screened_candidates<br/>(stage = 'enrichment_cap')"]
+    DROP4 --> REC4["[SQLite] screened_candidates<br/>(stage = 'gate_reject' / payload の gate_report)"]
+    DROP5 --> REC5["[SQLite] recommendations & journal<br/>(status = 'system_pass')"]
+    DROP_RANK["審理枠から漏れた<br/>(ゲートは通ったが今回の3枠外)"] --> REC_RANK["[SQLite] screened_candidates<br/>(stage = 'ranking_cutoff' / rank)"]
+    DROP6 --> REC6["[SQLite] recommendations<br/>(status = 'vetoed')"]
+    BUY_ORDER --> REC7["[SQLite] recommendations<br/>(status = 'proposed' / 注文指示書)"]
+    S3 --> DROP_RANK
 ```
+
+⚠️ **落選記録（`screened_candidates`）の段階は3つしかありません**
+（`hawkeye/contracts/models.py::ScreenedCandidateStage`）。
+`enrichment_cap`（一度も評価していない）／`gate_reject`（評価してゲートで落ちた）／
+`ranking_cutoff`（ゲートは通ったが枠外）。この3つの区別が
+**「見ていない」と「見て落とした」を分ける**ので、ドロップ候補レビューの入力として
+決定的です。`screened` や `quality_assessed` や `gated` という段階は**存在しません**。
 
 ---
 
@@ -93,11 +106,11 @@ flowchart TD
 | # | 関門 | 主な評価内容と具体的しきい値 | 離脱（Drop / Exclude）条件 | DB操作型 | 記録先（SQLiteテーブル と 変更/追加される内容） |
 | --- | --- | --- | --- | --- | --- |
 | 1 | **銘柄トリアージ**<br/>`triage.py` | 会社自体の構造ゲート3項目:<br/>・`min_price`: **$5.0 USD**<br/>・`min_market_cap`: **$3億 USD** ($300M)<br/>・`min_avg_dollar_volume`: **$1,000万 USD** ($10M, 20日平均) | 構造ゲート3項目のうち**1つでも不合格**（※データ取れず未検証の場合は保留で通過） | **UPSERT / UPDATE** | **`stocks` テーブル**<br/>・操作: 新規銘柄は `INSERT`、既存銘柄は `UPDATE`（ON CONFLICT）<br/>・変更点: `payload` (JSON) 内の以下のプロパティを更新<br/>  - `investigation_target`: `True` / `False`<br/>  - `investigation_checked_at`: 審査日時<br/>  - `triage_reason`: 不合格理由 (例: `'gate: min_price'`) |
-| 2 | **サプライズ・スクリーン**<br/>`earnings.py` | サプライズ基準値:<br/>・`scout_min_eps_surprise_pct`: **+5.0%**<br/>・`scout_min_revenue_surprise_pct`: **+0.0%**<br/>・`scout_min_abs_eps_estimate`: **$0.10 USD** (未満はuntrusted)<br/>・`scout_max_trusted_revenue_surprise_pct`: **50.0%** (超えはuntrusted)<br/>・スコアリング: EPS(最大50点) + 売上(最大20点) + ギャップ反応点 | ・EPSサプライズ < +5.0%<br/>・売上サプライズ < 0.0%<br/>・スコア上位**15枠** (`scout_target_gate_passed`) から漏れた銘柄 | **新規 INSERT** (Append-Only) | **`scans` & `screened_candidates` テーブル**<br/>・操作: スキャンごとに新規レコードを `INSERT`<br/>・追加内容:<br/>  - `scans`: スキャン実行サマリを新規1行追加<br/>  - `screened_candidates`: 通過候補を `stage = 'screened'` で新規追加（`payload` に `ScreenedEvent`, `scored_eps_pct` 等を記録） |
-| 3 | **決算の質の判定**<br/>`quality.py` | 3本柱の質判定:<br/>・EPSの柱: サプライズ > 0%、データ源間の乖離判定<br/>・売上の柱: サプライズ > 0%<br/>・ガイダンスの柱: 会社発表新ガイダンス vs 発表前次期コンセンサス (`+1q`) | 総合評価が **`FAIL`** と判定された銘柄、または必須決算数値が欠損している銘柄 | **新規 INSERT** (Append-Only) | **`earnings_prints` & `screened_candidates` テーブル**<br/>・操作: 評価結果を新規 `INSERT`（※トリガーによりUPDATE禁止）<br/>・追加内容:<br/>  - `earnings_prints`: 判定深さ (`depth`) ごとに新規行追加<br/>  - `screened_candidates`: `stage = 'quality_assessed'` で新規追加（`payload` に `quality_verdict`: PASS/WARN/FAIL, `quality_report` を記録） |
-| 4 | **エントリーゲート**<br/>`entry_gates.py` | **硬い関門 (4つ)**:<br/>・`min_price` >= $5.0<br/>・`min_market_cap` >= $300M<br/>・`min_avg_dollar_volume` >= $10M<br/>・`max_event_age_days`: **10日以内** (決算発表後経過日数)<br/>**軟らかい関門 (3つ・警告のみ)**:<br/>・`max_gap_pct`: **25.0%以内** (当日の窓開け率)<br/>・`max_atr_pct`: **8.0%以内** (14日ATR割合)<br/>・`earnings_warning_days`: **次回決算まで7日以上** | 硬い関門4項目のうち**1つでも不合格**になった銘柄（未検証データ含む） | **新規 INSERT** | **`screened_candidates` & `drop_reviews` テーブル**<br/>・操作: 新規レコードを `INSERT`<br/>・追加内容:<br/>  - `screened_candidates`: `stage = 'gated'` で新規追加（`payload` に `gate_report` の全通過/警告/失敗状況を記録）<br/>  - `drop_reviews`: 硬い関門等で落ちた銘柄をレビュー・学習用として新規記録 |
-| 5 | **審理 (トリビューナル)**<br/>`tribunal/` | LLMによる3者審理:<br/>・Bull: 強気説・アップサイド分析<br/>・Adversary: 反論・軟らかい関門の警告事項・untrustedフラグの検証<br/>・Judge: 客観的判決 (スコアリング) | 審理結果が **`PASS`** (見送り) または **`NO_TRADE`** と判断された場合 | **新規 INSERT** | **`recommendations` & `journal` テーブル**<br/>・操作: 新規レコードを `INSERT`<br/>・追加内容:<br/>  - `recommendations`: `status = 'proposed'` （または `'pass'`）で新規追加（`payload` に LLMの `brief`, `verdict`, `reasons` を記録）<br/>  - `journal`: 改ざん防止ハッシュ付きでログを新規1行追加 |
-| 6 | **リスク拒否権**<br/>`sizing.py` | 資金管理・リスクルール判定:<br/>・`min_reward_risk`: **2.0 以上** (リスクリワード比)<br/>・`min_expected_value_pct`: **5.0% 以上** (加重平均期待値)<br/>・`max_positions`: **最大8銘柄** (同時保有上限)<br/>・`max_position_pct`: **NAVの10.0%** (1銘柄上限)<br/>・`default_risk_pct`: **NAVの0.75%** (1取引の許容リスク) | リスクルールに**1項目でも違反**した場合（BUY判決を機械的に拒否） | **UPDATE** (ステータス変更) | **`recommendations` テーブル**<br/>・操作: 関門5で作られたレコードのステータスと `payload` を `UPDATE`<br/>・変更内容:<br/>  - 違反時: `status` を `'proposed'` → **`'vetoed'`** に更新し、`payload` に拒否理由 `risk_verdict` を反映<br/>  - 合格時: `status` を `'proposed'` → **`'buy'`** に更新し、`payload` に最終注文指示書 `OrderInstruction` (買い指値・ストップ・サイズ) を追加 |
+| 2 | **サプライズ・スクリーン**<br/>`earnings.py` | サプライズ基準値:<br/>・`scout_min_eps_surprise_pct`: **+5.0%**<br/>・`scout_min_revenue_surprise_pct`: **+0.0%**<br/>・`scout_min_abs_eps_estimate`: **$0.10 USD** (未満はuntrusted)<br/>・`scout_max_trusted_revenue_surprise_pct`: **50.0%** (超えはuntrusted)<br/>・スコアリング: EPS(最大50点) + 売上(最大20点) + ギャップ反応点 | ・EPSサプライズ < +5.0%<br/>・売上サプライズ < 0.0%<br/>→ **この2つで落ちた銘柄は記録に残りません**（落選記録の対象はスクリーンを通った候補だけ）<br/>・過去の走査で記録済みの (銘柄, 決算日) は**重複として除外**。落選記録も作りません（同じ決算を二度数えると、選別基準を見直す根拠の件数が水増しされるため） | **新規 INSERT** (Append-Only) | **`scans` テーブル**<br/>・操作: 走査1回につき新規1行を `INSERT`<br/>・追加内容: 窓の範囲・走査件数・スクリーン通過件数・重複件数・ゲート通過件数<br/>※ここでは `screened_candidates` に書きません。落選記録が生まれるのは関門3以降です |
+| 3 | **決算の質の判定**<br/>`quality.py` | 3本柱の質判定:<br/>・EPSの柱: サプライズ > 0%、データ源間の乖離判定<br/>・売上の柱: サプライズ > 0%<br/>・ガイダンスの柱: 会社発表新ガイダンス vs 発表前次期コンセンサス (`+1q`) | **離脱経路はありません。** 質の判定は落選させるのではなく**スコアを確定させる**処理です（未検証の柱は0点、下振れは減点）。この関門で候補が消えることはなく、順位が変わるだけです | **新規 INSERT** (Append-Only) | **`earnings_prints` & `consensus_snapshots` テーブル**<br/>・操作: 評価結果を新規 `INSERT`（※トリガーによりUPDATE禁止）<br/>・追加内容:<br/>  - `earnings_prints`: **1四半期につき有効な行は1つ**（`status = 'active'`）。既に有効な行がある四半期は書かない。実績が改訂されたときだけ、新しい行を `active` で追加し、古い行を `superseded` に落とす（`revise_print`）。行には出所 `source`（`finnhub` / `yahoo`）が入る<br/>  - `consensus_snapshots`: 決算前の事前登録が無ければ、事後再構成の行（`kind = 'reconstructed'`）を追加。事前登録と事後復元は決して混ぜません |
+| 4 | **エントリーゲート**<br/>`entry_gates.py` | **硬い関門 (4つ)**:<br/>・`min_price` >= $5.0<br/>・`min_market_cap` >= $300M<br/>・`min_avg_dollar_volume` >= $10M<br/>・`max_event_age_days`: **10日以内** (決算発表後経過日数)<br/>**軟らかい関門 (3つ・警告のみ)**:<br/>・`max_gap_pct`: **25.0%以内** (当日の窓開け率)<br/>・`max_atr_pct`: **8.0%以内** (14日ATR割合)<br/>・`earnings_warning_days`: **次回決算まで7日以上** | 硬い関門4項目のうち**1つでも不合格**になった銘柄（未検証データ含む） | **新規 INSERT** | **`screened_candidates` テーブル**<br/>・操作: 新規レコードを `INSERT`<br/>・追加内容: `stage = 'gate_reject'` で追加（`payload` に `gate_report` の全通過/警告/失敗状況と、その時点で見えていたニュース・インサイダー動向・アナリスト格付けを記録）<br/>※ `drop_reviews` は**この走査では書かれません**。後日 `hawkeye drops submit` / `drops revise`（別セッションの `/hawkeye-review`）が書きます |
+| 5 | **審理 (トリビューナル)**<br/>`tribunal/` | LLMによる3者審理:<br/>・Bull: 強気説・アップサイド分析<br/>・Adversary: 反論・軟らかい関門の警告事項・untrustedフラグの検証<br/>・Judge: 客観的判決 (スコアリング) | 審理結果が **`PASS`** (見送り) または **`NO_TRADE`** と判断された場合 | **新規 INSERT** | **`recommendations` & `journal` テーブル**<br/>・操作: 新規レコードを `INSERT`<br/>・追加内容:<br/>  - `recommendations`: 見送りは `status = 'system_pass'`、BUY提案は `status = 'proposed'` で新規追加（`payload` に `brief` / `verdict` / 3役のやり取りを記録）<br/>  - `journal`: 改ざん防止ハッシュ付きでログを新規1行追加<br/>※ `status` の取りうる値は `system_pass` / `proposed` / `declined` / `approved` / `open` / `closed` の6つだけです |
+| 6 | **リスク拒否権**<br/>`sizing.py` | 資金管理・リスクルール判定:<br/>・`min_reward_risk`: **2.0 以上** (リスクリワード比)<br/>・`min_expected_value_pct`: **5.0% 以上** (加重平均期待値)<br/>・`max_positions`: **最大8銘柄** (同時保有上限)<br/>・`max_position_pct`: **NAVの10.0%** (1銘柄上限)<br/>・`default_risk_pct`: **NAVの0.75%** (1取引の許容リスク) | リスクルールに**1項目でも違反**した場合（BUY判決を機械的に拒否） | **INSERT のみ**（拒否権は記録の**前**に効く） | **`recommendations` テーブル**<br/>・操作: 関門5と同じ1回の `INSERT`。**あとから `payload` を書き換えることは絶対にありません**<br/>・内容:<br/>  - 違反時: 裁定役のBUYが機械的に覆され、`status = 'system_pass'` として**最初から**記録される。拒否理由は記録済みの `payload` の中にある<br/>  - 合格時: `status = 'proposed'` として記録され、注文指示書（買い指値・ストップ・サイズ）も同じ `payload` に入る<br/>・その後の `status` 変更（`proposed` → `declined` / `approved` / `open` / `closed`）は**射影列だけ**の更新で、`payload` には触れません |
 
 ---
 
@@ -196,7 +209,13 @@ IPO直後の銘柄は記録が無い（SPCX）。
 | --- | --- | --- | --- |
 | `company_tickers.json` の**CIK（登録番号）** | **銘柄マスタの主キー。** 銘柄コードは上場廃止後に再利用されるため主キーにできない | 全部 | 残す |
 | ↳ 正式社名 | マスタ・レポート | 5 | 残す |
-| `companyconcept` の**XBRL提出値（GAAP希薄化後EPS）** | 発表文の読み取り結果の**検証**。抽出したGAAP EPSが提出値と一致しなければ抽出を丸ごと棄却（前年同期の列を読む誤りを機械的に排除） | 3 | 残す |
+| ~~`companyconcept` の**XBRL提出値（GAAP希薄化後EPS）**~~ | ~~発表文の読み取り結果の検証~~ | ~~3~~ | **2026-08-07 廃止。** 唯一の用途だった発表文の読み取りごと撤去したため、検証する対象が無い。取得コードも削除済み（`hawkeye/marketdata/edgar_facts.py`） |
+
+⚠️ **EDGARから今も取っているのはCIK（登録番号）と社名だけです。** 数値は1つも
+取っていません。この系から**一次資料による検算は完全に消えました**（User決定）。
+XBRLはGAAP基準の提出値、街のコンセンサスは調整後基準が基本なので、そもそも
+サプライズ率の検算器としては誤報が多く、銀行・保険・REITなど26%にはXBRL自体が
+存在しませんでした。
 
 ---
 
@@ -363,16 +382,34 @@ IPO直後などでEWから決算数値が取れない銘柄について、**自�
    - 保留の経過時間と打ち切りまでの残り
    - **その時点の暫定順位**（数値が取れた銘柄だけで作った順位）
 3. ユーザーが必要と判断した銘柄について、会社の発表文を自分で調べ、
-   **既存の「発表文の読み取り」経路でエージェントに渡す**
-   （`var/releases/{TICKER}_{YYYY-MM-DD}.json`）
-4. 次回走査がそれを拾い、深さ `release_read` の行として取り込む
+   **人が数値を投入する経路**でシステムに渡す
+4. 次回走査がそれを拾い、出所が「人の投入」と分かる形で取り込む
 
-#### 既存の仕組みをそのまま使う（新しい経路を作らない）
+#### ⚠️ 【2026-08-07 更新】この手順の「既存の経路」は無くなった
 
-3〜4は**すでに実装済みの経路**（`hawkeye/scout/release.py` ＋ `release_requests`
-テーブル ＋ 日本語レポートの「決算発表文の読み取り待ち」節）。いま発火条件が
-「2ソースの実績が食い違ったとき」なので、**「EWから実績が取れなかったとき」を
-発火条件に足すだけ**で足りる。二本目の経路を作らない。
+> **決定（人が数値を投入できるようにする）は生きています。しかし当初あてにしていた
+> 受け皿は削除されました。**
+>
+> もとの計画は、既にあった「決算発表文の読み取り」経路
+> （`hawkeye/scout/release.py` ＋ `release_requests` テーブル ＋
+> `var/releases/{TICKER}_{YYYY-MM-DD}.json` の受け渡し ＋ 日本語レポートの
+> 「読み取り待ち」節）に、発火条件を1つ足すだけで済ませるというものでした。
+> その経路は2026-08-07に**まるごと撤去**されています（発火条件「2ソースの実績が
+> 食い違ったとき」が、1銘柄1ソースでは構造的に成立しないため）。
+>
+> したがってこの機能は「既存経路への1行追加」ではなく、**新規実装**です。
+> 実装するときに決めることが2つあります:
+>
+> - **受け皿をどう作るか。** ファイル置き場を復活させるのか、CLIサブコマンドで
+>   1銘柄ずつ入れるのか。前者を選ぶなら「書類は用意されるが誰も読まない」という
+>   2026-08-03(b) の失敗（重複排除が拾い上げを止める）を再発させないこと
+> - **`source` の値。** 現在は「必ずデータ提供元であり、審理の結論は決して
+>   書き込まない」という制約を置いています。人の投入はデータ提供元ではないので、
+>   3つ目の値を足すのか、別の列で表すのかを決める必要があります
+>
+> **EDGARの提出値との照合は、以下の箇条書きにありますが、もう使えません**
+> （XBRL取得コードごと削除済み）。人の投入に機械的な検算をかける手段は、
+> 現時点でこの系に存在しません。
 
 #### この流れが不変条件を壊さないための条件
 
