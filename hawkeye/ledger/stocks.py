@@ -12,6 +12,12 @@ UPDATE or DELETE against `consensus_snapshots` / `earnings_prints`. One
 without the other is a convention: the whole reason a decision may reference
 these rows by id, instead of copying their numbers into its payload, is that
 the rows cannot move under it (invariant 1).
+
+Earnings rows have exactly one exception, and it is narrow enough to state in
+a sentence: an ACTIVE row may be flipped to SUPERSEDED, and nothing else about
+it may change. That is how a revised actual is recorded — a new row is
+appended and the old one retired — so the figure that stands and the figure a
+ranking was made on are both still readable.
 """
 from __future__ import annotations
 
@@ -22,24 +28,24 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from typing import Any, Optional
 
-from hawkeye.contracts.models import to_jst
+from hawkeye.contracts.models import now, to_jst
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     EarningsPrint,
     ReviewStage,
+    RowStatus,
     SnapshotKind,
     Stock,
 )
 from hawkeye.ledger.store import _instant
 
-_SCHEMA = """
+_SCHEMA_TABLES = """
 CREATE TABLE IF NOT EXISTS stocks (
     id      TEXT PRIMARY KEY,
     cik     TEXT,
     ticker  TEXT NOT NULL,
     payload TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_stocks_ticker ON stocks (ticker);
 
 CREATE TABLE IF NOT EXISTS consensus_snapshots (
     id              TEXT PRIMARY KEY,
@@ -49,23 +55,34 @@ CREATE TABLE IF NOT EXISTS consensus_snapshots (
     kind            TEXT NOT NULL,
     payload         TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_consensus_term
-    ON consensus_snapshots (stock_id, fiscal_quarter);
 
 CREATE TABLE IF NOT EXISTS earnings_prints (
     id                    TEXT PRIMARY KEY,
     stock_id              TEXT NOT NULL,
     fiscal_quarter        TEXT NOT NULL,
     report_date           TEXT NOT NULL,
-    depth                 TEXT NOT NULL,
+    source                TEXT NOT NULL,
+    status                TEXT NOT NULL DEFAULT 'active',
+    superseded_at         TEXT NOT NULL DEFAULT '',
     consensus_snapshot_id TEXT NOT NULL DEFAULT '',
     payload               TEXT NOT NULL
 );
--- A quarter deepens by APPENDING a row per depth. The unique index refuses a
--- second reading at the same depth, which would be a re-measurement of the
--- same evidence, and the triggers below refuse rewriting one in place.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_print_depth
-    ON earnings_prints (stock_id, fiscal_quarter, depth);
+"""
+
+# Applied AFTER the tables, because the index below reads a column an older
+# earnings_prints table does not have — creating it in the same breath as the
+# CREATE TABLE would fail on every database that predates `source`.
+_SCHEMA_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_stocks_ticker ON stocks (ticker);
+CREATE INDEX IF NOT EXISTS idx_consensus_term
+    ON consensus_snapshots (stock_id, fiscal_quarter);
+-- ONE row per quarter stands at a time, and the index says so. Partial on
+-- purpose: a revised actual appends a new active row and retires the old, so
+-- a quarter accumulates a row per revision and only the newest is active.
+-- Without the WHERE clause the second revision would be refused outright,
+-- which is how ADEA's $0.34 -> $0.42 correction would have jammed the scan.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_print_active
+    ON earnings_prints (stock_id, fiscal_quarter) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_print_stock ON earnings_prints (stock_id);
 
 CREATE TRIGGER IF NOT EXISTS consensus_snapshots_no_update
@@ -76,9 +93,25 @@ CREATE TRIGGER IF NOT EXISTS consensus_snapshots_no_delete
 BEFORE DELETE ON consensus_snapshots BEGIN
     SELECT RAISE(ABORT, 'consensus_snapshots is append-only');
 END;
-CREATE TRIGGER IF NOT EXISTS earnings_prints_no_update
-BEFORE UPDATE ON earnings_prints BEGIN
-    SELECT RAISE(ABORT, 'earnings_prints is append-only: deepen by recording a new row at the deeper depth');
+-- Retiring a row is the ONE update allowed, and the condition spells out
+-- exactly how narrow that is: active -> superseded, in that direction only,
+-- with every recorded number byte-identical either side of it. A superseded
+-- row can never be revived, because reviving is the in-place rewrite this
+-- trigger exists to forbid — it would make an old figure current again with
+-- nothing in the record to show the swap.
+CREATE TRIGGER IF NOT EXISTS earnings_prints_only_supersede
+BEFORE UPDATE ON earnings_prints
+WHEN NOT (OLD.status = 'active' AND NEW.status = 'superseded'
+          AND OLD.id IS NEW.id
+          AND OLD.stock_id IS NEW.stock_id
+          AND OLD.fiscal_quarter IS NEW.fiscal_quarter
+          AND OLD.report_date IS NEW.report_date
+          AND OLD.source IS NEW.source
+          AND OLD.consensus_snapshot_id IS NEW.consensus_snapshot_id
+          AND json_remove(OLD.payload, '$.status')
+              IS json_remove(NEW.payload, '$.status'))
+BEGIN
+    SELECT RAISE(ABORT, 'earnings_prints is append-only: the only permitted update retires an active row, and a revised figure is recorded as a NEW row');
 END;
 CREATE TRIGGER IF NOT EXISTS earnings_prints_no_delete
 BEFORE DELETE ON earnings_prints BEGIN
@@ -93,7 +126,7 @@ class StockHistory:
     question the old ticker-as-a-string layout could only answer by scanning
     every decision record."""
     stock: Stock
-    prints: list[EarningsPrint]                     # deepest row per quarter
+    prints: list[EarningsPrint]                     # the active row per quarter
     consensus: dict[str, ConsensusSnapshot]         # quarter -> frozen row
     decisions: list[dict]
     screened: list[dict]
@@ -107,9 +140,41 @@ class StockStore:
         self.path = path
         self._conn = sqlite3.connect(path)
         self._conn.execute("PRAGMA busy_timeout = 5000")
-        self._conn.executescript(_SCHEMA)
+        self._conn.executescript(_SCHEMA_TABLES)
+        self._migrate_print_table()
+        self._conn.executescript(_SCHEMA_INDEXES)
         self._conn.commit()
         self._add_ticker_columns()
+
+    def _migrate_print_table(self) -> None:
+        """Bring an earnings_prints table that predates `source` up to date.
+
+        The rename from vendor-named fields to role-named ones happened inside
+        the JSON payload, so a row written by the old code cannot be read by
+        the current model: its figures come back as None, which would turn
+        "the company reported $1.20" into "we never got a figure" — the one
+        confusion invariant 6 exists to prevent.
+
+        So an EMPTY old table is recreated, and a POPULATED one is refused
+        loudly. Refusing is the right failure: rewriting recorded figures in
+        place is precisely what the append-only triggers forbid, and doing it
+        under the name "migration" would not make it a different act.
+        """
+        columns = {row[1] for row in
+                   self._conn.execute("PRAGMA table_info(earnings_prints)")}
+        if "source" in columns:
+            return
+        rows = self._conn.execute(
+            "SELECT count(*) FROM earnings_prints").fetchone()[0]
+        if rows:
+            raise RuntimeError(
+                f"{self.path} holds {rows} earnings rows written before the "
+                f"source/status columns existed. Their figures are stored "
+                f"under the old field names and cannot be read back safely, "
+                f"so this database is not migrated automatically — export "
+                f"what you need, then start a fresh one.")
+        self._conn.executescript(
+            "DROP TABLE earnings_prints;" + _SCHEMA_TABLES)
 
     def _add_ticker_columns(self) -> None:
         """Expose the ticker as a column on the two payload-keyed tables.
@@ -312,10 +377,15 @@ class StockStore:
         rows = self.consensus_snapshots(stock_id, fiscal_quarter)
         return rows[-1] if rows else None
 
-    # -- earnings prints (append-only; deepening appends) ---------------------
+    # -- earnings prints (append-only; a revision appends and retires) --------
 
     def record_print(self, print_row: EarningsPrint) -> str:
-        """Record one reading of a quarter. Returns its id.
+        """Record a quarter's figures. Returns the row id.
+
+        Refuses a second ACTIVE row for the same quarter: that would be the
+        same evidence measured twice, and every reader would then have to pick
+        between them. A genuinely different figure is a revision — see
+        `revise_print`.
 
         When the caller did not pin a consensus row, the one in force just
         before the release is pinned here — that pointer, not an overwrite,
@@ -332,20 +402,51 @@ class StockStore:
         try:
             self._conn.execute(
                 "INSERT INTO earnings_prints (id, stock_id, fiscal_quarter,"
-                " report_date, depth, consensus_snapshot_id, payload)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " report_date, source, status, consensus_snapshot_id, payload)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (print_row.id, print_row.stock_id, print_row.fiscal_quarter,
-                 print_row.report_date.isoformat(), print_row.depth.value,
-                 print_row.consensus_snapshot_id, print_row.model_dump_json()))
+                 print_row.report_date.isoformat(), print_row.source.value,
+                 print_row.status.value, print_row.consensus_snapshot_id,
+                 print_row.model_dump_json()))
             self._conn.commit()
         except sqlite3.IntegrityError as exc:
             self._conn.rollback()
             raise ValueError(
-                f"{print_row.stock_id} {print_row.fiscal_quarter} is already "
-                f"recorded at depth '{print_row.depth.value}'; record a "
-                f"DEEPER reading instead of repeating this one ({exc})"
-            ) from exc
+                f"{print_row.stock_id} {print_row.fiscal_quarter} already has "
+                f"an active row; record a revision with revise_print() instead "
+                f"of a second reading of the same quarter ({exc})") from exc
         return print_row.id
+
+    def revise_print(self, print_row: EarningsPrint,
+                     at: Optional[datetime] = None) -> str:
+        """Record a corrected figure for a quarter already on record.
+
+        Retires the active row and appends this one, in a single transaction:
+        a crash between the two would leave the quarter with two active rows,
+        which the index refuses and every reader would misread.
+
+        The retired row is kept, not deleted. ADEA's reported EPS moved from
+        $0.34 to $0.42 the day after it announced; the shortlist that put it
+        in the top 15 was decided on $0.34, and a record showing only $0.42
+        would look as though that had been known all along.
+        """
+        moment = at or now()
+        current = self.active_print(print_row.stock_id,
+                                    print_row.fiscal_quarter)
+        try:
+            if current is not None:
+                retired = current.model_copy(
+                    update={"status": RowStatus.SUPERSEDED})
+                self._conn.execute(
+                    "UPDATE earnings_prints SET status = ?, superseded_at = ?,"
+                    " payload = ? WHERE id = ?",
+                    (RowStatus.SUPERSEDED.value, moment.isoformat(),
+                     retired.model_dump_json(), current.id))
+            new_id = self.record_print(print_row)
+        except Exception:
+            self._conn.rollback()
+            raise
+        return new_id
 
     def print_row(self, print_id: str) -> Optional[EarningsPrint]:
         row = self._conn.execute(
@@ -355,6 +456,7 @@ class StockStore:
 
     def prints(self, stock_id: str,
                fiscal_quarter: Optional[str] = None) -> list[EarningsPrint]:
+        """Every row for this stock, retired ones included, oldest first."""
         q = "SELECT payload FROM earnings_prints WHERE stock_id = ?"
         args: list[Any] = [stock_id]
         if fiscal_quarter is not None:
@@ -362,19 +464,26 @@ class StockStore:
             args.append(fiscal_quarter)
         rows = [EarningsPrint.model_validate_json(r[0])
                 for r in self._conn.execute(q, args).fetchall()]
-        return sorted(rows, key=lambda p: (p.report_date, p.depth.rank))
+        return sorted(rows, key=lambda p: (p.report_date,
+                                           _instant(p.recorded_at)))
 
-    def latest_print(self, stock_id: str,
+    def active_print(self, stock_id: str,
                      fiscal_quarter: str) -> Optional[EarningsPrint]:
-        """The deepest reading of that quarter."""
-        rows = self.prints(stock_id, fiscal_quarter)
+        """The row that stands for that quarter, or None.
+
+        Every reader downstream of the scan goes through this, and has to:
+        a caller that took the newest row regardless of status would start a
+        tribunal on a figure the system has already retired.
+        """
+        rows = [p for p in self.prints(stock_id, fiscal_quarter)
+                if p.status is RowStatus.ACTIVE]
         return rows[-1] if rows else None
 
-    def deepest_prints(self, stock_id: str) -> list[EarningsPrint]:
-        by_quarter: dict[str, EarningsPrint] = {}
-        for row in self.prints(stock_id):
-            by_quarter[row.fiscal_quarter] = row      # sorted, so deepest wins
-        return sorted(by_quarter.values(), key=lambda p: p.report_date)
+    def active_prints(self, stock_id: str) -> list[EarningsPrint]:
+        """One row per quarter — the one that stands — oldest quarter first."""
+        rows = [p for p in self.prints(stock_id)
+                if p.status is RowStatus.ACTIVE]
+        return sorted(rows, key=lambda p: p.report_date)
 
     # -- the joined single-stock read -----------------------------------------
 
@@ -382,7 +491,7 @@ class StockStore:
         stock = self.stock(stock_id)
         if stock is None:
             return None
-        prints = self.deepest_prints(stock_id)
+        prints = self.active_prints(stock_id)
         frozen: dict[str, ConsensusSnapshot] = {}
         for row in prints:
             snapshot = (self.consensus(row.consensus_snapshot_id)

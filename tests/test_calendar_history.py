@@ -21,7 +21,7 @@ import dataclasses
 from datetime import date, timedelta
 
 from hawkeye.config import HawkeyeConfig
-from hawkeye.contracts.stocks import PrintDepth, Stock
+from hawkeye.contracts.stocks import PrintSource, Stock
 from hawkeye.ledger.stocks import StockStore
 from hawkeye.marketdata.base import StaticProvider
 from hawkeye.scout.scout import run_scout
@@ -71,10 +71,10 @@ def test_a_screened_name_that_never_reached_enrichment_still_gets_its_quarter(
 
     assert [c.ticker for c in result.capped] == ["BBB"]
     capped = store.stock_by_ticker("BBB")
-    row = store.latest_print(capped.id, "2026-Q2")
+    row = store.active_print(capped.id, "2026-Q2")
     assert row is not None
-    assert row.depth is PrintDepth.CALENDAR_ONLY
-    assert row.eps_finnhub == [1.20]
+    assert row.source is PrintSource.FINNHUB
+    assert row.eps_actual_rows == [1.20]
 
 
 def test_the_quarter_keeps_the_consensus_it_was_measured_against(tmp_path):
@@ -88,9 +88,9 @@ def test_the_quarter_keeps_the_consensus_it_was_measured_against(tmp_path):
               stock_store=store)
 
     capped = store.stock_by_ticker("BBB")
-    row = store.latest_print(capped.id, "2026-Q2")
+    row = store.active_print(capped.id, "2026-Q2")
     assert row.consensus_snapshot_id
-    assert store.consensus(row.consensus_snapshot_id).eps_finnhub == 1.00
+    assert store.consensus(row.consensus_snapshot_id).eps_calendar == 1.00
 
 
 def test_a_known_stock_keeps_the_quarter_it_failed_the_screen_on(tmp_path):
@@ -104,8 +104,8 @@ def test_a_known_stock_keeps_the_quarter_it_failed_the_screen_on(tmp_path):
                                    estimate=1.00)]),
               _provider(), _config(), today=date.today(), stock_store=store)
 
-    row = store.latest_print(known, "2026-Q2")
-    assert row is not None and row.depth is PrintDepth.CALENDAR_ONLY
+    row = store.active_print(known, "2026-Q2")
+    assert row is not None and row.source is PrintSource.FINNHUB
 
 
 def test_a_stranger_that_failed_the_screen_is_not_added_to_the_master(tmp_path):

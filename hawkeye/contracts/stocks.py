@@ -12,10 +12,10 @@ Three properties are load-bearing and are enforced by the storage layer
    references the row BY ID instead of copying its numbers into the payload,
    so an update would repoint a pre-registered recommendation at different
    figures with nothing in the record to show it (invariant 1).
-3. **A print deepens by appending a row, not by rewriting one.** `depth`
-   exists so "we never looked at this quarter" and "we looked and found
-   nothing" stay distinguishable (invariant 6); rewriting the shallow row
-   would erase exactly that difference.
+3. **A revised actual appends a row and retires the old one; it never
+   rewrites it.** Overwriting would erase which figure a ranking was actually
+   made on, and the drop review and the thesis-accuracy scoring both read
+   that.
 """
 from __future__ import annotations
 
@@ -45,24 +45,36 @@ class SnapshotKind(str, Enum):
     RECONSTRUCTED = "reconstructed"      # captured afterwards; weaker evidence
 
 
-class PrintDepth(str, Enum):
-    """How far anyone got with this quarter's numbers.
+class PrintSource(str, Enum):
+    """Which vendor supplied the numbers one earnings row stands on.
 
-    Two steps, both reachable. There were four: `xbrl_validated` was never
-    assigned anywhere in the system's history, and `release_read` became
-    unreachable when the scan stopped reading companies' releases — the
-    escalation fired only on two vendors disagreeing, which one source per
-    print makes structurally impossible (see tests/test_removed_escalations.py).
+    Always a VENDOR, never a conclusion. Nothing downstream of the ranking may
+    ever write a third kind of value here: the moment a tribunal's finding can
+    reach an earnings row, "what did we know when we ranked this name" stops
+    being answerable and the pre-registration means nothing.
+
+    This replaced `depth`, which recorded how hard anyone had looked. That was
+    worth holding while four escalations could each deepen a quarter's row; with
+    one source per print it said the same thing twice.
+
+    `YAHOO` is transitional. It is the second source the scan re-reads EPS from
+    today; EarningsWhispers replaces it, after which the two values are
+    `FINNHUB` and `WHISPERS` (docs/backlog/PIPELINE_BUILD_TASKS.ja.md task 4).
     """
-    CALENDAR_ONLY = "calendar_only"      # free: the calendar response itself
-    VERIFIED = "verified"                # a second source confirmed the actual
-
-    @property
-    def rank(self) -> int:
-        return _DEPTH_ORDER.index(self)
+    FINNHUB = "finnhub"                  # the earnings calendar's own figures
+    YAHOO = "yahoo"                      # re-read before ranking (transitional)
 
 
-_DEPTH_ORDER = [PrintDepth.CALENDAR_ONLY, PrintDepth.VERIFIED]
+class RowStatus(str, Enum):
+    """Whether a recorded row is still the one that stands.
+
+    A revised actual appends a new row and retires the old one rather than
+    overwriting it. Keeping the retired row is what makes "we ranked ADEA on
+    $0.34, and the figure became $0.42 the next day" a readable fact instead of
+    a record that looks like we knew $0.42 all along.
+    """
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
 
 
 class QuarterBasis(str, Enum):
@@ -134,9 +146,9 @@ def resolve_fiscal_quarter(*,
     """The one place a print's fiscal quarter is decided (EW移行 §2).
 
     Everything that joins a print to its consensus runs off this label —
-    `consensus_in_force`, `already_reviewed`, and the unique index
-    `(stock_id, fiscal_quarter, depth)` — so two rows for one print, or a
-    label one quarter ahead, silently breaks all three at once.
+    `consensus_in_force`, `already_reviewed`, and the unique index over the
+    active rows — so two rows for one print, or a label one quarter ahead,
+    silently breaks all three at once.
 
     The bases are tried in a fixed order and the winner records which one it
     was. There is deliberately NO parameter for the report date: labelling a
@@ -251,9 +263,20 @@ def _midpoint(low: Optional[float], high: Optional[float]) -> Optional[float]:
 class ConsensusSnapshot(BaseModel):
     """What analysts expected, as of one moment. APPEND-ONLY.
 
-    Yahoo supplies a distribution (mean/low/high/analyst count) and Finnhub a
-    single point, so the two-source confirmation is asymmetric by
-    construction — that asymmetry is recorded, not smoothed over.
+    Fields are named for the ROLE a figure plays, not for the vendor it came
+    from, because the vendor changes and the role does not:
+
+    - `eps_avg` / `eps_low` / `eps_high` / `eps_analysts` — the distribution,
+      from whichever source publishes one (Yahoo today, EarningsWhispers next).
+    - `eps_calendar` — the earnings calendar's single point estimate. Kept
+      apart because a point and a distribution are not the same evidence, and
+      the asymmetry between them is what "both sources agree" is measured on.
+    - `next_quarter_*` and `full_year_*` — the two yardsticks guidance can be
+      judged against. Which one applies depends on the period the company
+      guided for, and it is routinely the full year: 10 of the 47 measured
+      names published a full-year range and no quarterly figure at all. With
+      nowhere to put that, their guidance read as absent when they had in fact
+      guided (EW移行 §5).
     """
     id: str = Field(default_factory=lambda: new_id("cns"))
     stock_id: str
@@ -267,18 +290,20 @@ class ConsensusSnapshot(BaseModel):
     eps_low: Optional[float] = None
     eps_high: Optional[float] = None
     eps_analysts: Optional[int] = None
-    eps_finnhub: Optional[float] = None
+    eps_calendar: Optional[float] = None
 
     revenue_avg: Optional[float] = None
     revenue_low: Optional[float] = None
     revenue_high: Optional[float] = None
     revenue_analysts: Optional[int] = None
-    revenue_finnhub: Optional[float] = None
+    revenue_calendar: Optional[float] = None
 
-    # The yardstick guidance is judged against (§5.3 decision 3): next
-    # quarter's consensus, captured at the same moment as this quarter's.
+    # The yardsticks guidance is judged against (§5.3 decision 3), captured at
+    # the same moment as this quarter's consensus.
     next_quarter_eps_avg: Optional[float] = None
     next_quarter_revenue_avg: Optional[float] = None
+    full_year_eps_avg: Optional[float] = None
+    full_year_revenue_avg: Optional[float] = None
 
     source_note: str = ""
 
@@ -288,22 +313,35 @@ class ConsensusSnapshot(BaseModel):
         `captured_at` and `kind` are excluded on purpose: re-capturing
         unchanged numbers an hour later is not new information, and writing a
         row for it would bury the captures that DO record a moved estimate.
+
+        Every number IS included, and has to be: a figure left out of this key
+        is one whose movement is silently discarded, which looks exactly like a
+        figure that never moved.
         """
         return (self.fiscal_quarter, self.eps_avg, self.eps_low, self.eps_high,
-                self.eps_analysts, self.eps_finnhub, self.revenue_avg,
+                self.eps_analysts, self.eps_calendar, self.revenue_avg,
                 self.revenue_low, self.revenue_high, self.revenue_analysts,
-                self.revenue_finnhub, self.next_quarter_eps_avg,
-                self.next_quarter_revenue_avg)
+                self.revenue_calendar, self.next_quarter_eps_avg,
+                self.next_quarter_revenue_avg, self.full_year_eps_avg,
+                self.full_year_revenue_avg)
 
 
 class EarningsPrint(BaseModel):
-    """One quarter's reported figures, at one depth of examination.
+    """One quarter's reported figures, from one vendor, at one moment.
 
-    `eps_finnhub` is a list because the calendar can return several rows for
-    one print carrying different actuals (AMZN: 1.88 and 1.97). When they
-    disagree, Finnhub's actual is unusable for that print — picking the row
-    that happens to match Yahoo is exactly the "choose the more plausible
-    one" judgment this system exists to remove.
+    Named for roles rather than vendors, same as the consensus row above:
+    `eps_actual` is the figure this row stands on, whoever supplied it, and
+    `source` says who that was.
+
+    `eps_actual_rows` is a list because the earnings calendar can return
+    several rows for one print carrying different actuals (AMZN: 1.88 and
+    1.97). When they disagree the calendar's actual is unusable for that
+    print — picking the row that happens to match another source is exactly
+    the "choose the more plausible one" judgment this system exists to remove.
+
+    A recorded row is never rewritten. A revised actual appends a new row and
+    retires the old one (`status`), so what is true now and what a ranking was
+    actually made on are both still readable.
     """
     id: str = Field(default_factory=lambda: new_id("ern"))
     stock_id: str
@@ -311,13 +349,14 @@ class EarningsPrint(BaseModel):
     fiscal_quarter: str
     report_date: date
     reported_at: Optional[datetime] = None
-    depth: PrintDepth = PrintDepth.CALENDAR_ONLY
+    source: PrintSource = PrintSource.FINNHUB
+    status: RowStatus = RowStatus.ACTIVE
     recorded_at: datetime = Field(default_factory=now)
 
-    eps_yahoo: Optional[float] = None
-    eps_finnhub: list[float] = Field(default_factory=list)
+    eps_actual: Optional[float] = None
+    eps_actual_rows: list[float] = Field(default_factory=list)
 
-    revenue_finnhub: Optional[float] = None
+    revenue_actual: Optional[float] = None
 
     guidance: Optional[GuidanceReading] = None
     contamination_flags: list[str] = Field(default_factory=list)
@@ -325,22 +364,10 @@ class EarningsPrint(BaseModel):
     notes: str = ""
 
     @property
-    def eps_finnhub_usable(self) -> Optional[float]:
-        """Finnhub's actual, or None when its own rows contradict each other."""
-        distinct = {round(v, 6) for v in self.eps_finnhub}
-        return self.eps_finnhub[0] if len(distinct) == 1 else None
-
-    @property
-    def revenue_actual(self) -> Optional[float]:
-        """The revenue this quarter reported, from the one source that has it.
-
-        There used to be a preference order here — EDGAR's filed figure, then
-        the release, then the vendor — but the first two are gone with the
-        escalations that produced them, so the choice this property existed to
-        make no longer exists. It is kept as the name every caller reads,
-        because the source behind it is about to change again (EW移行 §1).
-        """
-        return self.revenue_finnhub
+    def eps_actual_rows_usable(self) -> Optional[float]:
+        """The calendar's actual, or None when its own rows contradict it."""
+        distinct = {round(v, 6) for v in self.eps_actual_rows}
+        return self.eps_actual_rows[0] if len(distinct) == 1 else None
 
 
 # ---------------------------------------------------------------------------

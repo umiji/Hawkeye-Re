@@ -250,15 +250,21 @@ def _quarter_context(store, directory, event,
 
 
 def _record_print(store, context: _QuarterContext) -> None:
-    """Keep the deepest reading of a quarter, and never re-record one.
+    """Record a quarter once, and never re-record it.
 
     Scan windows overlap by design, so the same print arrives again on the
-    next run. The table is append-only, so a repeat would raise; a shallower
-    repeat carries no new information anyway.
+    next run and would be refused by the one-active-row-per-quarter index. A
+    repeat carries no new information anyway, so it is skipped here rather
+    than allowed to raise.
+
+    A repeat with a DIFFERENT figure is a revision, not a repeat, and it does
+    not go through this path: the 48-hour re-fetch compares the two and asks
+    the user before anything is retired (task 8.5). Until that exists, a
+    corrected actual is simply not picked up by the scan.
     """
-    existing = store.latest_print(context.stock_id,
+    existing = store.active_print(context.stock_id,
                                   context.print_row.fiscal_quarter)
-    if existing is not None and existing.depth.rank >= context.print_row.depth.rank:
+    if existing is not None:
         return
     store.record_print(context.print_row.model_copy(
         update={"consensus_snapshot_id": context.consensus_id}))
@@ -269,9 +275,9 @@ def _record_cheap_history(store, directory, events,
     """Give every name that entered the funnel an unbroken quarterly history
     (docs/design/MASTER_OVERVIEW.ja.md §6.1(C)).
 
-    Runs AFTER the enrichment walk, so a quarter that got a deeper reading
-    keeps it — the point of `depth` is to record how hard anyone looked, and
-    a shallow row appended over a deep one would understate that.
+    Runs AFTER the enrichment walk, so a quarter the walk already recorded
+    keeps the row it wrote — that one may carry a second source's actual,
+    where this pass only ever has the calendar's.
 
     Who is in scope is deliberately narrow. Every name that passed the screen
     is, because it entered the funnel; every name already in the master is,
@@ -293,7 +299,7 @@ def _record_cheap_history(store, directory, events,
         stock_id = (resolve_stock(store, event.ticker, directory)
                     if screened_here else known.id)
         row = print_from_event(event, stock_id)
-        if store.latest_print(stock_id, row.fiscal_quarter) is not None:
+        if store.active_print(stock_id, row.fiscal_quarter) is not None:
             continue
         # A pre-registered row always wins; record_print() pins the one in
         # force when none is named here. Only when nothing exists is the
@@ -303,10 +309,10 @@ def _record_cheap_history(store, directory, events,
         snapshot_id = in_force.id if in_force is not None else \
             store.capture_consensus(
                 reconstructed_consensus(event, stock_id, row.fiscal_quarter))
-        # The depth is whatever this reading actually reached: `verified` for
-        # a name the verification pass happened to cover, `calendar_only`
-        # otherwise. Stamping every history row `calendar_only` would be as
-        # dishonest in the cheap direction as the deep one.
+        # The source is whichever vendor actually supplied this row's figures,
+        # not a blanket label: a name the verification pass happened to cover
+        # carries that vendor, and stamping every history row with the
+        # calendar would understate what is behind it.
         store.record_print(row.model_copy(
             update={"consensus_snapshot_id": snapshot_id}))
         written += 1

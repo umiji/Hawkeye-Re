@@ -19,7 +19,7 @@ from hawkeye.config import HawkeyeConfig
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     EarningsPrint,
-    PrintDepth,
+    PrintSource,
 )
 from hawkeye.reports.quality_ja import render_quality_ja
 from hawkeye.scout.quality import assess_earnings
@@ -34,11 +34,11 @@ def amzn_like():
         EarningsPrint(stock_id="cik:0001018724", ticker="AMZN",
                       fiscal_quarter="2026-Q2",
                       report_date=date(2026, 7, 30),
-                      depth=PrintDepth.VERIFIED, eps_yahoo=5.75,
-                      eps_finnhub=[1.88, 1.97]),
+                      source=PrintSource.YAHOO, eps_actual=5.75,
+                      eps_actual_rows=[1.88, 1.97]),
         ConsensusSnapshot(stock_id="cik:0001018724", ticker="AMZN",
                           fiscal_quarter="2026-Q2", eps_avg=1.956,
-                          eps_finnhub=1.94, eps_analysts=44),
+                          eps_calendar=1.94, eps_analysts=44),
         CONFIG)
 
 

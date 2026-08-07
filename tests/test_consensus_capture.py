@@ -217,8 +217,8 @@ def test_capture_records_both_sources_and_marks_them_pre_registered(tmp_path):
     snapshot = store.consensus_in_force(stock_id, "2026-Q2")
     assert snapshot.kind is SnapshotKind.PRE_REGISTERED
     assert snapshot.eps_avg == 1.83 and snapshot.eps_analysts == 42
-    assert snapshot.eps_finnhub == 1.83          # the calendar's point estimate
-    assert snapshot.revenue_finnhub == 1.62e11
+    assert snapshot.eps_calendar == 1.83          # the calendar's point estimate
+    assert snapshot.revenue_calendar == 1.62e11
     assert snapshot.next_quarter_eps_avg == 2.05  # the guidance yardstick
     assert snapshot.expected_report_date == date(2026, 8, 3)
 
@@ -268,7 +268,7 @@ def test_a_yahoo_failure_still_pre_registers_the_calendar_estimate(tmp_path):
     stock_id = store.stock_by_ticker("AMZN").id
     snapshot = store.consensus_in_force(stock_id, "2026-Q2")
     assert report.captured == 2 and report.yahoo_missing == 2
-    assert snapshot.eps_finnhub == 1.83
+    assert snapshot.eps_calendar == 1.83
     assert snapshot.eps_avg is None and snapshot.eps_analysts is None
 
 
@@ -293,7 +293,7 @@ def test_a_capture_with_no_numbers_at_all_writes_nothing(tmp_path):
 def test_capture_stops_once_that_quarters_print_is_recorded(tmp_path):
     """Snapshotting for quarter Q ends when Q's result exists; anything
     later belongs to Q+1 (§6.1(D))."""
-    from hawkeye.contracts.stocks import EarningsPrint, PrintDepth
+    from hawkeye.contracts.stocks import EarningsPrint, PrintSource
 
     store = make_store(tmp_path)
     prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),
@@ -301,7 +301,7 @@ def test_capture_stops_once_that_quarters_print_is_recorded(tmp_path):
     stock_id = store.put_stock(Stock(cik="0001018724", ticker="AMZN"))
     store.record_print(EarningsPrint(
         stock_id=stock_id, fiscal_quarter="2026-Q2",
-        report_date=date(2026, 8, 3), depth=PrintDepth.VERIFIED))
+        report_date=date(2026, 8, 3), source=PrintSource.YAHOO))
 
     report = capture_consensus(store, prints, StubConsensus({"AMZN": reading()}),
                                captured_at=datetime(2026, 8, 3, 22, tzinfo=JST))

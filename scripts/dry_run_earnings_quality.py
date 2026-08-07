@@ -47,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hawkeye.config import HawkeyeConfig                      # noqa: E402
 from hawkeye.contracts.stocks import (                        # noqa: E402
     GuidanceReading,
-    PrintDepth,
+    PrintSource,
     Stock,
 )
 from hawkeye.envfile import load_local_env                    # noqa: E402
@@ -196,11 +196,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                                      name=directory.name_for(ticker)))
     row = print_from_event(event, stock_id)
     row = row.model_copy(update={
-        "eps_yahoo": yahoo_print.eps_actual if yahoo_print else row.eps_yahoo,
+        "eps_actual": (yahoo_print.eps_actual if yahoo_print
+                       else row.eps_actual),
         "guidance": guidance,
         "reported_at": datetime.combine(event.day, datetime.min.time()),
-        "depth": (PrintDepth.VERIFIED if yahoo_print
-                  else PrintDepth.CALENDAR_ONLY)})
+        "source": (PrintSource.YAHOO if yahoo_print
+                   else PrintSource.FINNHUB)})
 
     # The reported quarter's consensus comes from the print itself (Yahoo's
     # earnings history and the calendar). The forward endpoint read AFTER the
@@ -217,7 +218,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "next_quarter_revenue_avg": shifted.next_quarter_revenue_avg})
     snapshot_id = store.capture_consensus(snapshot)
     stored = store.consensus(snapshot_id)
-    if store.latest_print(stock_id, row.fiscal_quarter) is None:
+    if store.active_print(stock_id, row.fiscal_quarter) is None:
         store.record_print(row.model_copy(
             update={"consensus_snapshot_id": snapshot_id}))
 

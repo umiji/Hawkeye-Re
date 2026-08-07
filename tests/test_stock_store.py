@@ -24,7 +24,7 @@ from hawkeye.contracts.models import (
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     EarningsPrint,
-    PrintDepth,
+    PrintSource,
     ReviewStage,
     SnapshotKind,
     Stock,
@@ -54,7 +54,7 @@ def make_consensus(**overrides) -> ConsensusSnapshot:
                 captured_at=at(1), kind=SnapshotKind.PRE_REGISTERED,
                 eps_avg=1.83, eps_low=1.55, eps_high=2.10, eps_analysts=42,
                 revenue_avg=1.62e11, revenue_analysts=38,
-                eps_finnhub=1.83, revenue_finnhub=1.61e11)
+                eps_calendar=1.83, revenue_calendar=1.61e11)
     base.update(overrides)
     return ConsensusSnapshot(**base)
 
@@ -155,38 +155,41 @@ def test_a_stock_without_a_cik_gets_a_provisional_id(tmp_path):
     assert st.stock(stock_id).cik is None
 
 
-# --- earnings prints: deepening appends, it never rewrites -----------------
+# --- earnings prints: a revision appends, it never rewrites ----------------
 
-def test_a_deeper_reading_appends_and_the_shallow_row_survives(tmp_path):
-    """`depth` exists so "never looked" and "looked and found nothing" stay
-    distinguishable (invariant 6). Deepening by UPDATE would destroy exactly
-    that, and would silently repoint any decision referencing the row."""
+def test_a_revision_appends_and_the_row_we_ranked_on_survives(tmp_path):
+    """Overwriting would destroy which figure a decision was actually made on,
+    and would silently repoint anything referencing the row. The retired row
+    keeps every number it was recorded with.
+
+    (The full revision rules live in tests/test_print_source_and_revision.py;
+    this one is here because the guarantee is the storage layer's.)"""
     st = store(tmp_path)
     st.put_stock(make_stock())
-    shallow = st.record_print(EarningsPrint(
+    first = st.record_print(EarningsPrint(
         stock_id="cik:0001018724", fiscal_quarter="2026-Q2",
-        report_date=date(2026, 7, 31), depth=PrintDepth.CALENDAR_ONLY,
-        eps_finnhub=[5.75]))
-    deep = st.record_print(EarningsPrint(
+        report_date=date(2026, 7, 31), source=PrintSource.FINNHUB,
+        eps_actual_rows=[5.75]))
+    second = st.revise_print(EarningsPrint(
         stock_id="cik:0001018724", fiscal_quarter="2026-Q2",
-        report_date=date(2026, 7, 31), depth=PrintDepth.VERIFIED,
-        eps_yahoo=5.75, eps_finnhub=[1.88, 1.97],
+        report_date=date(2026, 7, 31), source=PrintSource.YAHOO,
+        eps_actual=5.75, eps_actual_rows=[1.88, 1.97],
         contamination_flags=["finnhub_actual_conflict"]))
 
-    assert shallow != deep
-    assert st.print_row(shallow).depth is PrintDepth.CALENDAR_ONLY
-    latest = st.latest_print("cik:0001018724", "2026-Q2")
-    assert latest.depth is PrintDepth.VERIFIED
-    assert latest.contamination_flags == ["finnhub_actual_conflict"]
+    assert first != second
+    assert st.print_row(first).eps_actual_rows == [5.75]
+    current = st.active_print("cik:0001018724", "2026-Q2")
+    assert current.source is PrintSource.YAHOO
+    assert current.contamination_flags == ["finnhub_actual_conflict"]
     assert len(st.prints("cik:0001018724")) == 2
 
 
-def test_recording_the_same_quarter_at_the_same_depth_twice_is_refused(tmp_path):
+def test_recording_the_same_quarter_twice_is_refused(tmp_path):
     st = store(tmp_path)
     st.put_stock(make_stock())
     row = EarningsPrint(stock_id="cik:0001018724", fiscal_quarter="2026-Q2",
                         report_date=date(2026, 7, 31),
-                        depth=PrintDepth.CALENDAR_ONLY)
+                        source=PrintSource.FINNHUB)
     st.record_print(row)
 
     with pytest.raises(ValueError):
@@ -207,7 +210,7 @@ def test_a_print_freezes_the_consensus_that_was_in_force(tmp_path):
     print_id = st.record_print(EarningsPrint(
         stock_id="cik:0001018724", fiscal_quarter="2026-Q2",
         report_date=date(2026, 7, 31), reported_at=at(5),
-        depth=PrintDepth.VERIFIED, eps_yahoo=5.75))
+        source=PrintSource.YAHOO, eps_actual=5.75))
 
     assert st.print_row(print_id).consensus_snapshot_id == in_force
 
@@ -230,7 +233,7 @@ def test_history_returns_prints_fixed_consensus_and_past_decisions(tmp_path):
     st.record_print(EarningsPrint(
         stock_id="cik:0001018724", fiscal_quarter="2026-Q2",
         report_date=date(2026, 7, 31), reported_at=at(5),
-        depth=PrintDepth.VERIFIED, eps_yahoo=5.75))
+        source=PrintSource.YAHOO, eps_actual=5.75))
 
     history = st.history("cik:0001018724")
 
@@ -313,7 +316,7 @@ def test_the_hash_chain_stays_green_alongside_the_new_tables(tmp_path):
     st.capture_consensus(make_consensus())
     st.record_print(EarningsPrint(
         stock_id="cik:0001018724", fiscal_quarter="2026-Q2",
-        report_date=date(2026, 7, 31), depth=PrintDepth.CALENDAR_ONLY))
+        report_date=date(2026, 7, 31), source=PrintSource.FINNHUB))
 
     assert ledger.verify_chain() is True
 
@@ -332,7 +335,7 @@ def test_the_two_payload_tables_expose_the_ticker_as_a_column(tmp_path):
     st.capture_consensus(make_consensus(ticker="AMZN"))
     st.record_print(EarningsPrint(
         stock_id="cik:0001018724", ticker="AMZN", fiscal_quarter="2026-Q2",
-        report_date=date(2026, 7, 31), depth=PrintDepth.CALENDAR_ONLY))
+        report_date=date(2026, 7, 31), source=PrintSource.FINNHUB))
 
     conn = sqlite3.connect(db)
     assert conn.execute(
@@ -362,7 +365,7 @@ def test_the_column_is_added_to_a_database_that_predates_it(tmp_path):
     st.put_stock(make_stock())
     st.record_print(EarningsPrint(
         stock_id="cik:0001018724", ticker="AMZN", fiscal_quarter="2026-Q2",
-        report_date=date(2026, 7, 31), depth=PrintDepth.CALENDAR_ONLY))
+        report_date=date(2026, 7, 31), source=PrintSource.FINNHUB))
 
     assert sqlite3.connect(db).execute(
         "SELECT ticker FROM earnings_prints").fetchone()[0] == "AMZN"

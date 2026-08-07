@@ -218,7 +218,7 @@ def capture_consensus(store, prints: list[UpcomingPrint],
             not_target += 1
             continue
         stock_id = resolve_stock(store, item.ticker, directory)
-        if store.latest_print(stock_id, item.fiscal_quarter) is not None:
+        if store.active_print(stock_id, item.fiscal_quarter) is not None:
             skipped += 1
             continue
         reading = source.consensus(item.ticker) if source is not None else None
@@ -229,8 +229,8 @@ def capture_consensus(store, prints: list[UpcomingPrint],
             fiscal_quarter=item.fiscal_quarter,
             captured_at=captured_at or datetime.now().astimezone(),
             kind=kind, expected_report_date=item.report_date,
-            eps_finnhub=item.eps_estimate,
-            revenue_finnhub=item.revenue_estimate,
+            eps_calendar=item.eps_estimate,
+            revenue_calendar=item.revenue_estimate,
             eps_avg=reading.eps_avg if reading else None,
             eps_low=reading.eps_low if reading else None,
             eps_high=reading.eps_high if reading else None,

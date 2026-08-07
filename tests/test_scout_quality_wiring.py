@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
-    PrintDepth,
+    PrintSource,
     SnapshotKind,
     Stock,
 )
@@ -117,9 +117,9 @@ def test_the_print_records_which_source_each_actual_came_from():
         an_event(eps_actual=2.02, eps_source="yahoo", calendar_eps_actual=1.91),
         stock_id="cik:0000320193")
 
-    assert row.eps_yahoo == 2.02
-    assert row.eps_finnhub == [1.91]
-    assert row.depth is PrintDepth.VERIFIED
+    assert row.eps_actual == 2.02
+    assert row.eps_actual_rows == [1.91]
+    assert row.source is PrintSource.YAHOO
     assert row.fiscal_quarter == "2026-Q2"
 
 
@@ -137,8 +137,8 @@ def test_contradictory_actuals_from_the_calendar_reach_the_print():
     event = parse_calendar(rows)[0]
     row = print_from_event(event, stock_id="cik:0001018724")
 
-    assert sorted(row.eps_finnhub) == [1.88, 1.97]
-    assert row.eps_finnhub_usable is None
+    assert sorted(row.eps_actual_rows) == [1.88, 1.97]
+    assert row.eps_actual_rows_usable is None
     quality = assess_event(event, None, _config())
     assert "finnhub_actual_conflict" in quality.eps.flags
 
@@ -151,7 +151,7 @@ def test_a_reconstructed_consensus_says_so():
         captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
 
     assert snapshot.kind is SnapshotKind.RECONSTRUCTED
-    assert snapshot.eps_avg == 1.89 and snapshot.eps_finnhub == 1.90
+    assert snapshot.eps_avg == 1.89 and snapshot.eps_calendar == 1.90
     assert snapshot.eps_analysts is None      # a count exists only pre-print
 
 
@@ -186,7 +186,7 @@ def test_the_funnel_records_the_stock_the_print_and_the_consensus(tmp_path):
     assert [c.ticker for c in result.passed] == ["AMZN"]
     stock = store.stock_by_ticker("AMZN")
     assert stock is not None
-    row = store.latest_print(stock.id, "2026-Q2")
+    row = store.active_print(stock.id, "2026-Q2")
     assert row is not None and row.report_date == event_day
     assert row.consensus_snapshot_id                      # pinned, not copied
     assert store.consensus(row.consensus_snapshot_id).kind \
@@ -205,14 +205,14 @@ def test_a_pre_registered_consensus_is_used_instead_of_reconstructing_one(tmp_pa
         stock_id=stock_id, ticker="AMZN", fiscal_quarter="2026-Q2",
         captured_at=datetime.combine(event_day - timedelta(days=1),
                                      datetime.min.time(), tzinfo=JST),
-        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.00, eps_finnhub=1.00,
-        eps_analysts=25, revenue_avg=1.0e9, revenue_finnhub=1.0e9,
+        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.00, eps_calendar=1.00,
+        eps_analysts=25, revenue_avg=1.0e9, revenue_calendar=1.0e9,
         revenue_analysts=20))
 
     result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
                        _config(), today=today, stock_store=store)
 
-    row = store.latest_print(stock_id, "2026-Q2")
+    row = store.active_print(stock_id, "2026-Q2")
     assert row.consensus_snapshot_id == pre_registered
     candidate = result.passed[0]
     assert candidate.quality is not None
@@ -256,15 +256,15 @@ def test_an_unconfirmable_beat_cannot_outrank_a_confirmed_one(tmp_path):
         stock_id=thin, ticker="THIN", fiscal_quarter="2026-Q2",
         captured_at=datetime.combine(event_day - timedelta(days=1),
                                      datetime.min.time(), tzinfo=JST),
-        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.00, eps_finnhub=1.00,
+        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.00, eps_calendar=1.00,
         eps_analysts=1))                       # one analyst: unconfirmable
     conf = store.put_stock(Stock(ticker="CONF"))
     store.capture_consensus(ConsensusSnapshot(
         stock_id=conf, ticker="CONF", fiscal_quarter="2026-Q2",
         captured_at=datetime.combine(event_day - timedelta(days=1),
                                      datetime.min.time(), tzinfo=JST),
-        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.00, eps_finnhub=1.00,
-        eps_analysts=25, revenue_avg=1.0e9, revenue_finnhub=1.0e9,
+        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.00, eps_calendar=1.00,
+        eps_analysts=25, revenue_avg=1.0e9, revenue_calendar=1.0e9,
         revenue_analysts=20))
 
     result = run_scout(FakeCalendar(entries), _provider(), _config(),

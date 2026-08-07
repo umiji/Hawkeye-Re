@@ -23,7 +23,7 @@ import inspect
 
 import pytest
 
-from hawkeye.contracts.stocks import EarningsPrint, PrintDepth
+from hawkeye.contracts.stocks import EarningsPrint
 from hawkeye.ledger.store import Ledger
 from hawkeye.scout.scout import ScoutResult, run_scout
 
@@ -48,12 +48,6 @@ def test_a_print_row_carries_no_release_or_xbrl_figures():
     removed = {"eps_xbrl_diluted", "revenue_xbrl", "eps_release",
                "revenue_release", "eps_basis", "one_off_per_share"}
     assert not removed & set(EarningsPrint.model_fields)
-
-
-def test_only_the_two_reachable_depths_remain():
-    """`xbrl_validated` was never assigned anywhere, and `release_read` can no
-    longer be reached now that nothing reads a release."""
-    assert [d.value for d in PrintDepth] == ["calendar_only", "verified"]
 
 
 def test_the_scan_takes_no_release_reader_and_no_xbrl_facts():

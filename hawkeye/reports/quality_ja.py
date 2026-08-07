@@ -143,9 +143,9 @@ def render_stock_history_ja(history: StockHistory) -> str:
     for row in history.prints:
         consensus = history.consensus_for(row.fiscal_quarter)
         lines.append(
-            f"- {row.fiscal_quarter} ({row.report_date}) 深さ={row.depth.value}"
-            f" / Yahoo EPS={_num(row.eps_yahoo)}"
-            f" / Finnhub EPS={_list(row.eps_finnhub)}"
+            f"- {row.fiscal_quarter} ({row.report_date}) 出所={row.source.value}"
+            f" / EPS実績={_num(row.eps_actual)}"
+            f" / カレンダーのEPS実績={_list(row.eps_actual_rows)}"
             f" / 確定コンセンサス="
             + (f"{_num(consensus.eps_avg)}({consensus.kind.value})"
                if consensus else "なし"))

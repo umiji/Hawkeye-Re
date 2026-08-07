@@ -97,15 +97,15 @@ def test_the_pre_registered_consensus_is_what_it_is_judged_against(tmp_path):
         stock_id=stock_id, ticker="AMZN", fiscal_quarter="2026-Q2",
         captured_at=datetime.combine(day - timedelta(days=1),
                                      datetime.min.time(), tzinfo=JST),
-        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.83, eps_finnhub=1.83,
-        eps_analysts=43, revenue_avg=1.62e11, revenue_finnhub=1.62e11,
+        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.83, eps_calendar=1.83,
+        eps_analysts=43, revenue_avg=1.62e11, revenue_calendar=1.62e11,
         revenue_analysts=38))
 
     judged = judge_ticker("AMZN", FakeCalendar(_amzn_rows(day)), _config(),
                           report_date=day, stock_store=store)
 
     assert judged.consensus_id == pinned
-    row = store.latest_print(stock_id, "2026-Q2")
+    row = store.active_print(stock_id, "2026-Q2")
     assert row is not None and row.consensus_snapshot_id == pinned
 
 

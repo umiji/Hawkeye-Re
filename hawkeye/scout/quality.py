@@ -38,7 +38,7 @@ from hawkeye.contracts.models import now
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     EarningsPrint,
-    PrintDepth,
+    PrintSource,
     SnapshotKind,
 )
 from hawkeye.scout.earnings import (
@@ -418,10 +418,10 @@ def print_from_event(event: EarningsEvent, stock_id: str,
                      fiscal_quarter: Optional[str] = None) -> EarningsPrint:
     """One calendar event as a print row, with each actual attributed.
 
-    Which vendor supplied which number is the whole point of the row: after
-    verification the event carries Yahoo's reading in `eps_actual` and the
-    calendar's in `calendar_eps_actual`, and collapsing them back into one
-    field would destroy the comparison the beat rule depends on.
+    Which vendor supplied which number is the whole point of the row. The
+    verified reading goes in `eps_actual` and the calendar's own rows in
+    `eps_actual_rows`; `source` names the vendor behind the first. Collapsing
+    them into one field would destroy the comparison the beat rule depends on.
 
     The fiscal quarter is left EMPTY when no source stated one. It used to
     fall back to the calendar quarter of the report date, which named the
@@ -431,21 +431,21 @@ def print_from_event(event: EarningsEvent, stock_id: str,
     left no trace anywhere (EW移行 §2).
     """
     verified = event.eps_source == "yahoo"
-    yahoo_actual = event.eps_actual if verified else None
-    finnhub_actual = (event.calendar_eps_actual if verified
-                      else event.eps_actual)
+    verified_actual = event.eps_actual if verified else None
+    calendar_actual = (event.calendar_eps_actual if verified
+                       else event.eps_actual)
     # Every actual the calendar gave for this print, not just the row that
     # won the collapse: two of them means the source contradicts itself.
-    finnhub_actuals = list(event.all_eps_actuals) or (
-        [finnhub_actual] if finnhub_actual is not None else [])
+    calendar_actuals = list(event.all_eps_actuals) or (
+        [calendar_actual] if calendar_actual is not None else [])
     return EarningsPrint(
         stock_id=stock_id, ticker=event.ticker,
         fiscal_quarter=(fiscal_quarter or event.fiscal_quarter or ""),
         report_date=event.day,
-        depth=PrintDepth.VERIFIED if verified else PrintDepth.CALENDAR_ONLY,
-        eps_yahoo=yahoo_actual,
-        eps_finnhub=finnhub_actuals,
-        revenue_finnhub=event.revenue_actual)
+        source=PrintSource.YAHOO if verified else PrintSource.FINNHUB,
+        eps_actual=verified_actual,
+        eps_actual_rows=calendar_actuals,
+        revenue_actual=event.revenue_actual)
 
 
 def reconstructed_consensus(event: EarningsEvent, stock_id: str,
@@ -472,9 +472,9 @@ def reconstructed_consensus(event: EarningsEvent, stock_id: str,
         kind=SnapshotKind.RECONSTRUCTED,
         expected_report_date=event.day,
         eps_avg=event.eps_estimate if verified else None,
-        eps_finnhub=(event.calendar_eps_estimate if verified
-                     else event.eps_estimate),
-        revenue_finnhub=event.revenue_estimate,
+        eps_calendar=(event.calendar_eps_estimate if verified
+                      else event.eps_estimate),
+        revenue_calendar=event.revenue_estimate,
         source_note="reconstructed after the print; no analyst count or range")
 
 
@@ -509,25 +509,25 @@ def assess_earnings(print_row: EarningsPrint,
     the market disagreeing with the number we just validated.
     """
     eps_actual, eps_flags = _resolve_actual(
-        print_row.eps_yahoo, print_row.eps_finnhub_usable, config,
+        print_row.eps_actual, print_row.eps_actual_rows_usable, config,
         absolute_floor=config.earnings_actual_dispute_abs_usd)
-    if print_row.eps_finnhub and print_row.eps_finnhub_usable is None:
+    if print_row.eps_actual_rows and print_row.eps_actual_rows_usable is None:
         eps_flags.insert(0, "finnhub_actual_conflict")
     eps = _assess_leg(
         "eps", eps_actual, eps_flags,
         consensus.eps_avg if consensus else None,
-        consensus.eps_finnhub if consensus else None,
+        consensus.eps_calendar if consensus else None,
         consensus.eps_analysts if consensus else None, config,
         min_abs_estimate=config.scout_min_abs_eps_estimate,
-        actual_yahoo=print_row.eps_yahoo,
-        actual_finnhub=print_row.eps_finnhub_usable)
+        actual_yahoo=print_row.eps_actual,
+        actual_finnhub=print_row.eps_actual_rows_usable)
 
     revenue_actual, revenue_flags = _resolve_actual(
-        None, print_row.revenue_finnhub, config, absolute_floor=None)
+        None, print_row.revenue_actual, config, absolute_floor=None)
     revenue = _assess_leg(
         "revenue", revenue_actual, revenue_flags,
         consensus.revenue_avg if consensus else None,
-        consensus.revenue_finnhub if consensus else None,
+        consensus.revenue_calendar if consensus else None,
         consensus.revenue_analysts if consensus else None, config)
 
     guidance = _guidance_leg(print_row, consensus)
