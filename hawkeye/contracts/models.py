@@ -200,6 +200,12 @@ class GateReport(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ScreenedCandidateStage(str, Enum):
+    # Held: the print's own numbers have not arrived, so it was never judged.
+    # One row per scan, and the ONLY stage the dedup lets through — a pending
+    # row must not stop the next scan reading the print again
+    # (hawkeye/scout/waiting.py).
+    ACTUAL_PENDING = "actual_pending"
+    ACTUAL_TIMEOUT = "actual_timeout"    # held past the window, given up on
     ENRICHMENT_CAP = "enrichment_cap"    # sorted below scout_max_enrich, never enriched
     GATE_REJECT = "gate_reject"          # enriched (or enrichment itself failed), then rejected
     RANKING_CUTOFF = "ranking_cutoff"    # gate-passed, but outside this run's tribunal slot count

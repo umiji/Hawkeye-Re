@@ -51,6 +51,7 @@ from hawkeye.scout.numbers import (
     WhispersReader,
     read_numbers,
 )
+from hawkeye.scout.waiting import held_reason, wait_expired
 
 
 @dataclass
@@ -73,6 +74,12 @@ class ScoutCandidate:
     # numbers from one made on the calendar's.
     numbers_source: str = "calendar"
     calendar_eps_surprise_pct: Optional[float] = None
+    # Why this print could not be ranked at all, and whether the wait for its
+    # numbers has run out (hawkeye/scout/waiting.py). "" for every candidate
+    # that WAS judged — a held name never reaches enrichment or the gates, so
+    # it is not a rejection and must not be counted as one.
+    held_reason: str = ""
+    held_expired: bool = False
     price: Optional[float] = None
     price_asof: Optional[date] = None
     brief: Optional[CandidateBrief] = None
@@ -95,6 +102,10 @@ class ScoutResult:
     passed: list[ScoutCandidate] = field(default_factory=list)   # ranked
     rejected: list[ScoutCandidate] = field(default_factory=list)
     capped: list[ScoutCandidate] = field(default_factory=list)  # never enriched (scout_max_enrich)
+    # Prints whose own numbers had not arrived: never judged, so never
+    # rejected. Kept apart from `rejected` because a held name is a fact about
+    # our data and a rejected one is a fact about the company.
+    held: list[ScoutCandidate] = field(default_factory=list)
     duplicates: int = 0          # already recorded by an earlier scan
     window_truncated: bool = False  # the lookback cap bounded the window
     numbers: NumbersStats = field(default_factory=NumbersStats)
@@ -105,7 +116,7 @@ class ScoutResult:
 
     def funnel(self) -> dict:
         return {"scanned": self.scanned, "screened": self.screened,
-                "duplicates": self.duplicates,
+                "duplicates": self.duplicates, "held": len(self.held),
                 "enriched": self.enriched, "gate_passed": len(self.passed)}
 
 
@@ -271,7 +282,8 @@ def _record_print(store, context: _QuarterContext) -> None:
 
 
 def _record_cheap_history(store, directory, events,
-                          screened_tickers: set[str]) -> int:
+                          screened_tickers: set[str],
+                          skip: Optional[set[tuple[str, date]]] = None) -> int:
     """Give every name that entered the funnel an unbroken quarterly history
     (docs/design/MASTER_OVERVIEW.ja.md §6.1(C)).
 
@@ -288,9 +300,10 @@ def _record_cheap_history(store, directory, events,
     """
     if store is None:
         return 0
+    held = skip or set()
     written = 0
     for event in events:
-        if event.eps_actual is None:
+        if event.eps_actual is None or (event.ticker, event.day) in held:
             continue
         known = store.stock_by_ticker(event.ticker)
         screened_here = event.ticker in screened_tickers
@@ -392,6 +405,27 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     screened_tickers = {s.event.ticker for s in all_screened}
     duplicates = len(all_screened) - len(screened)
     screened_total = len(all_screened)
+
+    # Prints whose OWN numbers have not arrived cannot be ranked, and must not
+    # be ranked on the calendar's instead: that would write the print row, the
+    # dedup would refuse the print on every later scan, and the feed's reading
+    # would never be taken (hawkeye/scout/waiting.py). They are set aside here
+    # — before enrichment, so they cost nothing — and recorded as pending so
+    # the next scan reads them again.
+    held: list[ScoutCandidate] = []
+    rankable: list[ScreenedEvent] = []
+    for s in screened:
+        reason = held_reason(s.event)
+        if not reason:
+            rankable.append(s)
+            continue
+        candidate = _candidate_from(s, reject_reason=reason)
+        candidate.held_reason = reason
+        candidate.held_expired = wait_expired(
+            s.event.day, today, config.earnings_actual_wait_hours)
+        held.append(candidate)
+    screened = rankable
+    held_keys = {(c.ticker, c.event_date) for c in held}
 
     # Walk the ranked screen until enough candidates have PASSED the gates,
     # not until a fixed number have been TRIED. A fixed slice meant a day
@@ -509,14 +543,18 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
             pass
         capped.append(c)
 
-    # Last, so a quarter that earned a deeper reading above keeps it.
-    _record_cheap_history(stock_store, directory, events, screened_tickers)
+    # Last, so a quarter that earned a deeper reading above keeps it. Held
+    # prints are excluded: a history row IS a row for that quarter, so writing
+    # one would make the next scan skip the print as already recorded and the
+    # hold would quietly end in the calendar's numbers after all.
+    _record_cheap_history(stock_store, directory, events, screened_tickers,
+                          skip=held_keys)
 
     return ScoutResult(scan_start=window.start, scan_end=window.end,
                        scanned=len(raw), screened=screened_total,
                        enriched=attempted,
                        passed=passed, rejected=rejected, capped=capped,
-                       duplicates=duplicates,
+                       held=held, duplicates=duplicates,
                        window_truncated=window.truncated,
                        numbers=numbers,
                        enrichment_ceiling_hit=ceiling_hit)
@@ -562,14 +600,23 @@ def build_screened_candidates(
     choice) — so the ranking-cutoff tier (#4) is computed here, by the
     caller, immediately after that choice is made.
 
-    Every candidate here is being dropped for the first time: the dedup above
-    refuses a print any earlier scan already recorded, with no exemptions. A
-    second row for one print would count it twice in the tally that decides
-    whether the screen gets revised (20 samples of one cause is the bar), so
-    when the 48-hour hold reintroduces an exemption, this function needs a
-    matching filter again.
+    Every candidate here except a HELD one is being dropped for the first
+    time: the dedup refuses a print any earlier scan already recorded. Held
+    prints are the deliberate exemption — one `actual_pending` row per scan is
+    how "we looked again and the numbers still were not there" is recorded, so
+    the same print appears once per look. The drop review excludes that stage
+    from its tallies for exactly this reason; a name that was never judged
+    must not count toward the 20-sample bar that decides whether the screen
+    gets revised.
     """
     out: list[ScreenedCandidate] = []
+    for c in result.held:
+        out.append(ScreenedCandidate(
+            scan_id=scan_id, ticker=c.ticker, event_date=c.event_date,
+            stage=(ScreenedCandidateStage.ACTUAL_TIMEOUT if c.held_expired
+                   else ScreenedCandidateStage.ACTUAL_PENDING),
+            reject_reason=c.reject_reason,
+            **_measured(c), **_visible_at_drop(c)))
     for c in result.capped:
         out.append(ScreenedCandidate(
             scan_id=scan_id, ticker=c.ticker, event_date=c.event_date,

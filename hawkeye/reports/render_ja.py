@@ -200,8 +200,23 @@ def render_scout_ja(result) -> str:
     f = result.funnel()
     lines.append(f"ファネル: 決算イベント {f['scanned']}件 → サプライズ選別 "
                  f"{f['screened']}件 → 既出を除外 {f['duplicates']}件 → "
+                 f"実績待ちで保留 {f.get('held', 0)}件 → "
                  f"詳細取得 {f['enriched']}件 → "
                  f"ゲート通過 {f['gate_passed']}件")
+    # 「見送った」と「まだ判定していない」を混同させない。保留は会社についての
+    # 判断ではなく、こちらのデータがまだ揃っていないという事実で、次回の走査で
+    # 読み直す。48時間を過ぎた分は打ち切って落選記録に残す。
+    held = getattr(result, "held", [])
+    if held:
+        timed_out = [c for c in held if c.held_expired]
+        line = (f"実績待ちの保留 {len(held)}件: 次回の走査で読み直します"
+                f"(これは会社への判断ではなく、決算の数値がまだ届いていない"
+                f"という事実です)")
+        if timed_out:
+            line += (f"。うち {len(timed_out)}件 は待機期限(48時間)を過ぎたため"
+                     f"打ち切りました: "
+                     f"{'、'.join(c.ticker for c in timed_out[:8])}")
+        lines.append(line)
     # どの銘柄が「決算専門サイト(EarningsWhispers)の数字で順位を付けられたか」。
     # 断られ方は3つに分けて出す — 意味も、次にやることも違うため。
     # 「まだ取り込まれていない」は待てば来る、「サイトに繋がらなかった」は

@@ -62,6 +62,7 @@ from hawkeye.scout.drop_review import (
     collect_checkpoints,
     from_recommendation,
     from_screened,
+    is_reviewable,
     outliers,
     to_drop_review,
     with_peer_baseline,
@@ -560,7 +561,8 @@ def cmd_drops_report(args: argparse.Namespace) -> int:
     ledger = _ledger()
     provider = _provider()
 
-    tracked = [from_screened(c) for c in ledger.screened_candidates()]
+    tracked = [from_screened(c) for c in ledger.screened_candidates()
+               if is_reviewable(c)]
     for row in ledger.list():
         rec = ledger.get(row["id"])
         if rec is not None:
@@ -613,6 +615,8 @@ def _tracked_candidates(ledger) -> tuple[list, dict, dict]:
     record_news: dict[str, list] = {}
     event_dates: dict[str, date] = {}
     for c in ledger.screened_candidates():
+        if not is_reviewable(c):     # still held; nothing was judged yet
+            continue
         t = from_screened(c)
         tracked.append(t)
         record_news[c.id] = list(c.news)

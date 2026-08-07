@@ -479,6 +479,7 @@ def test_run_scout_funnel(config):
     assert [c.ticker for c in result.rejected] == ["TINY"]
     assert "gate" in result.rejected[0].reject_reason
     assert result.funnel() == {"scanned": 3, "screened": 2, "duplicates": 0,
+                               "held": 0,
                                "enriched": 2, "gate_passed": 1}
     # the passed candidate carries a ready-to-evaluate brief
     good = result.passed[0]

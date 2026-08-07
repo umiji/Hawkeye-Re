@@ -370,37 +370,3 @@ class EarningsPrint(BaseModel):
         """The calendar's actual, or None when its own rows contradict it."""
         distinct = {round(v, 6) for v in self.eps_actual_rows}
         return self.eps_actual_rows[0] if len(distinct) == 1 else None
-
-
-# ---------------------------------------------------------------------------
-# Prints whose own numbers have not arrived yet (hawkeye/scout/waiting.py).
-# Here rather than beside the funnel because the storage layer keeps these
-# rows and the funnel decides what they mean, and contracts is the only thing
-# both are allowed to share.
-# ---------------------------------------------------------------------------
-
-class ActualWait(BaseModel):
-    """One print being held open, and every look that came back empty."""
-    ticker: str
-    report_date: date
-    announced_at: datetime           # the origin of the wait's clock
-    first_seen_at: datetime
-    last_checked_at: datetime
-    attempts: int = 0
-    checks: list[dict] = Field(default_factory=list)
-    resolved_at: Optional[datetime] = None
-    resolution: str = ""
-
-    @property
-    def last_reason(self) -> str:
-        return self.checks[-1]["reason"] if self.checks else ""
-
-
-def within_wait_window(announced_at: datetime, now: datetime,
-                       hours: int) -> bool:
-    """Whether a print announced at `announced_at` is still worth re-reading.
-
-    Inclusive at the boundary: the rule is "give up once more than `hours`
-    have passed", so a check landing exactly on it still gets its read.
-    """
-    return now - announced_at <= timedelta(hours=hours)
