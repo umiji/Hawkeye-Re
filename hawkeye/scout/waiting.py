@@ -54,10 +54,11 @@ _WORTH_WAITING_FOR = frozenset({
     # The feed has not ingested this print yet. The normal case, and the
     # reason this whole mechanism exists.
     "whispers_previous_quarter",
-    # A fact about the connection, not about the company. Measured at 1-5
-    # failures per 50-request run, all sporadic HTTP 500s (2026-08-07).
-    # Ranking on the calendar instead would spend the print's one chance at
-    # the feed on a network blip.
+    # Nothing came back at all, so nothing was learned about the company.
+    # NOT the same as a server error: `whispers_server_error` reproduces on
+    # every attempt for the same ticker (INOD/UMAC/GAIN, measured 2026-08-08),
+    # so holding those buys the identical refusal every scan for 48 hours and
+    # then times out anyway. They fall back to the calendar.
     "whispers_unreachable",
     # The feed answered without an announcement time, so whether it is even
     # the same print cannot be established. Fail closed (invariant 6).

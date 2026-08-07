@@ -308,8 +308,11 @@ def test_a_response_that_is_not_an_object_is_a_failure_not_an_empty_result():
         parse_details(["not", "an", "object"])
 
 
-def _source(handler) -> WhispersSource:
-    return WhispersSource(transport=httpx.MockTransport(handler))
+def _source(handler, **kw) -> WhispersSource:
+    """A live-shaped reader with the retry pauses removed, so a retry test
+    measures the rule and not the clock."""
+    kw.setdefault("sleep", lambda seconds: None)
+    return WhispersSource(transport=httpx.MockTransport(handler), **kw)
 
 
 def test_a_successful_response_becomes_a_record():
@@ -327,6 +330,90 @@ def test_a_server_error_is_raised_rather_than_read_as_no_record():
     source = _source(lambda request: httpx.Response(500, text="boom"))
     with pytest.raises(WhispersUnavailable):
         source.details("ADM")
+
+
+def test_a_server_error_that_clears_on_the_retry_still_yields_the_record():
+    """The retry exists so that a 500 which IS momentary does not cost the
+    print its reading. Whether a given ticker's 500 is momentary is what the
+    retry finds out."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(500, text="<!DOCTYPE html>")
+        return httpx.Response(200, json=payload("ADM"))
+
+    assert _source(handler).details("ADM").eps_actual == pytest.approx(1.84)
+    assert calls["n"] == 2
+
+
+def test_a_connection_failure_is_retried_too():
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise httpx.ConnectError("reset")
+        return httpx.Response(200, json=payload("ADM"))
+
+    assert _source(handler).details("ADM") is not None
+    assert calls["n"] == 3          # two retries, unlike a server error
+
+
+def test_a_persistent_server_error_is_confirmed_once_and_not_held_for():
+    """Measured 2026-08-08: a 500 from this endpoint is a property of the
+    TICKER, not of the moment — INOD, UMAC and GAIN reproduce the same error
+    page on every attempt while other names answer JSON in the same loop. One
+    retry establishes that; more would buy the same refusal. And it is raised
+    as NON-transient, so the funnel falls back to the calendar instead of
+    holding the print for 48 hours over an answer that will not change."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(500, text="<!DOCTYPE html>")
+
+    with pytest.raises(WhispersUnavailable) as caught:
+        _source(handler).details("INOD")
+    assert calls["n"] == 2                     # the attempt plus one retry
+    assert caught.value.transient is False
+
+
+def test_a_connection_failure_is_raised_as_transient():
+    """Nothing came back at all, so nothing was learned about the company —
+    which is exactly the case worth waiting on."""
+    def handler(request):
+        raise httpx.ConnectError("reset")
+
+    with pytest.raises(WhispersUnavailable) as caught:
+        _source(handler).details("ADM")
+    assert caught.value.transient is True
+
+
+def test_a_client_error_is_not_retried():
+    """A 4xx is the site answering about THIS request. Repeating it changes
+    nothing and is not polite."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(403, text="no")
+
+    with pytest.raises(WhispersUnavailable):
+        _source(handler).details("ADM")
+    assert calls["n"] == 1
+
+
+def test_an_empty_answer_is_not_retried_because_it_is_a_real_answer():
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(204)
+
+    assert _source(handler).details("ZZZZQQ") is None
+    assert calls["n"] == 1
 
 
 def test_a_body_that_is_not_json_is_raised_rather_than_read_as_no_record():

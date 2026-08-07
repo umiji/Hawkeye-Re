@@ -65,11 +65,20 @@ def test_the_feed_still_on_last_quarter_is_held():
 
 
 def test_a_connection_failure_is_held_because_it_says_nothing_about_the_company():
-    """A transient HTTP 500 is a fact about the site. Ranking the name on the
-    calendar instead would spend the print's one chance at the feed on a
-    network blip — measured at 1 in 50 to 5 in 50 per run."""
+    """Nothing came back at all, so nothing was learned about the company.
+    Ranking the name on the calendar instead would spend the print's one
+    chance at the feed on a network blip."""
     assert held_reason(_event(numbers_reason="whispers_unreachable")) \
         == "whispers_unreachable"
+
+
+def test_a_server_error_the_ticker_reproduces_is_not_held():
+    """Corrects a reading from 2026-08-07. These 500s looked sporadic and are
+    not: the same tickers return the same error page every time. Holding them
+    buys the identical refusal on every scan for 48 hours and then times out,
+    so the print falls back to the calendar like any other decline the feed
+    cannot recover from."""
+    assert held_reason(_event(numbers_reason="whispers_server_error")) == ""
 
 
 def test_a_missing_consensus_is_not_held_because_waiting_cannot_fix_it():

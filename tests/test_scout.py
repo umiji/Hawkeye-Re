@@ -571,6 +571,55 @@ def test_screened_candidates_keep_the_qualitative_data_they_were_judged_on(confi
     assert row.analyst_trend == analyst
 
 
+def test_a_company_the_gates_already_refused_costs_no_feed_request(config, tmp_path):
+    """§6.1(E): the entry gates' verdict on the COMPANY (too small, too cheap,
+    too illiquid) is recorded on the master, so the next scan can skip the
+    name without fetching anything. It could not run before the screen —
+    market cap and volume come from a paid per-name call — so this is the
+    cheap cached shadow of that gate."""
+    from hawkeye.contracts.stocks import Stock
+    from hawkeye.ledger.stocks import StockStore
+
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [{"symbol": "TINY", "date": event_day.isoformat(),
+                "epsActual": 1.40, "epsEstimate": 1.00},
+               {"symbol": "OK", "date": event_day.isoformat(),
+                "epsActual": 1.30, "epsEstimate": 1.00}]
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    stock_id = store.put_stock(Stock(ticker="TINY"))
+    store.record_triage(stock_id, False, "min_market_cap", on=today)
+    numbers = CountingNumbers()
+
+    run_scout(FakeCalendar(entries), StaticProvider(
+        bars=make_bars(30, start_price=40.0, volume=2_000_000),
+        profile_data={"market_cap": 5e9}), config, today=today,
+        numbers_source=numbers, stock_store=store)
+
+    assert numbers.asked == ["OK"]
+
+
+def test_an_unknown_company_is_still_asked_about(config, tmp_path):
+    """Fails open in every uncertain direction. A wrong exclusion costs the
+    feed's reading of a print at the only moment it mattered; a wrong
+    inclusion costs one request."""
+    from hawkeye.ledger.stocks import StockStore
+
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [{"symbol": "NEW", "date": event_day.isoformat(),
+                "epsActual": 1.30, "epsEstimate": 1.00}]
+    numbers = CountingNumbers()
+
+    run_scout(FakeCalendar(entries), StaticProvider(
+        bars=make_bars(30, start_price=40.0, volume=2_000_000),
+        profile_data={"market_cap": 5e9}), config, today=today,
+        numbers_source=numbers,
+        stock_store=StockStore(str(tmp_path / "hawkeye.db")))
+
+    assert numbers.asked == ["NEW"]
+
+
 def test_a_drop_record_says_which_vendor_ranked_the_name(config):
     """The drop review's whole job is asking why the screen let a name go, and
     that is unanswerable without knowing whose yardstick it was measured on.

@@ -38,7 +38,7 @@ from hawkeye.scout.earnings import (
     screen_events,
 )
 from hawkeye.scout.prereg import resolve_stock
-from hawkeye.scout.triage import triage_from_gates
+from hawkeye.scout.triage import is_investigation_target, triage_from_gates
 from hawkeye.scout.quality import (
     EarningsQuality,
     assess_earnings,
@@ -332,6 +332,23 @@ def _record_cheap_history(store, directory, events,
     return written
 
 
+def _not_worth_a_lookup(store, screened: list[ScreenedEvent], today: date,
+                        config) -> set[tuple[str, date]]:
+    """Prints whose company the entry gates already refused, structurally.
+
+    Fails OPEN in every uncertain direction, exactly as pre-registration does
+    (hawkeye/scout/triage.py): no store, no master row, no verdict, or a
+    verdict old enough to be wrong all mean "ask anyway". A wrong exclusion
+    here costs the feed's reading of a print that can never be re-read at the
+    moment it mattered; a wrong inclusion costs one request.
+    """
+    if store is None:
+        return set()
+    return {(s.event.ticker, s.event.day) for s in screened
+            if not is_investigation_target(
+                store.stock_by_ticker(s.event.ticker), today, config)}
+
+
 def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConfig,
               days_back: Optional[int] = None,
               today: Optional[date] = None,
@@ -396,8 +413,23 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     # walk below is about this run's new work.
     all_screened = screen(events)
     screened = unseen(all_screened)
+    # Names the entry gates have ALREADY refused on the company's own
+    # properties — too small, too cheap, too illiquid — do not get a request
+    # (§6.1(E)). The verdict is free: it is a reading of a gate result this
+    # funnel recorded on an earlier run, so nothing is fetched to produce it,
+    # and it expires (`stock_triage_ttl_days`) because a $3 company can be a
+    # $9 company next quarter.
+    #
+    # It cannot run BEFORE the screen, and that is not an oversight: market
+    # cap, price and volume come from a paid per-name call, so gating on them
+    # first would mean paying the more expensive call first. This is the cheap
+    # cached shadow of that. Its bite grows as the master fills — 2 of 870
+    # rows carried a verdict on 2026-08-03, so today it excludes almost
+    # nothing, and it costs nothing either.
     events, numbers = read_numbers(events, screened, numbers_source,
-                                   config.scout_max_whispers, skip=seen)
+                                   config.scout_max_whispers,
+                                   skip=seen | _not_worth_a_lookup(
+                                       stock_store, screened, today, config))
     if numbers.from_whispers:
         all_screened = screen(events)
         screened = unseen(all_screened)

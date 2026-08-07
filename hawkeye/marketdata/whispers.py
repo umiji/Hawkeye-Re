@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import calendar
 import re
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Optional
@@ -55,6 +56,21 @@ _NO_WHISPER = 999.0
 # same print. Two days apart is a different quarter's print.
 _SAME_PRINT_DAYS = 1
 
+# How many extra attempts a failure is worth, by kind.
+#
+# Measured 2026-08-08, and it corrected an earlier reading: a 50-request run
+# loses 1 to 5 names to HTTP 500, and those 500s are NOT sporadic. They are a
+# property of the ticker — INOD, UMAC and GAIN return the same 96KB HTML error
+# page on every attempt, minutes apart, while ADM in the same loop answers
+# JSON. The rate holds at 177 req/min throughout, so nothing is throttling.
+#
+# So a 5xx is retried ONCE, only to establish that it is the ticker and not
+# the moment. A connection error is a different animal — nothing came back at
+# all — and is worth two.
+_SERVER_ERROR_RETRIES = 1
+_CONNECTION_RETRIES = 2
+_RETRY_PAUSE_SECONDS = 0.5
+
 
 class WhispersUnavailable(RuntimeError):
     """The feed could not be read, or answered with something unusable.
@@ -63,7 +79,19 @@ class WhispersUnavailable(RuntimeError):
     is: an empty answer means "this company has no record", a failure means
     "we do not know", and only the first of those may ever be treated as a
     fact about the company.
+
+    `transient` says whether reading again later could plausibly succeed, and
+    it decides what the funnel does next. A connection that failed is worth
+    holding the print for; a server error the same ticker reproduces on every
+    attempt is not — measured 2026-08-08, INOD/UMAC/GAIN return the same error
+    page every time, so holding them means paying for the same refusal every
+    scan for 48 hours and then giving up anyway. Those fall back to the
+    calendar's figures, like any other decline the feed cannot recover from.
     """
+
+    def __init__(self, message: str, transient: bool = True) -> None:
+        super().__init__(message)
+        self.transient = transient
 
 
 @dataclass(frozen=True)
@@ -412,12 +440,57 @@ class WhispersSource:
     HTML shell, which this class refuses rather than parses.
     """
 
-    def __init__(self, timeout: float = 15.0, transport=None) -> None:
+    def __init__(self, timeout: float = 15.0, transport=None,
+                 server_error_retries: int = _SERVER_ERROR_RETRIES,
+                 connection_retries: int = _CONNECTION_RETRIES,
+                 sleep=time.sleep) -> None:
         self._client = httpx.Client(timeout=timeout, transport=transport)
+        self._server_error_retries = max(server_error_retries, 0)
+        self._connection_retries = max(connection_retries, 0)
+        self._sleep = sleep
 
     @property
     def available(self) -> bool:
         return True
+
+    def _fetch(self, symbol: str) -> httpx.Response:
+        """One GET, retried while reading again could plausibly help.
+
+        Only 5xx and connection errors are retried. A 4xx is the site telling
+        us something about THIS request; repeating it would neither change the
+        answer nor be polite.
+
+        The two are retried differently and raised differently, because they
+        turned out to be different things (measured 2026-08-08). A 500 from
+        this endpoint reproduces on every attempt for the same ticker, so one
+        retry establishes that and a hold would only buy the same refusal 48
+        hours running. A connection error is worth two attempts and IS worth
+        holding for — nothing came back at all, so nothing was learned about
+        the company.
+        """
+        url = f"{_BASE}/api/epsdetails/{symbol}"
+        headers = {"User-Agent": _BROWSER_UA,
+                   "Referer": f"{_BASE}/epsdetails/{symbol}",
+                   "Accept": "application/json"}
+        attempts = max(self._server_error_retries,
+                       self._connection_retries) + 1
+        last, transient = "", True
+        for attempt in range(attempts):
+            try:
+                resp = self._client.get(url, headers=headers)
+                if resp.status_code < 500:
+                    return resp
+                last, transient = f"answered {resp.status_code}", False
+                budget = self._server_error_retries
+            except httpx.HTTPError as exc:
+                last, transient = f"could not be reached ({exc})", True
+                budget = self._connection_retries
+            if attempt >= budget:
+                break
+            self._sleep(_RETRY_PAUSE_SECONDS * (attempt + 1))
+        raise WhispersUnavailable(
+            f"{symbol}: the earnings feed {last} on {attempt + 1} attempts",
+            transient=transient)
 
     def details(self, ticker: str) -> Optional[WhispersRecord]:
         """This company's most recent print, or None when it has no record.
@@ -427,16 +500,7 @@ class WhispersSource:
         fact about the company rather than about the connection.
         """
         symbol = ticker.strip().upper()
-        url = f"{_BASE}/api/epsdetails/{symbol}"
-        try:
-            resp = self._client.get(url, headers={
-                "User-Agent": _BROWSER_UA,
-                "Referer": f"{_BASE}/epsdetails/{symbol}",
-                "Accept": "application/json"})
-        except httpx.HTTPError as exc:
-            raise WhispersUnavailable(
-                f"{symbol}: the earnings feed could not be reached "
-                f"({exc})") from exc
+        resp = self._fetch(symbol)
         if resp.status_code == httpx.codes.NO_CONTENT or not resp.content:
             return None
         if resp.status_code >= 400:

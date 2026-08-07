@@ -127,8 +127,13 @@ def _read_one(source: WhispersReader,
     it can. Every rejection is named; none is a bare None."""
     try:
         record = source.details(event.ticker)
-    except WhispersUnavailable:
-        return None, "whispers_unreachable"
+    except WhispersUnavailable as exc:
+        # Two different facts wearing one exception. A connection that failed
+        # says nothing about the company and is worth waiting on; a server
+        # error the same ticker reproduces every time is the feed refusing
+        # this name, and waiting buys the same refusal for 48 hours.
+        return None, ("whispers_unreachable" if getattr(exc, "transient", True)
+                      else "whispers_server_error")
     if record is None:
         return None, "whispers_no_record"
     stale = record.staleness_reason(event.day)
@@ -216,7 +221,7 @@ def read_numbers(events: list[EarningsEvent],
             chosen += 1
             out.append(_substituted(event, record))
             continue
-        if reason == "whispers_unreachable":
+        if reason in ("whispers_unreachable", "whispers_server_error"):
             unreachable += 1
         elif reason in ("whispers_previous_quarter", "whispers_later_print",
                         "whispers_announcement_time_missing"):
