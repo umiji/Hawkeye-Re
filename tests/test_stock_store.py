@@ -169,14 +169,14 @@ def test_a_deeper_reading_appends_and_the_shallow_row_survives(tmp_path):
         eps_finnhub=[5.75]))
     deep = st.record_print(EarningsPrint(
         stock_id="cik:0001018724", fiscal_quarter="2026-Q2",
-        report_date=date(2026, 7, 31), depth=PrintDepth.XBRL_VALIDATED,
-        eps_yahoo=5.75, eps_finnhub=[1.88, 1.97], eps_xbrl_diluted=5.75,
+        report_date=date(2026, 7, 31), depth=PrintDepth.VERIFIED,
+        eps_yahoo=5.75, eps_finnhub=[1.88, 1.97],
         contamination_flags=["finnhub_actual_conflict"]))
 
     assert shallow != deep
     assert st.print_row(shallow).depth is PrintDepth.CALENDAR_ONLY
     latest = st.latest_print("cik:0001018724", "2026-Q2")
-    assert latest.depth is PrintDepth.XBRL_VALIDATED
+    assert latest.depth is PrintDepth.VERIFIED
     assert latest.contamination_flags == ["finnhub_actual_conflict"]
     assert len(st.prints("cik:0001018724")) == 2
 

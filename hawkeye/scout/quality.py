@@ -11,9 +11,11 @@ on 2026-08-01.
 Three failure modes are handled apart from each other, because they are
 resolvable by different things:
 
-- **The actuals disagree** (AAPL 2.02 vs 1.91). Resolvable by a document:
-  the company published both figures and said which is which. Until it is
-  read, the leg is unverified.
+- **The actuals disagree** (AAPL 2.02 vs 1.91). The reading takes the smaller
+  actual against the larger consensus, so a beat under it holds under either
+  vendor's figures; the disagreement is named in the brief and left standing.
+  It used to be resolvable by reading the company's own release, and is not
+  any more — that escalation is gone (tests/test_removed_escalations.py).
 - **The consensus disagrees** (BIIB 2.15 vs 3.98). Resolvable by nothing —
   no primary source for consensus exists anywhere — so it is flagged, both
   values are kept, and the conservative one ranks.
@@ -21,10 +23,10 @@ resolvable by different things:
   near-zero GAAP consensus). Not a disagreement at all; the denominator just
   cannot carry a percentage.
 
-Nothing here computes a non-GAAP figure. Non-GAAP is READ from the release
-or it does not exist, and a quarter whose one-off nobody quantified travels
-onward labelled `unadjusted` — a known unknown for the tribunal, not a
-silent pass.
+Nothing here computes a non-GAAP figure, and nothing reads one either: with
+no source for a published adjusted figure, a quarter whose one-off nobody
+quantified simply travels onward on the vendors' numbers, with the
+disagreement between them stated.
 """
 from __future__ import annotations
 
@@ -36,7 +38,6 @@ from hawkeye.contracts.models import now
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     EarningsPrint,
-    EpsBasis,
     PrintDepth,
     SnapshotKind,
 )
@@ -85,7 +86,6 @@ class LegVerdict:
     actual_finnhub: Optional[float] = None
     sources: int = 0                       # consensus sources compared
     analysts: Optional[int] = None
-    basis: Optional[EpsBasis] = None
     # Machine-readable reasons, never prose. The Japanese wording lives in
     # `hawkeye/reports/quality_ja.py` and the English wording in
     # `describe_quality_en` — a verdict that carried its own sentence would
@@ -132,19 +132,19 @@ def _relative_gap(a: float, b: float) -> float:
 
 
 def _resolve_actual(yahoo: Optional[float], finnhub: Optional[float],
-                    settled: Optional[float], config,
-                    absolute_floor: Optional[float]
+                    config, absolute_floor: Optional[float]
                     ) -> tuple[Optional[float], list[str]]:
     """The actual to judge on, and what was wrong with getting there.
 
-    A settled figure (read from the company's own release) always wins: it is
-    the only reading with a primary source behind it. Otherwise the two
-    vendors must agree — and "agree" is two conditions, not one, because on a
-    $0.30 EPS a single cent of rounding is 3%.
+    The two vendors must agree — and "agree" is two conditions, not one,
+    because on a $0.30 EPS a single cent of rounding is 3%.
+
+    There used to be a third input: a figure read from the company's own
+    release, which overrode both. Nothing produces one now that the scan has
+    stopped reading releases, so the branch was removed rather than left as a
+    parameter every caller passes None to.
     """
     flags: list[str] = []
-    if settled is not None:
-        return settled, flags
     present = [v for v in (yahoo, finnhub) if v is not None]
     if not present:
         return None, ["no_actual"]
@@ -167,7 +167,6 @@ def _assess_leg(leg: str, actual: Optional[float], actual_flags: list[str],
                 finnhub_estimate: Optional[float],
                 analysts: Optional[int], config,
                 min_abs_estimate: Optional[float] = None,
-                basis: Optional[EpsBasis] = None,
                 actual_yahoo: Optional[float] = None,
                 actual_finnhub: Optional[float] = None) -> LegVerdict:
     flags = list(actual_flags)
@@ -198,7 +197,7 @@ def _assess_leg(leg: str, actual: Optional[float], actual_flags: list[str],
                       yahoo_surprise_pct=yahoo_pct,
                       finnhub_surprise_pct=finnhub_pct, actual=actual,
                       actual_yahoo=actual_yahoo, actual_finnhub=actual_finnhub,
-                      sources=len(estimates), analysts=analysts, basis=basis,
+                      sources=len(estimates), analysts=analysts,
                       flags=tuple(flags))
 
 
@@ -379,8 +378,8 @@ def _dispute_line_en(quality: "EarningsQuality") -> str:
     return (f" NOTE: the two data vendors report DIFFERENT EPS actuals for "
             f"this quarter ({figures}). The reading above takes the smaller "
             f"actual against the larger consensus, so it holds under either "
-            f"vendor's numbers — but the basis is not settled, and the "
-            f"company's own release has been requested to settle it.")
+            f"vendor's numbers — but the basis is not settled, and nothing "
+            f"in this system will settle it.")
 
 
 def _leg_line_en(leg: LegVerdict) -> str:
@@ -510,8 +509,7 @@ def assess_earnings(print_row: EarningsPrint,
     the market disagreeing with the number we just validated.
     """
     eps_actual, eps_flags = _resolve_actual(
-        print_row.eps_yahoo, print_row.eps_finnhub_usable,
-        print_row.eps_release, config,
+        print_row.eps_yahoo, print_row.eps_finnhub_usable, config,
         absolute_floor=config.earnings_actual_dispute_abs_usd)
     if print_row.eps_finnhub and print_row.eps_finnhub_usable is None:
         eps_flags.insert(0, "finnhub_actual_conflict")
@@ -521,13 +519,11 @@ def assess_earnings(print_row: EarningsPrint,
         consensus.eps_finnhub if consensus else None,
         consensus.eps_analysts if consensus else None, config,
         min_abs_estimate=config.scout_min_abs_eps_estimate,
-        basis=print_row.eps_basis,
         actual_yahoo=print_row.eps_yahoo,
         actual_finnhub=print_row.eps_finnhub_usable)
 
     revenue_actual, revenue_flags = _resolve_actual(
-        print_row.revenue_xbrl or print_row.revenue_release,
-        print_row.revenue_finnhub, None, config, absolute_floor=None)
+        None, print_row.revenue_finnhub, config, absolute_floor=None)
     revenue = _assess_leg(
         "revenue", revenue_actual, revenue_flags,
         consensus.revenue_avg if consensus else None,
@@ -551,8 +547,6 @@ def assess_earnings(print_row: EarningsPrint,
 
     flags = list(dict.fromkeys(
         list(eps.flags) + [f"revenue_{f}" for f in revenue.flags]))
-    if print_row.eps_basis is EpsBasis.UNADJUSTED and eps_actual is not None:
-        flags.append("unadjusted")
     return EarningsQuality(
         ticker=print_row.ticker, fiscal_quarter=print_row.fiscal_quarter,
         eps=eps, revenue=revenue, guidance=guidance,

@@ -19,7 +19,6 @@ from hawkeye.config import HawkeyeConfig
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     EarningsPrint,
-    EpsBasis,
     GuidanceReading,
     PrintDepth,
     SnapshotKind,
@@ -94,7 +93,8 @@ def test_disagreeing_actuals_are_judged_on_the_smaller_of_the_two():
     actual against the LARGER consensus means the beat holds under either
     vendor's reading of either number — which is strictly stronger evidence
     than the single-source actual this system already accepts. The flag stays
-    on the leg and the release is still asked for.
+    on the leg, and nothing settles it: the escalation that used to read the
+    company's own release is gone (tests/test_removed_escalations.py).
     """
     quality = assess_earnings(
         a_print(eps_yahoo=2.02, eps_finnhub=[1.91]),
@@ -138,20 +138,6 @@ def test_a_miss_both_vendors_agree_on_still_subtracts():
     assert quality.eps.status is LegStatus.MISS
     assert "actual_disputed" in quality.eps.flags
     assert quality.score < 0.0
-
-
-def test_a_disputed_actual_is_still_worth_reading_the_release_for():
-    """Scoring the leg conservatively is not the same as settling it. The
-    document is what turns "true under both readings" into "this is the
-    number", and it also fixes the basis — so the escalation must survive
-    the doctrine change that stopped the dispute blocking."""
-    from hawkeye.scout.release import needs_release_read
-
-    quality = assess_earnings(
-        a_print(eps_yahoo=2.02, eps_finnhub=[1.91]),
-        a_consensus(eps_avg=1.89, eps_finnhub=1.89), CONFIG)
-
-    assert needs_release_read(quality)
 
 
 def test_the_tribunal_is_told_the_two_sources_disagreed():
@@ -203,35 +189,18 @@ def test_a_penny_of_rounding_is_not_a_dispute():
     assert quality.eps.surprise_pct == 10.0        # the conservative actual
 
 
-def test_the_release_settles_a_dispute_and_records_the_basis():
-    """Reading the release resolves AAPL to 1.91 on an adjusted basis. The
-    figure is READ, never computed (§5.3 決定1)."""
-    quality = assess_earnings(
-        a_print(eps_yahoo=2.02, eps_finnhub=[1.91], eps_release=1.91,
-                eps_basis=EpsBasis.ADJUSTED, one_off_per_share=0.11,
-                depth=PrintDepth.RELEASE_READ),
-        a_consensus(eps_avg=1.89, eps_finnhub=1.89), CONFIG)
-
-    assert quality.eps.status is LegStatus.BEAT
-    assert round(quality.eps.surprise_pct, 2) == 1.06
-    assert "actual_disputed" not in quality.eps.flags
-    assert quality.eps.basis is EpsBasis.ADJUSTED
-
-
 def test_finnhubs_contradictory_rows_make_its_actual_unusable():
     """AMZN's calendar returned 1.88 AND 1.97 for one print. Picking the row
     that happens to match Yahoo would be exactly the "choose the more
     plausible one" judgment this system exists to remove — so Finnhub simply
     contributes no actual, and the reading stands on one source."""
     quality = assess_earnings(
-        a_print(eps_yahoo=5.75, eps_finnhub=[1.88, 1.97],
-                eps_basis=EpsBasis.UNADJUSTED),
+        a_print(eps_yahoo=5.75, eps_finnhub=[1.88, 1.97]),
         a_consensus(eps_avg=1.83, eps_finnhub=1.83), CONFIG)
 
     assert "finnhub_actual_conflict" in quality.eps.flags
     assert "single_source_actual" in quality.eps.flags
     assert quality.eps.status is LegStatus.BEAT       # both CONSENSUS agree
-    assert "unadjusted" in quality.flags              # the one-off warning
     assert quality.score <= 70.0                      # capped, never +215
 
 
@@ -287,7 +256,7 @@ def test_no_consensus_at_all_is_absent_not_a_beat():
 
 def test_revenue_beats_on_both_sources_add_to_the_score():
     beat = assess_earnings(
-        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20],
                 revenue_finnhub=1.05e9),
         a_consensus(revenue_avg=1.0e9, revenue_finnhub=1.0e9), CONFIG)
     flat = assess_earnings(
@@ -301,7 +270,7 @@ def test_revenue_beats_on_both_sources_add_to_the_score():
 
 def test_a_revenue_miss_is_reported_even_when_eps_beat():
     quality = assess_earnings(
-        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=0.9e9,
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20],
                 revenue_finnhub=0.9e9),
         a_consensus(), CONFIG)
 
@@ -315,7 +284,7 @@ def test_missing_guidance_costs_nothing():
     """Plenty of companies publish none, and there is no structured source
     for it anywhere — so absence is neutral (§5.3 決定3)."""
     without = assess_earnings(
-        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20],
                 revenue_finnhub=1.05e9),
         a_consensus(next_quarter_eps_avg=2.00), CONFIG)
 
@@ -325,7 +294,7 @@ def test_missing_guidance_costs_nothing():
 
 
 def test_guidance_above_consensus_earns_a_small_bonus():
-    base = a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+    base = a_print(eps_yahoo=1.20, eps_finnhub=[1.20],
                    revenue_finnhub=1.05e9)
     raised = base.model_copy(update={"guidance": GuidanceReading(
         period="2026-Q3", eps_low=2.10, eps_high=2.30,
@@ -379,7 +348,7 @@ def test_full_year_guidance_is_never_scored_against_a_quarterly_consensus():
     the only honest outcome (invariant 6).
     """
     quality = assess_earnings(
-        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20],
                 revenue_finnhub=1.05e9,
                 guidance=GuidanceReading(period="FY2026", eps_low=5.15,
                                          eps_high=5.60)),
@@ -392,7 +361,7 @@ def test_full_year_guidance_is_never_scored_against_a_quarterly_consensus():
 
 def test_guidance_for_a_quarter_other_than_the_next_one_is_not_compared():
     quality = assess_earnings(
-        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20],
                 revenue_finnhub=1.05e9,
                 guidance=GuidanceReading(period="2027-Q1", eps_low=2.10,
                                          eps_high=2.30)),
@@ -403,12 +372,11 @@ def test_guidance_for_a_quarter_other_than_the_next_one_is_not_compared():
 
 
 def test_guidance_with_no_period_label_is_still_compared():
-    """Readings recorded before the period was carried (and the agent-supplied
-    ones in var/releases/) have no label. Refusing those would drop guidance
-    this system already holds, so an unlabelled range keeps its old meaning:
-    it is taken as next quarter's."""
+    """Readings recorded before the period was carried have no label.
+    Refusing those would drop guidance this system already holds, so an
+    unlabelled range keeps its old meaning: it is taken as next quarter's."""
     quality = assess_earnings(
-        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20],
                 revenue_finnhub=1.05e9,
                 guidance=GuidanceReading(eps_low=2.10, eps_high=2.30)),
         a_consensus(next_quarter_eps_avg=2.00), CONFIG)
@@ -421,7 +389,7 @@ def test_revenue_guidance_counts_when_the_company_gives_no_eps_range():
     guidance only on EPS would score every such company as "no guidance",
     which is a fact about our reading rather than about the company."""
     quality = assess_earnings(
-        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20],
                 revenue_finnhub=1.05e9,
                 guidance=GuidanceReading(period="2026-Q3",
                                          revenue_low=1.10e9,
@@ -437,7 +405,7 @@ def test_guidance_below_consensus_is_reported_without_a_mechanical_penalty():
     """The Adversary is free to attack a cut; the screen does not dock
     points for one, because "no guidance" and "weak guidance" must not be
     scored on the same axis as the two legs that have real consensus."""
-    cut = a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+    cut = a_print(eps_yahoo=1.20, eps_finnhub=[1.20],
                   revenue_finnhub=1.05e9,
                   guidance=GuidanceReading(period="2026-Q3", eps_low=1.60,
                                            eps_high=1.80))
@@ -456,7 +424,7 @@ def test_guidance_below_consensus_is_reported_without_a_mechanical_penalty():
 
 def test_all_three_legs_beating_is_a_good_quarter():
     quality = assess_earnings(
-        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=1.05e9,
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20],
                 revenue_finnhub=1.05e9,
                 guidance=GuidanceReading(period="2026-Q3", eps_low=2.10,
                                          eps_high=2.30)),
@@ -474,11 +442,11 @@ def test_a_leg_that_missed_cannot_score_like_a_leg_with_no_data():
     definition of a good quarter requires all three legs — so it subtracts,
     mirroring the bonus a beat earns, rather than reading as absent data."""
     eps_only = assess_earnings(
-        a_print(eps_yahoo=3.00, eps_finnhub=[3.00], revenue_xbrl=0.9e9,
+        a_print(eps_yahoo=3.00, eps_finnhub=[3.00],
                 revenue_finnhub=0.9e9),
         a_consensus(), CONFIG)
     both_legs = assess_earnings(
-        a_print(eps_yahoo=1.40, eps_finnhub=[1.40], revenue_xbrl=1.08e9,
+        a_print(eps_yahoo=1.40, eps_finnhub=[1.40],
                 revenue_finnhub=1.08e9),
         a_consensus(), CONFIG)
 
@@ -493,7 +461,7 @@ def test_a_missing_revenue_reading_is_not_a_penalty():
         a_print(eps_yahoo=1.20, eps_finnhub=[1.20]),
         a_consensus(revenue_avg=None, revenue_finnhub=None), CONFIG)
     missed = assess_earnings(
-        a_print(eps_yahoo=1.20, eps_finnhub=[1.20], revenue_xbrl=0.9e9,
+        a_print(eps_yahoo=1.20, eps_finnhub=[1.20],
                 revenue_finnhub=0.9e9),
         a_consensus(), CONFIG)
 

@@ -63,13 +63,6 @@ class HawkeyeConfig:
     # 62 req/min with no rate limiting, so 60 costs about a minute. Names
     # past it keep the calendar's EPS, marked as such rather than dropped.
     scout_max_verify: int = 60
-    # How many earnings releases one scan may read in full when the two
-    # vendors' actuals disagree (hawkeye/scout/release.py). A cost ceiling,
-    # not a doctrine number: the read measured ~8,900 tokens a name and the
-    # dispute it settles occurs in 21% of prints, so a normal run escalates
-    # about one name. Reaching this leaves the remaining legs unverified —
-    # which is the honest reading — rather than guessing at them.
-    scout_max_release_reads: int = 3
 
     # --- Earnings quality: the three legs (docs/design/MASTER_OVERVIEW.ja.md §5.3) ---
     # None of these were invented. They come from the gaps in the measured

@@ -12,8 +12,7 @@ is a first-class metric of the system, same as P&L.
 """
 from __future__ import annotations
 
-import sys
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
@@ -40,7 +39,6 @@ from hawkeye.scout.earnings import (
 )
 from hawkeye.scout.prereg import resolve_stock
 from hawkeye.scout.triage import triage_from_gates
-from hawkeye.scout.release import read_release, release_key
 from hawkeye.scout.quality import (
     EarningsQuality,
     assess_earnings,
@@ -104,18 +102,6 @@ class ScoutResult:
     # full. Means the shortlist is short because the budget ran out, not
     # because the calendar was quiet — the two must not read the same.
     enrichment_ceiling_hit: bool = False
-    # Names whose two vendors disagree about the reported EPS and for which
-    # no reading of the company's release was available. The read happens
-    # outside this process, so naming them is how the next run gets one; the
-    # legs stay unverified until then (hawkeye/scout/release.py).
-    release_wanted: list[str] = field(default_factory=list)
-    # Prints that were held open from an earlier run and re-evaluated here.
-    # Recorded because they are the ONE case where dedup was suspended, and
-    # because they must not enter the drop statistics a second time.
-    reopened: list[tuple[str, date]] = field(default_factory=list)
-    # Held-open prints whose document arrived and was accepted this run. The
-    # wait is over for these; anything still in `release_wanted` is not.
-    release_settled: list[str] = field(default_factory=list)
 
     def funnel(self) -> dict:
         return {"scanned": self.scanned, "screened": self.screened,
@@ -327,61 +313,24 @@ def _record_cheap_history(store, directory, events,
     return written
 
 
-def _rows_for(raw: list[dict],
-              prints: set[tuple[str, date]]) -> list[dict]:
-    """Only the calendar rows belonging to the prints that were asked for.
-
-    The extra lookup spans a date range, so it returns everything reporting
-    in between. Keeping those would widen the scan silently — names nobody
-    chose would enter the funnel and land in the drop statistics.
-    """
-    out: list[dict] = []
-    for row in raw:
-        symbol = (row.get("symbol") or "").strip().upper()
-        try:
-            day = date.fromisoformat(str(row.get("date"))[:10])
-        except ValueError:
-            continue
-        if (symbol, day) in prints:
-            out.append(row)
-    return out
-
-
-def _cik_of(store, stock_id: str) -> Optional[str]:
-    stock = store.stock(stock_id) if store is not None else None
-    return stock.cik if stock is not None else None
-
-
 def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConfig,
               days_back: Optional[int] = None,
               today: Optional[date] = None,
               window: Optional[ScanWindow] = None,
               already_seen: Optional[set[tuple[str, date]]] = None,
-              held_open: Optional[set[tuple[str, date]]] = None,
               numbers_source: Optional[EarningsNumberSource] = None,
               stock_store=None,
               directory=None,
-              consensus_source=None,
-              facts=None,
-              release_reader=None) -> ScoutResult:
+              consensus_source=None) -> ScoutResult:
     """calendar_source: object with earnings_calendar(start, end) -> list[dict]
     provider: MarketDataProvider for enrichment (prices/profile/news).
     window: the earnings days to cover — normally built by scan_window()
         from the previous run. `days_back` is the manual override.
     already_seen: (ticker, event date) pairs an earlier scan already
         recorded, dropped before enrichment so they cost no API calls.
-    held_open: the narrow exemption to that — prints an earlier run asked for
-        a document about (hawkeye/scout/release.py). They are looked up by
-        name even when the window has moved past them, and they are the only
-        candidates allowed through the dedup.
     numbers_source: re-reads reported EPS from a second source before the
         shortlist is decided (hawkeye/scout/verify.py). Optional — without
         it the calendar's own figures stand, exactly as before.
-    facts / release_reader: the escalation of last resort
-        (hawkeye/scout/release.py). Where the two vendors report different
-        actuals, the company's own release is read and checked against
-        EDGAR's filed figure. Optional — without them a disputed leg simply
-        stays unverified, which is what it was before.
     """
     today = today or date.today()
     if window is None:
@@ -396,19 +345,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                              config.scout_min_abs_eps_estimate,
                              config.scout_max_trusted_revenue_surprise_pct)
 
-    pending = set(held_open or set())
     raw = calendar_source.earnings_calendar(window.start, window.end)
-    # A held-open print is usually behind the window by the time its document
-    # arrives — runs are manual and the window follows the last one — so
-    # exempting it from the dedup is not enough on its own: the calendar has
-    # to be asked for it again. One extra call covering all of them, not one
-    # per print, and the rows are filtered back down to exactly the prints
-    # that were asked for so the scan is never quietly widened.
-    outside = sorted({day for _, day in pending
-                      if not window.start <= day <= window.end})
-    if outside:
-        raw = raw + _rows_for(
-            calendar_source.earnings_calendar(outside[0], outside[-1]), pending)
     events = parse_calendar(raw)
     # Screened twice on purpose. The first pass is provisional — it only
     # decides which names are worth a verification call — and the second is
@@ -425,17 +362,16 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     # Deduplicate before enrichment: windows overlap by design, so the same
     # earnings event recurs across runs. Re-evaluating it would both waste
     # free-tier calls and double-count it in the drop statistics.
-    # …with exactly one exemption: a print this system asked for a document
-    # about. It was recorded as a drop on the run that named it, so it is
-    # already in `seen` — and without the exemption the document it asked for
-    # would be prepared and then never read by anything (found 2026-08-03).
+    #
+    # There used to be one exemption — a print this system had asked for a
+    # release document about was let through even though it was already seen.
+    # Nothing asks for documents now, so nothing is exempt. The 48-hour hold
+    # for a print whose OWN numbers have not arrived will need an exemption of
+    # its own; it is a different condition and gets written with that feature.
     seen = already_seen or set()
     screened_tickers = {s.event.ticker for s in screened}
     fresh = [s for s in screened
-             if (s.event.ticker, s.event.day) not in seen
-             or (s.event.ticker, s.event.day) in pending]
-    reopened = [(s.event.ticker, s.event.day) for s in fresh
-                if (s.event.ticker, s.event.day) in seen]
+             if (s.event.ticker, s.event.day) not in seen]
     duplicates = len(screened) - len(fresh)
     screened_total, screened = len(screened), fresh
 
@@ -450,9 +386,6 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     rejected: list[ScoutCandidate] = []
     attempted = 0
     stopped_at = len(screened)
-    release_budget = config.scout_max_release_reads
-    release_wanted: list[str] = []
-    release_settled: list[str] = []
 
     for position, s in enumerate(screened):
         if (len(passed) >= config.scout_target_gate_passed
@@ -470,29 +403,6 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                                    consensus_source)
         quality = (assess_earnings(context.print_row, context.consensus, config)
                    if context is not None else None)
-        # The escalation of last resort, and the only one that costs real
-        # money: where the two vendors report different actuals, nothing
-        # cheaper can settle it, so the company's own release is read and
-        # validated against EDGAR's filed EPS. Bounded per run; a name past
-        # the budget keeps its unverified leg rather than a guess.
-        if context is not None and release_budget > 0:
-            outcome = read_release(context.print_row, quality, release_reader,
-                                   facts, _cik_of(stock_store,
-                                                  context.stock_id))
-            if outcome is not None and outcome.reason == "no_extraction":
-                # Nothing was read, so nothing was spent. Naming the print is
-                # what lets the next run have a document to work from.
-                release_wanted.append(release_key(context.print_row))
-            elif outcome is not None:
-                release_budget -= 1
-                if outcome.accepted:
-                    release_settled.append(release_key(outcome.row))
-                    context = replace(context, print_row=outcome.row)
-                    quality = assess_earnings(outcome.row, context.consensus,
-                                              config)
-                else:
-                    print(f"{candidate.ticker}: {outcome.reason}",
-                          file=sys.stderr)
         catalyst = Catalyst(
             type=CatalystType.EARNINGS_BEAT,
             description=(describe_quality_en(quality) if quality is not None
@@ -591,10 +501,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                        duplicates=duplicates,
                        window_truncated=window.truncated,
                        verification=verification,
-                       enrichment_ceiling_hit=ceiling_hit,
-                       release_wanted=release_wanted,
-                       reopened=reopened,
-                       release_settled=release_settled)
+                       enrichment_ceiling_hit=ceiling_hit)
 
 
 def _visible_at_drop(c: ScoutCandidate) -> dict:
@@ -637,36 +544,28 @@ def build_screened_candidates(
     choice) — so the ranking-cutoff tier (#4) is computed here, by the
     caller, immediately after that choice is made.
 
-    A print that was re-evaluated only because we went back for its release
-    document is skipped entirely: it was already recorded when it was first
-    dropped, and a second row would count it twice in the tally that decides
-    whether the screen gets revised (20 samples of one cause is the bar).
+    Every candidate here is being dropped for the first time: the dedup above
+    refuses a print any earlier scan already recorded, with no exemptions. A
+    second row for one print would count it twice in the tally that decides
+    whether the screen gets revised (20 samples of one cause is the bar), so
+    when the 48-hour hold reintroduces an exemption, this function needs a
+    matching filter again.
     """
-    reopened = set(result.reopened)
-
-    def first_drop(c: ScoutCandidate) -> bool:
-        return (c.ticker, c.event_date) not in reopened
-
     out: list[ScreenedCandidate] = []
-    for c in filter(first_drop, result.capped):
+    for c in result.capped:
         out.append(ScreenedCandidate(
             scan_id=scan_id, ticker=c.ticker, event_date=c.event_date,
             stage=ScreenedCandidateStage.ENRICHMENT_CAP,
             reject_reason=c.reject_reason,
             **_measured(c), **_visible_at_drop(c)))
-    for c in filter(first_drop, result.rejected):
+    for c in result.rejected:
         out.append(ScreenedCandidate(
             scan_id=scan_id, ticker=c.ticker, event_date=c.event_date,
             stage=ScreenedCandidateStage.GATE_REJECT,
             gate_report=c.gate_report, reject_reason=c.reject_reason,
             **_measured(c), **_visible_at_drop(c)))
-    # The rank is still counted over the whole shortlist — a reopened name
-    # competes for the tribunal slots like any other. Only the RECORD of the
-    # drop is suppressed, not the ranking it lost.
     for i, c in enumerate(result.passed[sent_to_tribunal_n:],
                           start=sent_to_tribunal_n + 1):
-        if not first_drop(c):
-            continue
         out.append(ScreenedCandidate(
             scan_id=scan_id, ticker=c.ticker, event_date=c.event_date,
             stage=ScreenedCandidateStage.RANKING_CUTOFF, rank=i,

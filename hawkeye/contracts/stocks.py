@@ -46,28 +46,23 @@ class SnapshotKind(str, Enum):
 
 
 class PrintDepth(str, Enum):
+    """How far anyone got with this quarter's numbers.
+
+    Two steps, both reachable. There were four: `xbrl_validated` was never
+    assigned anywhere in the system's history, and `release_read` became
+    unreachable when the scan stopped reading companies' releases — the
+    escalation fired only on two vendors disagreeing, which one source per
+    print makes structurally impossible (see tests/test_removed_escalations.py).
+    """
     CALENDAR_ONLY = "calendar_only"      # free: the calendar response itself
-    VERIFIED = "verified"                # both sources' actuals compared
-    XBRL_VALIDATED = "xbrl_validated"    # checked against EDGAR XBRL
-    RELEASE_READ = "release_read"        # the release itself was read
+    VERIFIED = "verified"                # a second source confirmed the actual
 
     @property
     def rank(self) -> int:
         return _DEPTH_ORDER.index(self)
 
 
-_DEPTH_ORDER = [PrintDepth.CALENDAR_ONLY, PrintDepth.VERIFIED,
-                PrintDepth.XBRL_VALIDATED, PrintDepth.RELEASE_READ]
-
-
-class EpsBasis(str, Enum):
-    """Which basis an EPS actual is on. `UNADJUSTED` is not a failure — it is
-    the honest label for "the company published no non-GAAP figure and named
-    no one-off", and it travels to the tribunal as a known unknown. Non-GAAP
-    is READ, never computed (§5.3 decision 1)."""
-    AS_REPORTED = "as_reported"          # GAAP, no one-off identified
-    ADJUSTED = "adjusted"                # the company's own non-GAAP figure
-    UNADJUSTED = "unadjusted"            # GAAP, and a one-off may be inside it
+_DEPTH_ORDER = [PrintDepth.CALENDAR_ONLY, PrintDepth.VERIFIED]
 
 
 class QuarterBasis(str, Enum):
@@ -321,14 +316,8 @@ class EarningsPrint(BaseModel):
 
     eps_yahoo: Optional[float] = None
     eps_finnhub: list[float] = Field(default_factory=list)
-    eps_xbrl_diluted: Optional[float] = None
-    eps_release: Optional[float] = None        # read from the release itself
-    eps_basis: EpsBasis = EpsBasis.AS_REPORTED
-    one_off_per_share: Optional[float] = None  # only if the company named it
 
     revenue_finnhub: Optional[float] = None
-    revenue_xbrl: Optional[float] = None
-    revenue_release: Optional[float] = None
 
     guidance: Optional[GuidanceReading] = None
     contamination_flags: list[str] = Field(default_factory=list)
@@ -343,14 +332,15 @@ class EarningsPrint(BaseModel):
 
     @property
     def revenue_actual(self) -> Optional[float]:
-        """XBRL first: Finnhub's revenue matched the filings 22/22, so the
-        two agreeing is the normal case and XBRL is the one with a primary
-        source behind it."""
-        for value in (self.revenue_xbrl, self.revenue_release,
-                      self.revenue_finnhub):
-            if value is not None:
-                return value
-        return None
+        """The revenue this quarter reported, from the one source that has it.
+
+        There used to be a preference order here — EDGAR's filed figure, then
+        the release, then the vendor — but the first two are gone with the
+        escalations that produced them, so the choice this property existed to
+        make no longer exists. It is kept as the name every caller reads,
+        because the source behind it is about to change again (EW移行 §1).
+        """
+        return self.revenue_finnhub
 
 
 # ---------------------------------------------------------------------------

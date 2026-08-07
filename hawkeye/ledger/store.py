@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from hawkeye.contracts.stocks import ActualWait, within_wait_window
@@ -89,23 +89,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_drop_review_subject
     ON drop_reviews (screened_candidate_id, rec_id, checkpoint);
 CREATE INDEX IF NOT EXISTS idx_drop_review_batch ON drop_reviews (batch_id);
 CREATE INDEX IF NOT EXISTS idx_drop_review_ticker ON drop_reviews (ticker);
--- Prints the funnel asked for a document about and has not received one for
--- (hawkeye/scout/release.py). Its own record rather than an exception buried
--- in the dedup: "we are still waiting on this one" is a state somebody has to
--- be able to read, and the wait has to be bounded from the FIRST ask, which
--- means the moment of that ask must be stored.
-CREATE TABLE IF NOT EXISTS release_requests (
-    id           TEXT PRIMARY KEY,     -- TICKER_YYYY-MM-DD, one per print
-    ticker       TEXT NOT NULL,
-    report_date  TEXT NOT NULL,
-    requested_at TEXT NOT NULL,
-    resolved_at  TEXT NOT NULL DEFAULT '',
-    resolution   TEXT NOT NULL DEFAULT ''
-);
 -- Prints whose numbers have not arrived yet (hawkeye/scout/waiting.py). Its
--- own table for the same reason release_requests has one: "we are waiting on
--- this, and here is every time we looked and what we got" is a state, and the
--- two tables it could otherwise hide in are append-only by design.
+-- own table because "we are waiting on this, and here is every time we looked
+-- and what we got" is a state, and the two tables it could otherwise hide in
+-- are append-only by design.
 --
 -- `announced_at` is written once and never moved: it is the origin of the
 -- 48-hour clock, and a later sighting overwriting it would extend the wait
@@ -419,77 +406,6 @@ class Ledger:
                     continue
         return out
 
-    # -- prints held open pending a release read -----------------------------
-
-    def request_release_reads(self,
-                              prints: list[tuple[str, date]]) -> int:
-        """Hold these prints open until their document arrives. Returns how
-        many were newly opened.
-
-        Asking again for a print already open changes nothing on purpose: the
-        funnel names it on every run until it is settled, and letting the
-        latest ask win would keep restarting the clock — a bounded wait would
-        quietly become an unbounded one.
-        """
-        opened = 0
-        for ticker, day in prints:
-            cur = self._conn.execute(
-                "INSERT OR IGNORE INTO release_requests"
-                " (id, ticker, report_date, requested_at) VALUES (?, ?, ?, ?)",
-                (f"{ticker.upper()}_{day.isoformat()}", ticker.upper(),
-                 day.isoformat(), now().isoformat()))
-            opened += cur.rowcount
-        self._conn.commit()
-        return opened
-
-    def open_release_requests(self, today: date,
-                              max_age_days: int) -> set[tuple[str, date]]:
-        """Prints still worth going back for, as (ticker, report date).
-
-        Bounded by age because a document that never arrives would otherwise
-        cost a calendar lookup and an enrichment on every run forever. The
-        bound is the one the entry gates already impose: past
-        `max_event_age_days` trading days the catalyst is too old to trade,
-        so a leg settled after that could not produce a position anyway.
-        """
-        cutoff = today - timedelta(days=max_age_days)
-        out: set[tuple[str, date]] = set()
-        for ticker, day in self._conn.execute(
-                "SELECT ticker, report_date FROM release_requests"
-                " WHERE resolved_at = ''").fetchall():
-            try:
-                report_date = date.fromisoformat(day)
-            except ValueError:
-                continue
-            if report_date >= cutoff:
-                out.add((ticker, report_date))
-        return out
-
-    def resolve_release_reads(self, prints: list[tuple[str, date]],
-                              resolution: str) -> None:
-        """Close the wait. `resolution` says why — a document was read, or
-        the wait ran out — because "we read it and it settled nothing" and
-        "nobody ever produced it" are different facts about the same print.
-        """
-        for ticker, day in prints:
-            self._conn.execute(
-                "UPDATE release_requests SET resolved_at = ?, resolution = ?"
-                " WHERE id = ? AND resolved_at = ''",
-                (now().isoformat(), resolution,
-                 f"{ticker.upper()}_{day.isoformat()}"))
-        self._conn.commit()
-
-    def expire_release_requests(self, today: date, max_age_days: int) -> int:
-        """Mark the waits that ran out, so an open request means a print
-        somebody can still do something about. Returns how many expired."""
-        cutoff = (today - timedelta(days=max_age_days)).isoformat()
-        cur = self._conn.execute(
-            "UPDATE release_requests SET resolved_at = ?, resolution = 'expired'"
-            " WHERE resolved_at = '' AND report_date < ?",
-            (now().isoformat(), cutoff))
-        self._conn.commit()
-        return cur.rowcount
-
     # -- prints held open pending their own numbers ---------------------------
 
     @staticmethod
@@ -510,7 +426,7 @@ class Ledger:
         Opens the wait the first time and appends a check every time. The
         announcement time and the first sighting are written once: they are
         what bounds the wait, and letting either move would turn a bounded
-        wait into a permanent one (the same trap release_requests documents).
+        wait into a permanent one, one scan at a time.
         """
         moment = at or now()
         key = f"{ticker.upper()}_{report_date.isoformat()}"

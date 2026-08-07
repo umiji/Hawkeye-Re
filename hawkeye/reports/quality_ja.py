@@ -32,8 +32,8 @@ _VERDICT = {
 _FLAG = {
     "actual_disputed": "実績値が2ソースで食い違い(小さい方の実績×大きい方の"
                        "予想で評価しているため、どちらの数字でも成立する読み"
-                       "だが、GAAP/調整後のどちらの基準かは未決着。発表文の"
-                       "読み取り待ち)",
+                       "だが、GAAP/調整後のどちらの基準かは未決着。この系では"
+                       "決着させる手段がありません)",
     "finnhub_actual_conflict": "Finnhubが同じ決算に矛盾する実績値を返しており、"
                                "同社の実績は使用不能",
     "single_source_actual": "実績値のソースが1つだけ",
@@ -44,7 +44,6 @@ _FLAG = {
     "estimate_too_small": "予想の絶対値が小さすぎて率が意味を持たない",
     "sources_disagree_on_direction": "上振れ/下振れの向きがソースで割れている",
     "no_actual": "実績値を取得できていない",
-    "unadjusted": "一時要因の金額が開示されておらず、GAAPのまま(未調整)",
     "guidance_not_published": "会社がガイダンスを開示していない",
     "no_forward_consensus_to_compare": "比較対象の翌四半期コンセンサスが無い",
     "guidance_period_not_comparable": "会社が示した見通しの期間が翌四半期では"
@@ -111,29 +110,6 @@ def render_quality_ja(quality: EarningsQuality) -> str:
     if quality.verdict is QuarterVerdict.UNVERIFIED:
         lines.append("  ※ 未検証は「問題なし」ではありません。順位付けの点数は"
                      "ゼロとして扱い、既知の不明点として審理に渡します。")
-    return "\n".join(lines)
-
-
-def render_release_requests_ja(keys: list[str], directory) -> str:
-    """決算発表文の読み取りが必要な決算の一覧と、その手順。
-
-    2ソースの実績値が食い違った銘柄は、会社自身の発表文を読まない限り
-    EPSの柱が未検証のままになります。発表文の読み取りはこのプロセスの外
-    (担当者またはエージェント)で行うため、「どのファイルを作れば次回の
-    走査が拾うか」まで書かないと手順として成立しません。
-    """
-    if not keys:
-        return ""
-    lines = ["\n## 決算発表文の読み取り待ち"
-             "(実績値が2ソースで食い違い、EPSが未検証のまま)"]
-    for key in keys:
-        lines.append(f"- {key.split('_')[0]}: {directory}/{key}.json を作成")
-    lines.append("  形式: {\"gaap_eps_diluted\": …, \"non_gaap_eps\": …, "
-                 "\"one_off_per_share\": …, \"guidance\": {…}, "
-                 "\"source_url\": …}")
-    lines.append("  ※ 抽出したGAAP EPSがEDGARの提出値と一致しない場合、"
-                 "その抽出は丸ごと棄却されます(前年同期の列を読む誤りを"
-                 "機械的に排除するため)。")
     return "\n".join(lines)
 
 

@@ -57,16 +57,6 @@ def drops_dir() -> Path:
     return _dir("HAWKEYE_DROPS", "drops")
 
 
-def releases_dir() -> Path:
-    """Extractions from companies' own earnings releases, one JSON per print.
-
-    A directory rather than a fetch: no free structured source for guidance
-    or non-GAAP EPS exists, so the document is read by an agent or a human
-    and dropped here for the funnel to pick up on its next run.
-    """
-    return _dir("HAWKEYE_RELEASES", "releases")
-
-
 def reports_dir() -> Path:
     """Rendered run reports."""
     return _dir("HAWKEYE_REPORTS", "reports")

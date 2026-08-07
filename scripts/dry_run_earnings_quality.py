@@ -10,25 +10,24 @@ What it shows, in this order:
 1. every raw number each source returned, side by side — because a
    percentage alone hides which source it came from, and the whole 2026-08-02
    investigation started with a percentage nobody could trace;
-2. the EDGAR XBRL figures, which are the only ones with a primary source;
-3. the three-leg verdict computed from them.
+2. the three-leg verdict computed from them.
 
-Guidance and any published non-GAAP figure cannot be fetched — no structured
-source for either exists on any free tier — so they are supplied via
-`--guidance FILE`, a small JSON document produced by reading the company's
-own release. That extraction is not trusted on sight: its GAAP EPS must equal
-EDGAR's filed value or the whole document is rejected (§5.3(5)).
+It used to print a third block: EDGAR's filed XBRL figures, used to validate a
+reading of the company's release. Both are gone from the system, so both are
+gone from here (tests/test_removed_escalations.py).
+
+Guidance still cannot be fetched — no structured source for it exists on any
+free tier — so it is supplied via `--guidance FILE`, a small JSON document
+produced by reading the company's release. Nothing checks it: with XBRL gone
+there is no filed figure to check it against, so what this exercises is the
+guidance leg's arithmetic, not the reading's truth.
 
     python scripts/dry_run_earnings_quality.py AMZN --date 2026-07-31
     python scripts/dry_run_earnings_quality.py AMZN --guidance amzn.json
 
 The JSON shape:
 
-    {"gaap_eps_diluted": 5.75,
-     "non_gaap_eps": null,
-     "one_off_per_share": null,
-     "one_off_description": "",
-     "guidance": {"period": "2026-Q3", "eps_low": null, "eps_high": null,
+    {"guidance": {"period": "2026-Q3", "eps_low": null, "eps_high": null,
                   "revenue_low": 1.74e11, "revenue_high": 1.80e11,
                   "source_excerpt": "..."},
      "source_url": "https://www.sec.gov/..."}
@@ -47,7 +46,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from hawkeye.config import HawkeyeConfig                      # noqa: E402
 from hawkeye.contracts.stocks import (                        # noqa: E402
-    EpsBasis,
     GuidanceReading,
     PrintDepth,
     Stock,
@@ -59,10 +57,6 @@ from hawkeye.marketdata.consensus import (                    # noqa: E402
     shift_after_print,
 )
 from hawkeye.marketdata.edgar import EdgarDirectory           # noqa: E402
-from hawkeye.marketdata.edgar_facts import (                  # noqa: E402
-    EdgarFacts,
-    extraction_matches_filing,
-)
 from hawkeye.marketdata.finnhub import FinnhubProvider        # noqa: E402
 from hawkeye.marketdata.yahoo_earnings import YahooEarningsSource  # noqa: E402
 from hawkeye.reports.quality_ja import render_quality_ja      # noqa: E402
@@ -72,10 +66,6 @@ from hawkeye.scout.quality import (                           # noqa: E402
     print_from_event,
     reconstructed_consensus,
 )
-
-_REVENUE_TAGS = ("RevenueFromContractWithCustomerExcludingAssessedTax",
-                 "Revenues", "SalesRevenueNet")
-
 
 def _fmt(value: Optional[float]) -> str:
     if value is None:
@@ -180,82 +170,37 @@ def main(argv: Optional[list[str]] = None) -> int:
           "したがってガイダンスの比較対象としてのみ使い、"
           "発表済み四半期の予想は決算履歴側の値を使います。")
 
-    # 3. EDGAR --------------------------------------------------------------
+    # 3. guidance, read by hand or by an agent ------------------------------
     directory = EdgarDirectory()
     cik = directory.cik_for(ticker)
-    edgar = EdgarFacts()
-    xbrl_eps = xbrl_revenue = None
-    print("\n[3] EDGAR XBRL")
-    if cik is None:
-        print("    CIK を特定できませんでした(暫定IDで記録します)")
-    else:
-        fact = edgar.quarterly(cik, "EarningsPerShareDiluted", event.day)
-        xbrl_eps = fact.value if fact else None
-        for tag in _REVENUE_TAGS:
-            revenue_fact = edgar.quarterly(cik, tag, event.day)
-            if revenue_fact is not None:
-                xbrl_revenue = revenue_fact.value
-                break
-        print(f"    CIK {cik} / 希薄化後EPS {_fmt(xbrl_eps)}"
-              + (f" ({fact.period_start}〜{fact.period_end}, {fact.form})"
-                 if fact else " (該当なし=未検証)"))
-        print(f"    売上 {_fmt(xbrl_revenue)}")
-
-    # 4. the release, read by hand or by an agent ---------------------------
     extracted = _load_guidance(args.guidance)
     guidance = None
-    basis = EpsBasis.AS_REPORTED
-    eps_release = one_off = None
-    print("\n[4] 決算発表文からの読み取り")
+    print("\n[3] 決算発表文からの読み取り(ガイダンスのみ)")
     if not extracted:
-        print("    (--guidance が指定されていないため、ガイダンスと"
-              "Non-GAAP EPS は不明のままです)")
-        basis = EpsBasis.UNADJUSTED
-    elif not extraction_matches_filing(extracted.get("gaap_eps_diluted"),
-                                       xbrl_eps):
-        print(f"    棄却: 抽出されたGAAP EPS "
-              f"{_fmt(extracted.get('gaap_eps_diluted'))} が "
-              f"EDGARの {_fmt(xbrl_eps)} と一致しません。"
-              f"前年同期の列を読んだ可能性があるため、この抽出は"
-              f"まるごと採用しません。")
-        basis = EpsBasis.UNADJUSTED
+        print("    (--guidance が指定されていないため、ガイダンスは"
+              "不明のままです)")
     else:
         payload = extracted.get("guidance") or {}
         if payload:
             guidance = GuidanceReading(**payload)
-        eps_release = extracted.get("non_gaap_eps")
-        one_off = extracted.get("one_off_per_share")
-        if eps_release is not None:
-            basis = EpsBasis.ADJUSTED
-        elif one_off is not None:
-            eps_release = round(extracted["gaap_eps_diluted"] - one_off, 4)
-            basis = EpsBasis.ADJUSTED
-        else:
-            basis = EpsBasis.UNADJUSTED
-        print(f"    検算OK (GAAP EPS = EDGAR = {_fmt(xbrl_eps)})")
-        print(f"    Non-GAAP EPS {_fmt(extracted.get('non_gaap_eps'))}"
-              f" / 一時要因(一株あたり) {_fmt(one_off)}"
-              f" {extracted.get('one_off_description', '')}")
         if guidance:
             print(f"    ガイダンス {guidance.period}: EPS "
                   f"{_fmt(guidance.eps_low)}〜{_fmt(guidance.eps_high)} / 売上 "
                   f"{_fmt(guidance.revenue_low)}〜{_fmt(guidance.revenue_high)}")
+        print("    ※ この読み取りを検算する手段はありません(EDGARのXBRL照合を"
+              "廃止したため)。誤読はそのまま判定に入ります。")
 
-    # 5. store and judge ----------------------------------------------------
+    # 4. store and judge ----------------------------------------------------
     store = StockStore(db)
     stock_id = store.put_stock(Stock(cik=cik, ticker=ticker,
                                      name=directory.name_for(ticker)))
     row = print_from_event(event, stock_id)
-    depth = (PrintDepth.RELEASE_READ if guidance or eps_release
-             else PrintDepth.XBRL_VALIDATED if xbrl_eps is not None
-             else PrintDepth.VERIFIED if yahoo_print else PrintDepth.CALENDAR_ONLY)
     row = row.model_copy(update={
         "eps_yahoo": yahoo_print.eps_actual if yahoo_print else row.eps_yahoo,
-        "eps_xbrl_diluted": xbrl_eps, "revenue_xbrl": xbrl_revenue,
-        "eps_release": eps_release, "eps_basis": basis,
-        "one_off_per_share": one_off, "guidance": guidance,
+        "guidance": guidance,
         "reported_at": datetime.combine(event.day, datetime.min.time()),
-        "depth": depth})
+        "depth": (PrintDepth.VERIFIED if yahoo_print
+                  else PrintDepth.CALENDAR_ONLY)})
 
     # The reported quarter's consensus comes from the print itself (Yahoo's
     # earnings history and the calendar). The forward endpoint read AFTER the
@@ -277,7 +222,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             update={"consensus_snapshot_id": snapshot_id}))
 
     quality = assess_earnings(row, stored, config)
-    print("\n[5] 3本柱の判定")
+    print("\n[4] 3本柱の判定")
     print(render_quality_ja(quality))
     print(f"\n(記録先: {db} — 本番の台帳ではありません)")
     print(f" hawkeye 相当の順位付けスコア: {quality.score}")

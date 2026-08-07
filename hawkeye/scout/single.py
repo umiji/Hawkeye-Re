@@ -9,18 +9,17 @@ be unjudgeable in the product that judges prints.
 
 Everything else is the funnel's own path, deliberately: the same second-source
 verification, the same both-sources-agree rule, the same pinned consensus, the
-same recorded quarter, the same release escalation. A hand-picked stock must
-not arrive at the tribunal on weaker evidence than a discovered one.
+same recorded quarter. A hand-picked stock must not arrive at the tribunal on
+weaker evidence than a discovered one.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
 
 from hawkeye.scout.earnings import EarningsEvent, parse_calendar
 from hawkeye.scout.quality import EarningsQuality, assess_earnings, describe_quality_en
-from hawkeye.scout.release import read_release, release_key
 from hawkeye.scout.verify import verify_events
 
 # A print files under the session it belongs to, which is not always the day
@@ -36,24 +35,20 @@ class JudgedPrint:
     stock_id: str
     consensus_id: str
     catalyst_description: str
-    # Set when the two vendors disagree and no reading of the release was
-    # available — the file the next attempt should be given.
-    release_wanted: str = ""
 
 
 def judge_ticker(ticker: str, calendar_source, config, *,
                  report_date: Optional[date] = None,
                  today: Optional[date] = None,
                  numbers_source=None, stock_store=None, directory=None,
-                 consensus_source=None, facts=None,
-                 release_reader=None) -> Optional[JudgedPrint]:
+                 consensus_source=None) -> Optional[JudgedPrint]:
     """The three-leg reading of `ticker`'s most recent reported quarter.
 
     None when the calendar holds no reported print for it in the window —
     which is a fact about our data, not about the company, and the caller
     says so rather than inventing a judgment.
     """
-    from hawkeye.scout.scout import _cik_of, _quarter_context, _record_print
+    from hawkeye.scout.scout import _quarter_context, _record_print
 
     ticker = ticker.strip().upper()
     end = ((report_date + timedelta(days=_DATE_SLACK_DAYS)) if report_date
@@ -78,16 +73,7 @@ def judge_ticker(ticker: str, calendar_source, config, *,
         raise ValueError("judge_ticker needs a stock store: the quarter and "
                          "the consensus it is judged against are both stored")
     quality = assess_earnings(context.print_row, context.consensus, config)
-    wanted = ""
-    outcome = read_release(context.print_row, quality, release_reader, facts,
-                           _cik_of(stock_store, context.stock_id))
-    if outcome is not None and outcome.reason == "no_extraction":
-        wanted = release_key(context.print_row)
-    elif outcome is not None and outcome.accepted:
-        context = replace(context, print_row=outcome.row)
-        quality = assess_earnings(outcome.row, context.consensus, config)
     _record_print(stock_store, context)
     return JudgedPrint(event=event, quality=quality, stock_id=context.stock_id,
                        consensus_id=context.consensus_id,
-                       catalyst_description=describe_quality_en(quality),
-                       release_wanted=wanted)
+                       catalyst_description=describe_quality_en(quality))
