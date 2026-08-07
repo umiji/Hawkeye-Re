@@ -90,11 +90,15 @@ def test_a_print_that_already_reported_is_not_pre_registered():
     assert prints[0].fiscal_quarter == "2026-Q2"
 
 
-def test_the_fiscal_quarter_falls_back_to_the_calendar_quarter():
+def test_a_calendar_row_with_no_fiscal_label_gets_none_invented_for_it():
+    """This used to fall back to the calendar quarter of the report date,
+    which named the quarter AFTER the one being reported for anyone whose
+    period does not end in the month they announce it. See
+    tests/test_fiscal_quarter_label.py for the whole rule (EW移行 §2)."""
     prints = upcoming_prints(
         [{"symbol": "NOQ", "date": "2026-08-03", "epsEstimate": 1.0}],
         today=date(2026, 8, 2), business_days=2)
-    assert prints[0].fiscal_quarter == "2026-Q3"
+    assert prints[0].fiscal_quarter == ""
 
 
 # --- today's own prints, after a gap ---------------------------------------

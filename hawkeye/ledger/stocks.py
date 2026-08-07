@@ -29,7 +29,6 @@ from hawkeye.contracts.stocks import (
     ReviewStage,
     SnapshotKind,
     Stock,
-    fiscal_quarter_of,
 )
 from hawkeye.ledger.store import _instant
 
@@ -493,10 +492,12 @@ class StockStore:
                      event_date: Optional[str]) -> str:
         """The fiscal quarter a decision was about.
 
-        Prefer the label on a recorded print (the source's own fiscal
-        calendar); fall back to the calendar quarter of the event, which is
-        wrong for a company whose fiscal year does not end in December — so
-        the fallback is only ever used when no print row exists.
+        The label on the recorded print, or nothing. There used to be a
+        fallback to the calendar quarter of the event date; it is gone
+        because this feeds `last_reviewed_fiscal_quarter`, which
+        `already_reviewed` compares against a print's real label — and a
+        fabricated label there can never match, so the guard it was meant to
+        arm silently did nothing (EW移行 §2).
         """
         if not event_date:
             return ""
@@ -507,4 +508,4 @@ class StockStore:
         for row in history.prints:
             if abs((row.report_date - day).days) <= 1:
                 return row.fiscal_quarter
-        return fiscal_quarter_of(day)
+        return ""

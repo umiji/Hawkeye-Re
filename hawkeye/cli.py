@@ -507,7 +507,11 @@ def cmd_consensus_capture(args: argparse.Namespace) -> int:
     print(f"決算予定で実績がまだ出ていない銘柄: {len(targets)} 件")
     if args.dry_run:
         for item in targets:
-            print(f"- {item.report_date} {item.ticker} {item.fiscal_quarter} "
+            # An empty label means no source stated the quarter, and
+            # `capture_consensus` will refuse the row — say so here rather
+            # than print a blank column that reads as a formatting glitch.
+            print(f"- {item.report_date} {item.ticker} "
+                  f"{item.fiscal_quarter or '四半期不明のため記録しません'} "
                   f"(EPS予想 {item.eps_estimate})")
         print("(--dry-run のため記録していません)")
         return 0

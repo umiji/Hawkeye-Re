@@ -34,7 +34,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from hawkeye.contracts.stocks import GuidanceReading
+from hawkeye.contracts.stocks import GuidanceReading, resolve_fiscal_quarter
 
 _BASE = "https://www.earningswhispers.com"
 # The endpoint is the site's own front-end API and answers a browser request.
@@ -140,24 +140,6 @@ def _month_end(reference: Any) -> Optional[date]:
     if not 1 <= month <= 12:
         return None
     return date(year, month, calendar.monthrange(year, month)[1])
-
-
-def _fiscal_quarter(quarter_end: Optional[date],
-                    year_end: Optional[date]) -> Optional[str]:
-    """`2027-Q1` — the company's own label, counted back from ITS year end.
-
-    NVDA's year ends in January, so its quarter ending April 2026 is fiscal
-    2027 Q1; the calendar quarter of that date (2026-Q2) names a quarter the
-    company never reports. Deriving it from the two references the feed gives
-    is what makes a non-December fiscal year come out right.
-    """
-    if quarter_end is None or year_end is None:
-        return None
-    months_before = ((year_end.year * 12 + year_end.month)
-                     - (quarter_end.year * 12 + quarter_end.month))
-    if months_before % 3 or not 0 <= months_before <= 9:
-        return None
-    return f"{year_end.year}-Q{4 - months_before // 3}"
 
 
 def _announced_at(value: Any) -> Optional[datetime]:
@@ -365,6 +347,13 @@ def parse_details(payload: Any) -> WhispersRecord:
 
     quarter_end = _month_end(payload.get("q1Ref"))
     year_end = _month_end(payload.get("fY1Ref"))
+    # The label is decided in contracts, from the same rules every other
+    # source goes through, and cross-checked against the feed's own prose
+    # ("second quarter ended June 2026"). Two independent statements of one
+    # fact: when they disagree neither is used (EW移行 §2).
+    quarter = resolve_fiscal_quarter(
+        quarter_end=quarter_end, year_end=year_end,
+        quarter_text=str(payload.get("quarter") or ""))
     announced_at = _announced_at(payload.get("epsDate"))
     eps_actual = _number(payload.get("eps"))
     eps_consensus = _number(payload.get("estimate"))
@@ -375,6 +364,8 @@ def parse_details(payload: Any) -> WhispersRecord:
     gaps: list[str] = []
     if quarter_end is None:
         gaps.append("quarter_reference_missing")
+    elif not quarter.label:
+        gaps.append("quarter_label_withheld")
     if announced_at is None:
         gaps.append("announcement_time_missing")
     if eps_actual is None:
@@ -395,7 +386,7 @@ def parse_details(payload: Any) -> WhispersRecord:
         name=str(payload.get("name") or ""),
         announced_at=announced_at,
         quarter_end=quarter_end,
-        fiscal_quarter=_fiscal_quarter(quarter_end, year_end),
+        fiscal_quarter=quarter.label or None,
         eps_actual=eps_actual,
         eps_consensus=eps_consensus,
         eps_consensus_high=_number(payload.get("highEstimate")),

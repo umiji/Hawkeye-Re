@@ -39,7 +39,6 @@ from hawkeye.contracts.stocks import (
     EpsBasis,
     PrintDepth,
     SnapshotKind,
-    fiscal_quarter_of,
 )
 from hawkeye.scout.earnings import (
     EarningsEvent,
@@ -424,6 +423,13 @@ def print_from_event(event: EarningsEvent, stock_id: str,
     verification the event carries Yahoo's reading in `eps_actual` and the
     calendar's in `calendar_eps_actual`, and collapsing them back into one
     field would destroy the comparison the beat rule depends on.
+
+    The fiscal quarter is left EMPTY when no source stated one. It used to
+    fall back to the calendar quarter of the report date, which named the
+    following quarter for any company whose period does not end in the month
+    it reports — and under a wrong label the row neither finds its
+    pre-registered consensus nor collides with the correct row, so the error
+    left no trace anywhere (EW移行 §2).
     """
     verified = event.eps_source == "yahoo"
     yahoo_actual = event.eps_actual if verified else None
@@ -435,8 +441,7 @@ def print_from_event(event: EarningsEvent, stock_id: str,
         [finnhub_actual] if finnhub_actual is not None else [])
     return EarningsPrint(
         stock_id=stock_id, ticker=event.ticker,
-        fiscal_quarter=(fiscal_quarter or event.fiscal_quarter
-                        or fiscal_quarter_of(event.day)),
+        fiscal_quarter=(fiscal_quarter or event.fiscal_quarter or ""),
         report_date=event.day,
         depth=PrintDepth.VERIFIED if verified else PrintDepth.CALENDAR_ONLY,
         eps_yahoo=yahoo_actual,
@@ -456,12 +461,14 @@ def reconstructed_consensus(event: EarningsEvent, stock_id: str,
     displays a rounded estimate while publishing a surprise computed from
     full precision. Understating is the safe direction here, and it is the
     same conservative rule applied everywhere else.
+
+    Its fiscal quarter is left empty when no source stated one, for the same
+    reason as `print_from_event`.
     """
     verified = event.eps_source == "yahoo"
     return ConsensusSnapshot(
         stock_id=stock_id, ticker=event.ticker,
-        fiscal_quarter=(fiscal_quarter or event.fiscal_quarter
-                        or fiscal_quarter_of(event.day)),
+        fiscal_quarter=(fiscal_quarter or event.fiscal_quarter or ""),
         captured_at=captured_at or now(),
         kind=SnapshotKind.RECONSTRUCTED,
         expected_report_date=event.day,

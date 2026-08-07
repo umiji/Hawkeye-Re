@@ -31,6 +31,8 @@ from dataclasses import dataclass, replace
 from datetime import date
 from typing import NamedTuple, Optional
 
+from hawkeye.contracts.stocks import resolve_fiscal_quarter
+
 
 @dataclass(frozen=True)
 class EarningsEvent:
@@ -162,16 +164,13 @@ def _collapse_duplicates(events: list[EarningsEvent]) -> list[EarningsEvent]:
 def _fiscal_quarter_label(row: dict) -> Optional[str]:
     """`2026-Q2` from the calendar's own year/quarter fields, or None.
 
-    None rather than a guess: the caller can fall back to the calendar
-    quarter of the report date, but it has to know that it is doing so.
+    Decided by the shared resolver rather than formatted here, so this stays
+    one of the four bases in a single fixed order instead of a fourth private
+    rule (EW移行 §2). None rather than a guess: there is no fallback left for
+    the caller to reach for.
     """
-    year, quarter = row.get("year"), row.get("quarter")
-    if not year or not quarter:
-        return None
-    try:
-        return f"{int(year)}-Q{int(quarter)}"
-    except (TypeError, ValueError):
-        return None
+    return resolve_fiscal_quarter(source_year=row.get("year"),
+                                  source_quarter=row.get("quarter")).label or None
 
 
 def parse_calendar(raw: list[dict]) -> list[EarningsEvent]:

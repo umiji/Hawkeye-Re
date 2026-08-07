@@ -24,7 +24,7 @@ from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     SnapshotKind,
     Stock,
-    fiscal_quarter_of,
+    resolve_fiscal_quarter,
 )
 from hawkeye.scout.triage import is_investigation_target
 
@@ -63,6 +63,10 @@ class CaptureReport:
     # much the filter is actually buying, and the count that would reveal it
     # excluding too much.
     skipped_not_target: int = 0
+    # Prints the calendar gave no fiscal label for (EW移行 §2). Refused
+    # rather than filed under a guessed label — but counted, because this is
+    # the number that says how much pre-registration the omission is costing.
+    skipped_unlabelled: int = 0
     tickers: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -71,6 +75,7 @@ class CaptureReport:
                 "skipped_already_reported": self.skipped_already_reported,
                 "nothing_to_record": self.nothing_to_record,
                 "skipped_not_target": self.skipped_not_target,
+                "skipped_unlabelled": self.skipped_unlabelled,
                 "tickers": list(self.tickers)}
 
 
@@ -113,20 +118,17 @@ def capture_window(today: date, last_capture_at: Optional[datetime],
     return ([today] + ahead) if since >= gap_days else ahead
 
 
-def _fiscal_quarter(row: dict, day: date) -> str:
-    """The source's own fiscal label when it has one.
+def _fiscal_quarter(row: dict) -> str:
+    """The calendar's own fiscal label, or "" when it gave none.
 
-    The fallback is the calendar quarter, which is wrong for a company whose
-    fiscal year does not end in December — so it is only reached when the
-    calendar row carries no year/quarter at all.
+    "" rather than the calendar quarter of the report date: that fallback
+    named the quarter AFTER the one being reported for anyone whose period
+    does not end in the month they announce it, and a pre-registration filed
+    under the wrong label is never found again by the print it belongs to
+    (EW移行 §2). `capture_consensus` is where an unlabelled row is refused.
     """
-    year, quarter = row.get("year"), row.get("quarter")
-    if year and quarter:
-        try:
-            return f"{int(year)}-Q{int(quarter)}"
-        except (TypeError, ValueError):
-            pass
-    return fiscal_quarter_of(day)
+    return resolve_fiscal_quarter(source_year=row.get("year"),
+                                  source_quarter=row.get("quarter")).label
 
 
 def upcoming_prints(raw: list[dict], today: date, business_days: int,
@@ -154,7 +156,7 @@ def upcoming_prints(raw: list[dict], today: date, business_days: int,
             continue
         out.append(UpcomingPrint(
             ticker=symbol, report_date=day,
-            fiscal_quarter=_fiscal_quarter(row, day),
+            fiscal_quarter=_fiscal_quarter(row),
             eps_estimate=row.get("epsEstimate"),
             revenue_estimate=row.get("revenueEstimate")))
     out.sort(key=lambda p: (p.report_date, p.ticker))
@@ -194,11 +196,19 @@ def capture_consensus(store, prints: list[UpcomingPrint],
     than inferred from silence.
     """
     captured = unchanged = missing = skipped = empty = not_target = 0
+    unlabelled = 0
     touched: list[str] = []
     filtering = bool(config is not None
                      and getattr(config, "prereg_skip_non_targets", False))
     day = today or date.today()
     for item in prints:
+        # No fiscal label, no row. The label is the only thing that joins this
+        # snapshot to the print it is about (EW移行 §2), so a row written
+        # without one is unreachable for ever — and a guessed label is worse,
+        # because it joins to the WRONG print without ever looking wrong.
+        if not item.fiscal_quarter:
+            unlabelled += 1
+            continue
         # Checked BEFORE the master row is created, so a name the gates have
         # already refused costs neither a lookup nor a write. An unknown name
         # is always a target — see hawkeye/scout/triage.py for why unknown
@@ -251,7 +261,8 @@ def capture_consensus(store, prints: list[UpcomingPrint],
                          yahoo_missing=missing,
                          skipped_already_reported=skipped,
                          nothing_to_record=empty,
-                         skipped_not_target=not_target, tickers=touched)
+                         skipped_not_target=not_target,
+                         skipped_unlabelled=unlabelled, tickers=touched)
 
 
 def report_line(report: CaptureReport) -> str:
@@ -261,7 +272,8 @@ def report_line(report: CaptureReport) -> str:
             f"発表済みのため対象外 {report.skipped_already_reported} 件 / "
             f"予想が1つも取れず記録なし {report.nothing_to_record} 件 / "
             f"入口ゲートの構造的条件を満たさず調査対象外 "
-            f"{report.skipped_not_target} 件")
+            f"{report.skipped_not_target} 件 / "
+            f"四半期ラベルが決まらず保留 {report.skipped_unlabelled} 件")
 
 
 def warn_if_nothing_captured(report: CaptureReport) -> None:

@@ -19,9 +19,10 @@ Three properties are load-bearing and are enforced by the storage layer
 """
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from enum import Enum
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -69,15 +70,108 @@ class EpsBasis(str, Enum):
     UNADJUSTED = "unadjusted"            # GAAP, and a one-off may be inside it
 
 
-def fiscal_quarter_of(day: date) -> str:
-    """Calendar-quarter fallback label, `2026-Q3`.
+class QuarterBasis(str, Enum):
+    """What a fiscal-quarter label was derived from.
 
-    Only used when the source gives no fiscal labelling of its own; the
-    calendar and the filings do carry one, and that is preferred, because a
-    company with a non-December year end reports its Q1 in what is calendar
-    Q2.
+    Carried alongside the label because the three bases are not equally
+    trustworthy, and a system that cannot tell them apart cannot later find
+    out which of them was wrong.
+    """
+    FISCAL_REFERENCES = "fiscal_references"   # the company's own two dates
+    SOURCE_LABEL = "source_label"             # the calendar's year/quarter
+    QUARTER_END = "quarter_end"               # the period end, nothing else
+    WITHHELD = "withheld"                     # no label, and why
+
+
+class QuarterLabel(NamedTuple):
+    """`2026-Q2` and where it came from; `label` is "" when it was withheld."""
+    label: str
+    basis: QuarterBasis
+    reason: str = ""
+
+
+_ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4}
+_QUARTER_WORD = re.compile(r"\b(first|second|third|fourth)\s+quarter\b", re.I)
+
+
+def _calendar_quarter_of(day: date) -> str:
+    """`2026-Q2` — the calendar quarter the date falls in.
+
+    Deliberately private. Applied to a PERIOD END it is right for a December
+    fiscal year and wrong otherwise; applied to a REPORT DATE it is wrong for
+    nearly everyone, because a quarter ending in June is reported in August.
+    That second use is what `resolve_fiscal_quarter` exists to make
+    unreachable, so nothing outside this module may call it.
     """
     return f"{day.year}-Q{(day.month - 1) // 3 + 1}"
+
+
+def _from_fiscal_references(quarter_end: Optional[date],
+                            year_end: Optional[date]) -> Optional[str]:
+    """Counted back from the company's OWN year end, so a January year end
+    puts a quarter ending April into the next fiscal year (NVDA: 2027-Q1,
+    where the calendar would say 2026-Q2 — a quarter it never reports)."""
+    if quarter_end is None or year_end is None:
+        return None
+    months_before = ((year_end.year * 12 + year_end.month)
+                     - (quarter_end.year * 12 + quarter_end.month))
+    if months_before % 3 or not 0 <= months_before <= 9:
+        return None
+    return f"{year_end.year}-Q{4 - months_before // 3}"
+
+
+def _from_source_label(year, quarter) -> Optional[str]:
+    if not year or not quarter:
+        return None
+    try:
+        number, fiscal_year = int(quarter), int(year)
+    except (TypeError, ValueError):
+        return None
+    return f"{fiscal_year}-Q{number}" if 1 <= number <= 4 else None
+
+
+def resolve_fiscal_quarter(*,
+                           quarter_end: Optional[date] = None,
+                           year_end: Optional[date] = None,
+                           quarter_text: str = "",
+                           source_year=None,
+                           source_quarter=None) -> QuarterLabel:
+    """The one place a print's fiscal quarter is decided (EW移行 §2).
+
+    Everything that joins a print to its consensus runs off this label —
+    `consensus_in_force`, `already_reviewed`, and the unique index
+    `(stock_id, fiscal_quarter, depth)` — so two rows for one print, or a
+    label one quarter ahead, silently breaks all three at once.
+
+    The bases are tried in a fixed order and the winner records which one it
+    was. There is deliberately NO parameter for the report date: labelling a
+    print by the calendar quarter it was ANNOUNCED in lands one quarter ahead
+    for anyone whose quarter does not end in the month they report it
+    (measured 2026-08-07: 40 of 41 live records), and it is a mistake nothing
+    downstream can detect.
+
+    `quarter_text` is the feed's own prose ("second quarter ended June
+    2026"). It is a second, independent statement of the same fact, so a
+    contradiction means one of the two is wrong and neither may be used —
+    the label is withheld rather than picked between (fail closed,
+    invariant 6).
+    """
+    for label, basis in (
+            (_from_fiscal_references(quarter_end, year_end),
+             QuarterBasis.FISCAL_REFERENCES),
+            (_from_source_label(source_year, source_quarter),
+             QuarterBasis.SOURCE_LABEL),
+            (_calendar_quarter_of(quarter_end) if quarter_end else None,
+             QuarterBasis.QUARTER_END)):
+        if label is None:
+            continue
+        stated = _QUARTER_WORD.search(quarter_text or "")
+        if stated is not None and not label.endswith(
+                f"-Q{_ORDINALS[stated.group(1).lower()]}"):
+            return QuarterLabel("", QuarterBasis.WITHHELD,
+                                "quarter_text_mismatch")
+        return QuarterLabel(label, basis)
+    return QuarterLabel("", QuarterBasis.WITHHELD, "no_fiscal_reference")
 
 
 class Stock(BaseModel):
