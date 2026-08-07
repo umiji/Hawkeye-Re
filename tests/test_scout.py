@@ -643,6 +643,33 @@ def test_a_drop_record_says_which_vendor_ranked_the_name(config):
     assert [r.numbers_source for r in rows] == ["whispers"]
 
 
+def test_a_drop_record_says_why_the_feed_did_not_supply_the_numbers(config):
+    """The aggregate counts on the scan say HOW MANY fell back; only the
+    per-ticker reason can answer the question that matters months later —
+    which NAMES we are persistently unable to read, and whether the cause is
+    a property of the company or of one bad afternoon. Without it, a ticker
+    the feed structurally cannot serve and a ticker that timed out once look
+    identical in the record."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [{"symbol": "AAA", "date": event_day.isoformat(),
+                "epsActual": 1.30, "epsEstimate": 1.00}]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    provider = StaticProvider(bars=bars, profile_data={"market_cap": 5e9})
+    # Answers about this print, but with no revenue consensus — so the WHOLE
+    # print falls back to the calendar rather than half of it.
+    feed = FakeWhispers({"AAA": make_whispers(
+        "AAA", announced=event_day, revenue_consensus=None)})
+
+    result = run_scout(FakeCalendar(entries), provider, config, today=today,
+                       numbers_source=feed)
+    rows = build_screened_candidates(result, scan_id=10)
+
+    assert result.passed[0].numbers_source == "calendar"
+    assert result.passed[0].numbers_reason == "whispers_revenue_incomplete"
+    assert [r.numbers_reason for r in rows] == ["whispers_revenue_incomplete"]
+
+
 def test_enrichment_capped_candidates_have_no_qualitative_data(config):
     """Candidates dropped before enrichment never had news fetched — the
     fields must come back empty rather than crash or invent anything."""

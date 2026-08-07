@@ -73,6 +73,8 @@ class ScoutCandidate:
     # every candidate so a later review can tell a decision made on the feed's
     # numbers from one made on the calendar's.
     numbers_source: str = "calendar"
+    # Why the feed's figures are not the ones above (hawkeye/scout/numbers.py).
+    numbers_reason: str = ""
     calendar_eps_surprise_pct: Optional[float] = None
     # Why this print could not be ranked at all, and whether the wait for its
     # numbers has run out (hawkeye/scout/waiting.py). "" for every candidate
@@ -211,6 +213,7 @@ def _candidate_from(screened: ScreenedEvent,
         revenue_surprise_trusted=screened.revenue_surprise_trusted,
         conflicting_estimates=screened.event.conflicting_estimates,
         numbers_source=screened.event.numbers_source,
+        numbers_reason=screened.event.numbers_reason,
         calendar_eps_surprise_pct=screened.event.calendar_eps_surprise_pct,
         reject_reason=reject_reason)
 
@@ -430,7 +433,14 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                                    config.scout_max_whispers,
                                    skip=seen | _not_worth_a_lookup(
                                        stock_store, screened, today, config))
-    if numbers.from_whispers:
+    # Re-screen whenever the feed was consulted at all, not only when it
+    # supplied figures. The first screen ran on events that predate the read,
+    # so keeping it would discard everything the read attached even to the
+    # names it declined — including WHY it declined, which is what the hold
+    # decides on and what the drop record has to carry. Screening is pure
+    # computation over a list already in memory, so the reprieve costs
+    # nothing and the stale-list class of bug goes away with it.
+    if numbers.attempted:
         all_screened = screen(events)
         screened = unseen(all_screened)
 
@@ -616,6 +626,7 @@ def _measured(c: ScoutCandidate) -> dict:
             "revenue_surprise_trusted": c.revenue_surprise_trusted,
             "conflicting_estimates": c.conflicting_estimates,
             "numbers_source": c.numbers_source,
+            "numbers_reason": c.numbers_reason,
             "calendar_eps_surprise_pct": c.calendar_eps_surprise_pct,
             "score": c.score, "score_version": c.score_version,
             "price": c.price, "price_asof": c.price_asof}

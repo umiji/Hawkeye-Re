@@ -235,6 +235,13 @@ class ScreenedCandidate(BaseModel):
     # the two vendors actually disagree?". Optional so records written before
     # the split still load (invariant 1).
     numbers_source: str = "calendar"
+    # WHY the earnings feed's figures are not the ones above, when it was
+    # asked. Empty means either "the feed supplied them" or "nobody asked",
+    # which `numbers_source` tells apart. Recorded per ticker because the
+    # aggregate counts on the scan cannot answer the question that matters
+    # later: "which NAMES are we persistently unable to read, and is the
+    # reason a property of the company or of one bad afternoon?"
+    numbers_reason: str = ""
     calendar_eps_surprise_pct: Optional[float] = None
     score: float
     score_version: str            # "full" (gap-aware) or "partial_no_gap"
