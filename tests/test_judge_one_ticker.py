@@ -4,11 +4,11 @@ The 5% surprise screen exists to decide who is worth looking at when nobody
 asked. When a person names a stock, that question is already answered — and
 applying the screen anyway would refuse to judge exactly the case the whole
 three-leg design was built from: AMZN's calendar rows collapse to +2.7%, so
-the screen drops it before verification ever runs, and the print that started
+the screen drops it before the feed is ever read, and the print that started
 this investigation would be unjudgeable in the product that judges prints.
 
-Same code path as the funnel otherwise: same verification, same both-sources
-rule, same pinned consensus, same recorded quarter.
+Same code path as the funnel otherwise: same earnings feed, same
+one-vendor-per-print rule, same pinned consensus, same recorded quarter.
 """
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from datetime import date, datetime, timedelta, timezone
 from hawkeye.config import HawkeyeConfig
 from hawkeye.contracts.stocks import ConsensusSnapshot, SnapshotKind, Stock
 from hawkeye.ledger.stocks import StockStore
-from hawkeye.marketdata.yahoo_earnings import VerifiedEarnings
+from tests.conftest import FakeWhispers, make_whispers
+
 from hawkeye.scout.quality import LegStatus
 from hawkeye.scout.single import judge_ticker
 
@@ -32,14 +33,6 @@ class FakeCalendar:
     def earnings_calendar(self, start, end):
         self.windows.append((start, end))
         return self.entries
-
-
-class FakeNumbers:
-    def __init__(self, found: dict):
-        self.found = found
-
-    def verified_earnings(self, ticker, day):
-        return self.found.get(ticker)
 
 
 def _config() -> HawkeyeConfig:
@@ -71,22 +64,28 @@ def test_a_named_stock_is_judged_even_though_the_screen_would_drop_it(tmp_path):
     assert "finnhub_actual_conflict" in judged.quality.eps.flags
 
 
-def test_the_second_source_is_read_for_a_named_stock_too(tmp_path):
-    """Verification is what gives the beat rule two opinions. Skipping it
-    here would make a hand-picked stock judged on weaker evidence than a
-    discovered one, with nothing in the record to say so."""
+def test_the_earnings_feed_is_read_for_a_named_stock_too(tmp_path):
+    """The feed is what makes a print judgeable at all when the calendar
+    contradicts itself. Skipping it here would judge a hand-picked stock on
+    weaker evidence than a discovered one, with nothing in the record to
+    say so."""
     day = date(2026, 7, 31)
     store = StockStore(str(tmp_path / "hawkeye.db"))
 
     judged = judge_ticker(
         "AMZN", FakeCalendar(_amzn_rows(day)), _config(), report_date=day,
         stock_store=store,
-        numbers_source=FakeNumbers({"AMZN": VerifiedEarnings(
-            ticker="AMZN", report_date=day, eps_actual=5.75,
-            eps_estimate=1.83, surprise_pct=214.2)}))
+        numbers_source=FakeWhispers({"AMZN": make_whispers(
+            "AMZN", announced=day, eps_actual=5.75, eps_consensus=1.83,
+            revenue_actual=1.68e11, revenue_consensus=1.62e11)}))
 
-    assert judged.event.eps_source == "yahoo"
-    assert judged.quality.eps.yahoo_surprise_pct is not None
+    assert judged.event.numbers_source == "whispers"
+    assert judged.quality.eps.source == "whispers"
+    # The calendar's own contradiction is still on the row, and still named —
+    # it just no longer decides anything, because the reading stands on
+    # figures the calendar never touched.
+    assert "finnhub_actual_conflict" in judged.quality.eps.flags
+    assert judged.quality.eps.status is LegStatus.BEAT
 
 
 def test_the_pre_registered_consensus_is_what_it_is_judged_against(tmp_path):

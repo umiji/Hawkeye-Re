@@ -57,12 +57,14 @@ class PrintSource(str, Enum):
     worth holding while four escalations could each deepen a quarter's row; with
     one source per print it said the same thing twice.
 
-    `YAHOO` is transitional. It is the second source the scan re-reads EPS from
-    today; EarningsWhispers replaces it, after which the two values are
-    `FINNHUB` and `WHISPERS` (docs/backlog/PIPELINE_BUILD_TASKS.ja.md task 4).
+    Both figures on a row come from the vendor named here — actual AND the
+    consensus it is measured against. A ratio built from one vendor's actual
+    over another's consensus compares an adjusted-basis estimate against a
+    possibly GAAP figure, which is why the choice is made once per print
+    (hawkeye/scout/numbers.py).
     """
     FINNHUB = "finnhub"                  # the earnings calendar's own figures
-    YAHOO = "yahoo"                      # re-read before ranking (transitional)
+    WHISPERS = "whispers"                # EarningsWhispers, read before ranking
 
 
 class RowStatus(str, Enum):

@@ -172,14 +172,14 @@ def test_a_revision_appends_and_the_row_we_ranked_on_survives(tmp_path):
         eps_actual_rows=[5.75]))
     second = st.revise_print(EarningsPrint(
         stock_id="cik:0001018724", fiscal_quarter="2026-Q2",
-        report_date=date(2026, 7, 31), source=PrintSource.YAHOO,
+        report_date=date(2026, 7, 31), source=PrintSource.WHISPERS,
         eps_actual=5.75, eps_actual_rows=[1.88, 1.97],
         contamination_flags=["finnhub_actual_conflict"]))
 
     assert first != second
     assert st.print_row(first).eps_actual_rows == [5.75]
     current = st.active_print("cik:0001018724", "2026-Q2")
-    assert current.source is PrintSource.YAHOO
+    assert current.source is PrintSource.WHISPERS
     assert current.contamination_flags == ["finnhub_actual_conflict"]
     assert len(st.prints("cik:0001018724")) == 2
 
@@ -210,7 +210,7 @@ def test_a_print_freezes_the_consensus_that_was_in_force(tmp_path):
     print_id = st.record_print(EarningsPrint(
         stock_id="cik:0001018724", fiscal_quarter="2026-Q2",
         report_date=date(2026, 7, 31), reported_at=at(5),
-        source=PrintSource.YAHOO, eps_actual=5.75))
+        source=PrintSource.WHISPERS, eps_actual=5.75))
 
     assert st.print_row(print_id).consensus_snapshot_id == in_force
 
@@ -233,7 +233,7 @@ def test_history_returns_prints_fixed_consensus_and_past_decisions(tmp_path):
     st.record_print(EarningsPrint(
         stock_id="cik:0001018724", fiscal_quarter="2026-Q2",
         report_date=date(2026, 7, 31), reported_at=at(5),
-        source=PrintSource.YAHOO, eps_actual=5.75))
+        source=PrintSource.WHISPERS, eps_actual=5.75))
 
     history = st.history("cik:0001018724")
 

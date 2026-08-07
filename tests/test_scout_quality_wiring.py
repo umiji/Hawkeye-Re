@@ -17,7 +17,6 @@ from hawkeye.contracts.stocks import (
 )
 from hawkeye.ledger.stocks import StockStore
 from hawkeye.marketdata.base import StaticProvider
-from hawkeye.marketdata.yahoo_earnings import VerifiedEarnings
 from hawkeye.scout.earnings import EarningsEvent, parse_calendar, screen_events
 from hawkeye.scout.quality import (
     LegStatus,
@@ -26,8 +25,8 @@ from hawkeye.scout.quality import (
     reconstructed_consensus,
 )
 from hawkeye.scout.scout import run_scout
-from hawkeye.scout.verify import verify_events
-from tests.conftest import make_bars
+from hawkeye.scout.numbers import read_numbers
+from tests.conftest import FakeWhispers, make_bars, make_whispers
 
 JST = timezone(timedelta(hours=9))
 
@@ -40,16 +39,6 @@ class FakeCalendar:
         return self.entries
 
 
-class FakeNumbers:
-    """Yahoo's reading of a print, injected."""
-
-    def __init__(self, found: dict):
-        self.found = found
-
-    def verified_earnings(self, ticker, day):
-        return self.found.get(ticker)
-
-
 def an_event(**overrides) -> EarningsEvent:
     base = dict(ticker="TEST", day=date(2026, 7, 31), eps_actual=1.20,
                 eps_estimate=1.00, revenue_actual=1.05e9,
@@ -60,23 +49,22 @@ def an_event(**overrides) -> EarningsEvent:
 
 # --- keeping both readings -------------------------------------------------
 
-def test_the_calendar_reading_survives_verification():
-    """Replacing the calendar's numbers used to discard them. Both are needed
-    now: "the sources agree" is the evidence a beat rests on, and it cannot
-    be checked against a value that was overwritten."""
+def test_the_calendar_reading_survives_the_feeds_substitution():
+    """Replacing the calendar's numbers used to discard them. Keeping both is
+    what makes "how far do the two vendors disagree" a measurement this
+    system can take, and it is impossible against an overwritten value."""
     event = an_event(eps_actual=1.91, eps_estimate=1.00)
     screened = screen_events([event], 5.0, 0.0, 0.10, 50.0)
-    verified = FakeNumbers({"TEST": VerifiedEarnings(
-        ticker="TEST", report_date=date(2026, 7, 31), eps_actual=2.02,
-        eps_estimate=1.89, surprise_pct=6.88)})
+    feed = FakeWhispers({"TEST": make_whispers(
+        "TEST", eps_actual=2.02, eps_consensus=1.89)})
 
-    out, stats = verify_events([event], screened, verified, limit=5)
+    out, stats = read_numbers([event], screened, feed, limit=5)
 
-    assert stats.verified == 1
-    assert out[0].eps_actual == 2.02 and out[0].eps_source == "yahoo"
+    assert stats.from_whispers == 1
+    assert out[0].eps_actual == 2.02 and out[0].numbers_source == "whispers"
     assert out[0].calendar_eps_actual == 1.91
     assert out[0].calendar_eps_estimate == 1.00
-    assert out[0].eps_estimate == 1.89          # Yahoo's, kept side by side
+    assert out[0].eps_estimate == 1.89          # the feed's, kept side by side
 
 
 def test_the_calendar_carries_its_own_fiscal_quarter_label():
@@ -88,38 +76,40 @@ def test_the_calendar_carries_its_own_fiscal_quarter_label():
 
 # --- an event becomes a print + a consensus reading ------------------------
 
-def test_a_verified_event_yields_a_two_source_eps_leg():
-    event = an_event(eps_actual=2.02, eps_estimate=1.89, eps_source="yahoo",
+def test_a_feed_backed_event_is_judged_on_the_feeds_own_pair():
+    """Both figures from one vendor. The calendar's actual sits beside the
+    reading and is named, but it is not what the percentage is built from."""
+    event = an_event(eps_actual=2.02, eps_estimate=1.89,
+                     numbers_source="whispers",
                      calendar_eps_actual=2.00, calendar_eps_estimate=1.90)
 
     quality = assess_event(event, None, _config())
 
-    assert quality.eps.sources == 2
+    assert quality.eps.source == "whispers"
     assert quality.eps.status is LegStatus.BEAT
-    assert quality.eps.yahoo_surprise_pct is not None
-    assert quality.eps.finnhub_surprise_pct is not None
+    assert quality.eps.actual == 2.02 and quality.eps.estimate == 1.89
+    assert quality.eps.other_actual == 2.00        # recorded, never an input
 
 
-def test_a_single_source_event_says_so_on_the_leg():
-    """One source is now the normal case (2026-08-05: EarningsWhispers is the
-    only source of earnings numbers), so this no longer reads as unverified —
-    but the leg still carries how thin its consensus was, which is what the
-    tribunal and the Japanese report show."""
+def test_a_calendar_only_event_is_judged_on_the_calendars_own_pair():
+    """The feed declining is the normal fallback, not a failure: the whole
+    print moves to the calendar rather than half of it."""
     quality = assess_event(an_event(), None, _config())
 
-    assert quality.eps.sources == 1
+    assert quality.eps.source == "finnhub"
     assert quality.eps.status is LegStatus.BEAT
-    assert "single_source_consensus" in quality.eps.flags
+    assert quality.eps.actual == 1.20 and quality.eps.estimate == 1.00
 
 
 def test_the_print_records_which_source_each_actual_came_from():
     row = print_from_event(
-        an_event(eps_actual=2.02, eps_source="yahoo", calendar_eps_actual=1.91),
+        an_event(eps_actual=2.02, numbers_source="whispers",
+                 calendar_eps_actual=1.91),
         stock_id="cik:0000320193")
 
     assert row.eps_actual == 2.02
     assert row.eps_actual_rows == [1.91]
-    assert row.source is PrintSource.YAHOO
+    assert row.source is PrintSource.WHISPERS
     assert row.fiscal_quarter == "2026-Q2"
 
 
@@ -145,13 +135,18 @@ def test_contradictory_actuals_from_the_calendar_reach_the_print():
 
 def test_a_reconstructed_consensus_says_so():
     snapshot = reconstructed_consensus(
-        an_event(eps_source="yahoo", eps_estimate=1.89,
-                 calendar_eps_estimate=1.90),
+        an_event(numbers_source="whispers", eps_estimate=1.89,
+                 calendar_eps_estimate=1.90, revenue_estimate=1.05e9,
+                 calendar_revenue_estimate=1.0e9),
         stock_id="cik:0000320193",
         captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
 
     assert snapshot.kind is SnapshotKind.RECONSTRUCTED
     assert snapshot.eps_avg == 1.89 and snapshot.eps_calendar == 1.90
+    # Revenue moves with EPS. Leaving the feed's revenue estimate in the
+    # calendar's field would rebuild the cross-vendor ratio one field lower.
+    assert snapshot.revenue_avg == 1.05e9
+    assert snapshot.revenue_calendar == 1.0e9
     assert snapshot.eps_analysts is None      # a count exists only pre-print
 
 

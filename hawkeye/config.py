@@ -57,65 +57,41 @@ class HawkeyeConfig:
     # revenue for lenders), which reads as a several-hundred-percent beat.
     # Past this, the number is treated as unverified rather than as a beat.
     scout_max_trusted_revenue_surprise_pct: float = 50.0
-    # How many names one scan re-reads from Yahoo before ranking
-    # (hawkeye/scout/verify.py). Not a doctrine number — a run-duration
-    # budget: ~1s per name, and 120 sequential calls measured 2026-08-02 at
-    # 62 req/min with no rate limiting, so 60 costs about a minute. Names
-    # past it keep the calendar's EPS, marked as such rather than dropped.
-    scout_max_verify: int = 60
 
     # --- Earnings quality: the three legs (docs/design/MASTER_OVERVIEW.ja.md §5.3) ---
-    # None of these were invented. They come from the gaps in the measured
-    # distribution of a 50-name sample taken on 2026-08-02: consensus
-    # disagreement clusters at 0.28-3.50% and then jumps to 5.18%, and actual
-    # disagreement runs 0.9%/1.1% (rounding) and then jumps to 2.9%.
-    earnings_consensus_dispute_pct: float = 5.0
+    # When the two vendors' EPS actuals are far enough apart to be worth
+    # telling the reader about. Both conditions must hold: on a $0.30 EPS, one
+    # cent of rounding is 3%. Taken from the measured distribution of a
+    # 50-name sample on 2026-08-02 — actual disagreement runs 0.9%/1.1%
+    # (rounding) and then jumps to 2.9%.
+    #
+    # This is a REPORTING threshold, not a judgment one. It stopped deciding
+    # anything on 2026-08-07 with the move to one vendor per print: a reading
+    # now stands on one vendor's actual over that same vendor's consensus, so
+    # the other vendor's figure cannot make it better or worse. It is still
+    # measured and still named, because the gap is usually GAAP against an
+    # adjusted basis and that is a fact the Adversary should be able to attack.
+    #
+    # Three switches went with the two-vendor rule and are not replaced:
+    # `earnings_consensus_dispute_pct` (two consensus figures to compare),
+    # `earnings_actual_dispute_blocks` and
+    # `earnings_single_source_consensus_blocks` (both already off, and with one
+    # vendor per print neither had anything left to select).
     earnings_actual_dispute_pct: float = 2.0
-    # Both conditions must hold: on a $0.30 EPS, one cent of rounding is 3%.
     earnings_actual_dispute_abs_usd: float = 0.01
-    # Whether a disputed ACTUAL makes the EPS leg unverified (2026-08-03(b):
-    # changed from True to False). It no longer does, for three reasons.
-    #
-    # (1) The judgment is already doubly conservative: the smaller actual is
-    #     compared against the larger consensus, so a beat under dispute is a
-    #     beat under EITHER vendor's reading of EITHER number.
-    # (2) The old rule was inconsistent with what sits next to it — ONE
-    #     source's actual is accepted (`single_source_actual` never blocked),
-    #     while two sources that disagree were refused. Having more
-    #     information made the leg worse.
-    # (3) Invariant 6 governs MISSING data. A dispute is not missing data;
-    #     `no_actual` still blocks and always will.
-    #
-    # It is not a silent pass: the flag stays on the leg, the Japanese report
-    # and the tribunal's own catalyst text both name the disagreement and the
-    # two figures, and the release read is still requested for it.
-    # Measured cost of the old rule: 21% of prints (10 of 48 on 2026-08-02)
-    # lost their EPS leg to this, in a system that has produced no BUY yet.
-    earnings_actual_dispute_blocks: bool = False
     # A consensus this thin is one analyst's opinion wearing the word
-    # "consensus" — INVH's was built from exactly one, and only the
-    # pre-registered Yahoo row reveals it.
+    # "consensus" — INVH's was built from exactly one, and only a
+    # pre-registered row with an analyst count reveals it.
     earnings_min_analysts: int = 3
-    # Whether a consensus from a single source stops a leg from counting.
+    # How many names one scan asks the earnings feed about, best score first.
+    # One request per print, and a scan window holds ~350 a day, so this is a
+    # run-duration and rate-limit ceiling rather than a doctrine number. Names
+    # past it are reported, never dropped silently.
     #
-    # Turned OFF on 2026-08-05, with the move to EarningsWhispers as the one
-    # source of earnings numbers (user decision, `docs/design/
-    # MASTER_OVERVIEW.ja.md` §4). The old rule was written when two vendors
-    # supplied consensus and their agreement was free; with one vendor it is
-    # not a safety rule any more, it is an unconditional veto — every leg of
-    # every name would read "unverified" and no candidate could ever reach the
-    # tribunal. The protection it gave up is real and is recorded rather than
-    # pretended away: a vendor contradicting ITSELF (BJRI 2026-07-30, two
-    # consensus figures for one print) can no longer be caught by comparing
-    # vendors. What replaces it is narrower — the pre-registered snapshot taken
-    # BEFORE the print stays the yardstick, so a consensus revised afterwards
-    # cannot quietly lower the bar.
-    earnings_single_source_consensus_blocks: bool = False
-    # How many names one scan asks the earnings feed about. One request per
-    # print, and a scan window holds ~350 a day, so this is a run-duration and
-    # rate-limit ceiling rather than a doctrine number. Names past it are
-    # reported, never dropped silently.
-    scout_max_whispers: int = 200
+    # 50 rather than 200 (2026-08-07): the feed decides the RANKING now, not
+    # just a confirmation, so this is the size of the pool the top 15 are drawn
+    # from. Measured at 184 req/min with no throttling, 50 costs ~16s.
+    scout_max_whispers: int = 50
     # How long a print whose numbers have not arrived is held open before it
     # is given up on, measured from the ANNOUNCEMENT (hawkeye/scout/
     # waiting.py). The feed publishes a company's new quarter roughly a day

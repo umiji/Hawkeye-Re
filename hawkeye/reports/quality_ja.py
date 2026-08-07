@@ -30,19 +30,16 @@ _VERDICT = {
     QuarterVerdict.UNVERIFIED: "判定不能(EPSが検証できていない)",
 }
 _FLAG = {
-    "actual_disputed": "実績値が2ソースで食い違い(小さい方の実績×大きい方の"
-                       "予想で評価しているため、どちらの数字でも成立する読み"
-                       "だが、GAAP/調整後のどちらの基準かは未決着。この系では"
-                       "決着させる手段がありません)",
+    "vendors_report_different_actuals":
+        "同じ決算の実績値を、決算カレンダーは別の数字で報告している"
+        "(判定には使っていません — 上の率は片方の提供元の実績と、同じ提供元の"
+        "予想だけで計算しています。差はたいていGAAPと調整後の基準差ですが、"
+        "この系では決着させる手段がありません)",
     "finnhub_actual_conflict": "Finnhubが同じ決算に矛盾する実績値を返しており、"
                                "同社の実績は使用不能",
-    "single_source_actual": "実績値のソースが1つだけ",
-    "consensus_disputed": "コンセンサスが2ソースで食い違い(保守的な方で評価)",
-    "single_source_consensus": "コンセンサスのソースが1つだけ"
-                               "(決算前の事前登録が無い)",
     "thin_coverage": "アナリスト人数が下限未満",
     "estimate_too_small": "予想の絶対値が小さすぎて率が意味を持たない",
-    "sources_disagree_on_direction": "上振れ/下振れの向きがソースで割れている",
+    "no_consensus": "比較対象のコンセンサスを取得できていない",
     "no_actual": "実績値を取得できていない",
     "guidance_not_published": "会社がガイダンスを開示していない",
     "no_forward_consensus_to_compare": "比較対象の翌四半期コンセンサスが無い",
@@ -65,30 +62,27 @@ def _flag_ja(flag: str) -> str:
     return f"売上: {text}" if flag.startswith("revenue_") else text
 
 
+_SOURCE_JA = {"whispers": "決算専門サイト", "finnhub": "決算カレンダー",
+              "calendar": "決算カレンダー"}
+
+
 def render_leg_ja(leg: LegVerdict) -> str:
     head = f"  {_LEG.get(leg.leg, leg.leg)}: {_STATUS[leg.status]}"
     if leg.surprise_pct is not None:
         head += f" {leg.surprise_pct:+.1f}%"
-        pair = []
-        if leg.yahoo_surprise_pct is not None:
-            pair.append(f"Yahoo {leg.yahoo_surprise_pct:+.1f}%")
-        if leg.finnhub_surprise_pct is not None:
-            pair.append(f"Finnhub {leg.finnhub_surprise_pct:+.1f}%")
-        if len(pair) == 2:
-            head += f"(保守的な読み / {' ・ '.join(pair)})"
+        # どの提供元の数字で計算したのかを必ず添える。率の分子(実績)と分母
+        # (予想)は必ず同じ提供元から取っており、それがこの数字の意味を決める。
+        if leg.source:
+            head += f"({_SOURCE_JA.get(leg.source, leg.source)}の実績と予想)"
     if leg.analysts is not None:
         head += f" [アナリスト{leg.analysts}人]"
     lines = [head]
-    # 実績値そのものが割れている場合は、両方の数字を出す。2026-08-03(b) 以降、
-    # 食い違ったままでも(保守的な読みで)上振れ判定になり得るので、読み手が
-    # 「何と何が食い違っているのか」を目で確認できないと検算のしようがない。
-    if "actual_disputed" in leg.flags:
-        pair = [f"Yahoo {v:g}" for v in (leg.actual_yahoo,) if v is not None]
-        pair += [f"Finnhub {v:g}" for v in (leg.actual_finnhub,)
-                 if v is not None]
-        if pair:
-            lines.append(f"    実績値: {' / '.join(pair)}"
-                         f"(評価に使ったのは {leg.actual:g})")
+    # もう一方の提供元が別の実績値を報告している場合は、両方の数字を出す。
+    # 判定には使っていないが、読み手が「何と何が食い違っているのか」を目で
+    # 確認できないと検算のしようがない。
+    if "vendors_report_different_actuals" in leg.flags:
+        lines.append(f"    実績値: 判定に使用 {leg.actual:g} / "
+                     f"決算カレンダー {leg.other_actual:g}")
     lines += [f"    - {_flag_ja(f)}" for f in leg.flags]
     return "\n".join(lines)
 

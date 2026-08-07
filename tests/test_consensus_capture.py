@@ -301,7 +301,7 @@ def test_capture_stops_once_that_quarters_print_is_recorded(tmp_path):
     stock_id = store.put_stock(Stock(cik="0001018724", ticker="AMZN"))
     store.record_print(EarningsPrint(
         stock_id=stock_id, fiscal_quarter="2026-Q2",
-        report_date=date(2026, 8, 3), source=PrintSource.YAHOO))
+        report_date=date(2026, 8, 3), source=PrintSource.WHISPERS))
 
     report = capture_consensus(store, prints, StubConsensus({"AMZN": reading()}),
                                captured_at=datetime(2026, 8, 3, 22, tzinfo=JST))

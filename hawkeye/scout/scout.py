@@ -46,10 +46,10 @@ from hawkeye.scout.quality import (
     print_from_event,
     reconstructed_consensus,
 )
-from hawkeye.scout.verify import (
-    EarningsNumberSource,
-    VerificationStats,
-    verify_events,
+from hawkeye.scout.numbers import (
+    NumbersStats,
+    WhispersReader,
+    read_numbers,
 )
 
 
@@ -67,11 +67,11 @@ class ScoutCandidate:
     eps_surprise_trusted: bool = True
     revenue_surprise_trusted: bool = True
     conflicting_estimates: bool = False
-    # Which source the EPS surprise above came from ("calendar" or "yahoo"),
-    # and what the calendar had said when Yahoo replaced it. Recorded on
-    # every candidate so a later review can tell a decision made on verified
+    # Which vendor BOTH figures above came from ("calendar" or "whispers"),
+    # and what the calendar had said when the feed replaced it. Recorded on
+    # every candidate so a later review can tell a decision made on the feed's
     # numbers from one made on the calendar's.
-    eps_source: str = "calendar"
+    numbers_source: str = "calendar"
     calendar_eps_surprise_pct: Optional[float] = None
     price: Optional[float] = None
     price_asof: Optional[date] = None
@@ -97,7 +97,7 @@ class ScoutResult:
     capped: list[ScoutCandidate] = field(default_factory=list)  # never enriched (scout_max_enrich)
     duplicates: int = 0          # already recorded by an earlier scan
     window_truncated: bool = False  # the lookback cap bounded the window
-    verification: VerificationStats = field(default_factory=VerificationStats)
+    numbers: NumbersStats = field(default_factory=NumbersStats)
     # The attempt ceiling stopped the walk before the gate-passed pool was
     # full. Means the shortlist is short because the budget ran out, not
     # because the calendar was quiet — the two must not read the same.
@@ -174,10 +174,10 @@ def _catalyst_description(screened: ScreenedEvent) -> str:
                      + ("" if screened.revenue_surprise_trusted else
                         " [UNVERIFIED: actual and estimate are not on the same"
                         " accounting basis]"))
-    if screened.event.eps_source == "yahoo":
-        parts.append("EPS actual and consensus were re-read from Yahoo, which"
-                     " matched the companies' own releases where the earnings"
-                     " calendar did not")
+    if screened.event.numbers_source == "whispers":
+        parts.append("both the actual and the consensus above come from the"
+                     " earnings feed, not from the calendar; the ratio is"
+                     " therefore measured on one vendor's own pair")
     elif screened.event.conflicting_estimates:
         parts.append("the earnings calendar returned conflicting consensus"
                      " figures for this print; the most conservative was used"
@@ -199,7 +199,7 @@ def _candidate_from(screened: ScreenedEvent,
         eps_surprise_trusted=screened.eps_surprise_trusted,
         revenue_surprise_trusted=screened.revenue_surprise_trusted,
         conflicting_estimates=screened.event.conflicting_estimates,
-        eps_source=screened.event.eps_source,
+        numbers_source=screened.event.numbers_source,
         calendar_eps_surprise_pct=screened.event.calendar_eps_surprise_pct,
         reject_reason=reject_reason)
 
@@ -219,7 +219,7 @@ def _quarter_context(store, directory, event,
     """Resolve the company and the consensus this print is judged against.
 
     A pre-registered row always wins. Only when none exists is one
-    reconstructed from what the calendar and the verification pass hold —
+    reconstructed from what the calendar and the earnings feed hold —
     recorded as `reconstructed`, so the weaker evidence is never mistaken
     for the stronger kind later.
     """
@@ -310,7 +310,7 @@ def _record_cheap_history(store, directory, events,
             store.capture_consensus(
                 reconstructed_consensus(event, stock_id, row.fiscal_quarter))
         # The source is whichever vendor actually supplied this row's figures,
-        # not a blanket label: a name the verification pass happened to cover
+        # not a blanket label: a name the feed pass happened to cover
         # carries that vendor, and stamping every history row with the
         # calendar would understate what is behind it.
         store.record_print(row.model_copy(
@@ -324,7 +324,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
               today: Optional[date] = None,
               window: Optional[ScanWindow] = None,
               already_seen: Optional[set[tuple[str, date]]] = None,
-              numbers_source: Optional[EarningsNumberSource] = None,
+              numbers_source: Optional[WhispersReader] = None,
               stock_store=None,
               directory=None,
               consensus_source=None) -> ScoutResult:
@@ -334,9 +334,10 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
         from the previous run. `days_back` is the manual override.
     already_seen: (ticker, event date) pairs an earlier scan already
         recorded, dropped before enrichment so they cost no API calls.
-    numbers_source: re-reads reported EPS from a second source before the
-        shortlist is decided (hawkeye/scout/verify.py). Optional — without
-        it the calendar's own figures stand, exactly as before.
+    numbers_source: the earnings feed, read before the shortlist is
+        decided, and the vendor whose figures rank the pool when it answers
+        (hawkeye/scout/numbers.py). Optional — without it the calendar's own
+        figures stand for every name.
     """
     today = today or date.today()
     if window is None:
@@ -371,9 +372,9 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     raw = calendar_source.earnings_calendar(window.start, window.end)
     events = parse_calendar(raw)
     # Screened twice on purpose. The first pass is provisional — it only
-    # decides which names are worth a verification call — and the second is
-    # the one that ranks, because by then the EPS figures are the ones a
-    # second source stands behind. Verifying after the ranking would leave
+    # decides which names are worth a request to the feed — and the second is
+    # the one that ranks, because by then the figures are the feed's own.
+    # Reading the feed after the ranking would leave
     # the 2026-08-01 defect intact: the broken metric was also the metric
     # choosing which candidates were ever looked at.
     #
@@ -382,9 +383,9 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     # walk below is about this run's new work.
     all_screened = screen(events)
     screened = unseen(all_screened)
-    events, verification = verify_events(events, screened, numbers_source,
-                                         config.scout_max_verify, skip=seen)
-    if verification.verified:
+    events, numbers = read_numbers(events, screened, numbers_source,
+                                   config.scout_max_whispers, skip=seen)
+    if numbers.from_whispers:
         all_screened = screen(events)
         screened = unseen(all_screened)
 
@@ -517,7 +518,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                        passed=passed, rejected=rejected, capped=capped,
                        duplicates=duplicates,
                        window_truncated=window.truncated,
-                       verification=verification,
+                       numbers=numbers,
                        enrichment_ceiling_hit=ceiling_hit)
 
 
@@ -544,7 +545,7 @@ def _measured(c: ScoutCandidate) -> dict:
             "eps_surprise_trusted": c.eps_surprise_trusted,
             "revenue_surprise_trusted": c.revenue_surprise_trusted,
             "conflicting_estimates": c.conflicting_estimates,
-            "eps_source": c.eps_source,
+            "numbers_source": c.numbers_source,
             "calendar_eps_surprise_pct": c.calendar_eps_surprise_pct,
             "score": c.score, "score_version": c.score_version,
             "price": c.price, "price_asof": c.price_asof}

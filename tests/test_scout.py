@@ -31,7 +31,12 @@ from hawkeye.scout.scout import (
     scan_window,
     score_candidate,
 )
-from tests.conftest import make_bars, make_brief
+from tests.conftest import (
+    FakeWhispers,
+    make_bars,
+    make_brief,
+    make_whispers,
+)
 
 
 def ev(ticker="AAA", day=None, eps_a=1.10, eps_e=1.00,
@@ -375,13 +380,13 @@ def test_candidates_below_the_stop_point_are_still_recorded(config):
 
 
 class CountingNumbers:
-    """A second source that records who it was asked about, so a test can
+    """An earnings feed that records who it was asked about, so a test can
     assert on the requests a scan does NOT make."""
 
     def __init__(self):
         self.asked: list[str] = []
 
-    def verified_earnings(self, ticker, day):
+    def details(self, ticker):
         self.asked.append(ticker)
         return None
 
@@ -563,6 +568,29 @@ def test_screened_candidates_keep_the_qualitative_data_they_were_judged_on(confi
     assert [n.headline for n in row.news] == ["Q2 beat"]
     assert row.insider_activity == insider
     assert row.analyst_trend == analyst
+
+
+def test_a_drop_record_says_which_vendor_ranked_the_name(config):
+    """The drop review's whole job is asking why the screen let a name go, and
+    that is unanswerable without knowing whose yardstick it was measured on.
+    The field is also the one place a rename can go wrong silently: the
+    contract ignores unknown keys, so a mismatch here would default every
+    record to "calendar" with nothing raising."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [{"symbol": "AAA", "date": event_day.isoformat(),
+                "epsActual": 1.30, "epsEstimate": 1.00}]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    provider = StaticProvider(bars=bars, profile_data={"market_cap": 5e9})
+    feed = FakeWhispers({"AAA": make_whispers(
+        "AAA", announced=event_day, eps_actual=1.31, eps_consensus=1.00)})
+
+    result = run_scout(FakeCalendar(entries), provider, config, today=today,
+                       numbers_source=feed)
+    rows = build_screened_candidates(result, scan_id=9)
+
+    assert [c.numbers_source for c in result.passed] == ["whispers"]
+    assert [r.numbers_source for r in rows] == ["whispers"]
 
 
 def test_enrichment_capped_candidates_have_no_qualitative_data(config):

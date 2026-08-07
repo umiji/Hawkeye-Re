@@ -221,13 +221,14 @@ class ScreenedCandidate(BaseModel):
     eps_surprise_trusted: bool = True
     revenue_surprise_trusted: bool = True
     conflicting_estimates: bool = False
-    # Which source supplied the EPS figures — "calendar" (Finnhub) or
-    # "yahoo" (added 2026-08-02) — and what the calendar had read when Yahoo
+    # Which vendor supplied BOTH figures the surprise above was computed from
+    # — "calendar" (the Finnhub earnings calendar) or "whispers"
+    # (EarningsWhispers) — and what the calendar had read when the feed
     # replaced it. Both are needed to answer two different later questions:
-    # "was this decision made on verified numbers?" and "how often do the
-    # two sources actually disagree?". Optional so records written before
+    # "which vendor's yardstick was this decision made on?" and "how often do
+    # the two vendors actually disagree?". Optional so records written before
     # the split still load (invariant 1).
-    eps_source: str = "calendar"
+    numbers_source: str = "calendar"
     calendar_eps_surprise_pct: Optional[float] = None
     score: float
     score_version: str            # "full" (gap-aware) or "partial_no_gap"

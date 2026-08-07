@@ -28,10 +28,10 @@ genuine surprise out of the scarce enrichment slots.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime
 from typing import NamedTuple, Optional
 
-from hawkeye.contracts.stocks import resolve_fiscal_quarter
+from hawkeye.contracts.stocks import GuidanceReading, resolve_fiscal_quarter
 
 
 @dataclass(frozen=True)
@@ -43,28 +43,48 @@ class EarningsEvent:
     revenue_actual: Optional[float]
     revenue_estimate: Optional[float]
     conflicting_estimates: bool = False   # the calendar disagreed with itself
-    # Which source the EPS figures above came from: "calendar" (Finnhub) or
-    # "yahoo". Revenue is always the calendar's — see
-    # hawkeye/marketdata/yahoo_earnings.py for why only EPS crosses over.
-    eps_source: str = "calendar"
-    # The surprise as the source PUBLISHED it. Yahoo rounds the estimate it
-    # displays but computes the surprise from full precision, so recomputing
-    # from the two displayed numbers understates the beat (BJRI 2026-07-30:
-    # 0.90/0.94 displayed, +4.95% published, +4.44% if recomputed). When this
-    # is set it wins over any computation — that rule is enforced here rather
-    # than left to callers to remember.
+    # Which vendor ALL FOUR figures above came from: "calendar" (the Finnhub
+    # earnings calendar) or "whispers" (EarningsWhispers). One print stands on
+    # one vendor, both legs — a ratio whose actual and consensus come from
+    # different vendors compares an adjusted-basis estimate against a possibly
+    # GAAP actual (hawkeye/scout/numbers.py).
+    numbers_source: str = "calendar"
+    # Why the feed's figures are NOT the ones above, when it was asked. Empty
+    # means either "the feed supplied them" (numbers_source == "whispers") or
+    # "nobody asked" — which `numbers_source` tells apart. Named rather than
+    # boolean because "has not ingested this print yet" is worth waiting for
+    # and "could not reach the site" is not a fact about the company at all.
+    numbers_reason: str = ""
+    # The surprise as the source PUBLISHED it, when it published one on the
+    # same basis we measure on. Vendors compute from full precision while
+    # displaying a rounded estimate, so recomputing from the two displayed
+    # numbers understates the beat (BJRI 2026-07-30: 0.90/0.94 displayed,
+    # +4.95% published, +4.44% if recomputed). When this is set it wins over
+    # any computation — enforced here rather than left to callers to remember.
     eps_surprise_pct_reported: Optional[float] = None
-    # What the calendar read before verification replaced it. Kept so the
-    # disagreement rate between the two sources accumulates as data instead
-    # of being overwritten silently.
+    # What the calendar read before the feed's figures replaced it. Kept so
+    # the disagreement rate between the two sources accumulates as data
+    # instead of being overwritten silently.
     calendar_eps_surprise_pct: Optional[float] = None
-    # The calendar's own actual and estimate, kept alongside the verified
-    # pair rather than replaced by it (2026-08-02). A beat now requires BOTH
-    # sources to say so, and that comparison is impossible against a value
-    # that was overwritten — which is what the earlier "verified wins"
-    # substitution did.
+    # The calendar's own four figures, kept alongside the chosen pair rather
+    # than replaced by them (2026-08-02). How far the vendors disagree is a
+    # measurement this system takes, and it is impossible against a value that
+    # was overwritten.
     calendar_eps_actual: Optional[float] = None
     calendar_eps_estimate: Optional[float] = None
+    calendar_revenue_actual: Optional[float] = None
+    calendar_revenue_estimate: Optional[float] = None
+    # When the release actually crossed the wire, from the feed. The clock a
+    # 48-hour hold would run on is NOT this one (a held print is one the feed
+    # has not ingested, so its timestamp belongs to the previous quarter) —
+    # this is here for the record and for the report.
+    announced_at: Optional[datetime] = None
+    # The third leg, read deterministically off the same response that carried
+    # the numbers. `guidance_reason` names what could not be read, so a
+    # company that guided in an unhandled form is never indistinguishable from
+    # one that guided nothing (invariant 6).
+    guidance: Optional[GuidanceReading] = None
+    guidance_reason: str = ""
     # The source's own fiscal label (`2026-Q2`), when the calendar gave one.
     # Preferred over the calendar quarter of the report date, which is wrong
     # for any company whose fiscal year does not end in December.

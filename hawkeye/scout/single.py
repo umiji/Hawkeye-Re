@@ -7,9 +7,9 @@ two calendar rows collapse to +2.7%, so the screen drops the print before
 verification ever runs — the print that started the whole investigation would
 be unjudgeable in the product that judges prints.
 
-Everything else is the funnel's own path, deliberately: the same second-source
-verification, the same both-sources-agree rule, the same pinned consensus, the
-same recorded quarter. A hand-picked stock must not arrive at the tribunal on
+Everything else is the funnel's own path, deliberately: the same earnings
+feed, the same one-vendor-per-print rule, the same pinned consensus, the same
+recorded quarter. A hand-picked stock must not arrive at the tribunal on
 weaker evidence than a discovered one.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Optional
 
 from hawkeye.scout.earnings import EarningsEvent, parse_calendar
 from hawkeye.scout.quality import EarningsQuality, assess_earnings, describe_quality_en
-from hawkeye.scout.verify import verify_events
+from hawkeye.scout.numbers import read_numbers
 
 # A print files under the session it belongs to, which is not always the day
 # the wire crossed. An exact-date query reads as "no such print".
@@ -63,10 +63,10 @@ def judge_ticker(ticker: str, calendar_source, config, *,
         return None
     event = max(events, key=lambda e: e.day)
 
-    # Named outright, so verification is not rationed by the screen.
-    verified, _ = verify_events([event], [], numbers_source, limit=1,
-                                always=[(event.ticker, event.day)])
-    event = verified[0]
+    # Named outright, so the feed read is not rationed by the screen.
+    read, _ = read_numbers([event], [], numbers_source, limit=1,
+                           always=[(event.ticker, event.day)])
+    event = read[0]
 
     context = _quarter_context(stock_store, directory, event, consensus_source)
     if context is None:

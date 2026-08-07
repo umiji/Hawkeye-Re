@@ -1,32 +1,35 @@
 """Judging one quarter on three legs: EPS, revenue, guidance (§5.3).
 
 The question this module answers is "was this a good quarter", and the
-answer it is allowed to give is deliberately narrow. Two sources — Yahoo's
-pre-registered distribution and Finnhub's point estimate — are compared, and
-a leg counts as a beat only when BOTH of them say so. Where they disagree
-the conservative reading is what gets ranked, extending across vendors the
-collapse-to-conservative rule already applied to Finnhub's own duplicate rows
-on 2026-08-01.
+answer it is allowed to give is deliberately narrow.
 
-Three failure modes are handled apart from each other, because they are
-resolvable by different things:
+**Every percentage here is one vendor's actual over that SAME vendor's
+consensus.** Which vendor is decided once per print, before the ranking
+(`hawkeye/scout/numbers.py`), and recorded on the print row. This replaced a
+rule that compared two vendors and scored the conservative of the two
+readings — which sounded safe and was not: the figures it chose between were
+an adjusted-basis consensus and a possibly-GAAP actual, so "conservative" meant
+picking the smaller of two numbers that were never measuring the same thing
+(EW移行 Ver2 §1).
 
-- **The actuals disagree** (AAPL 2.02 vs 1.91). The reading takes the smaller
-  actual against the larger consensus, so a beat under it holds under either
-  vendor's figures; the disagreement is named in the brief and left standing.
-  It used to be resolvable by reading the company's own release, and is not
-  any more — that escalation is gone (tests/test_removed_escalations.py).
-- **The consensus disagrees** (BIIB 2.15 vs 3.98). Resolvable by nothing —
-  no primary source for consensus exists anywhere — so it is flagged, both
-  values are kept, and the conservative one ranks.
+What the other vendor said is still recorded and still reaches the reader —
+the print row keeps the calendar's actuals, the consensus row keeps its point
+estimate, and a material gap between the two actuals becomes a flag the
+Adversary can attack. None of it enters the arithmetic.
+
+Two failure modes remain, and they are different in kind:
+
+- **A vendor contradicting ITSELF** (AMZN's calendar rows: 1.88 and 1.97 for
+  one print). Its actual is unusable for that print — picking the row that
+  happens to look right is exactly the judgment this system exists to remove.
 - **The consensus is too thin or too small** (INVH's single analyst; a REIT's
   near-zero GAAP consensus). Not a disagreement at all; the denominator just
   cannot carry a percentage.
 
 Nothing here computes a non-GAAP figure, and nothing reads one either: with
 no source for a published adjusted figure, a quarter whose one-off nobody
-quantified simply travels onward on the vendors' numbers, with the
-disagreement between them stated.
+quantified simply travels onward on the chosen vendor's numbers, with the
+other vendor's disagreement stated.
 """
 from __future__ import annotations
 
@@ -68,23 +71,27 @@ class QuarterVerdict(str, Enum):
 class LegVerdict:
     """One leg's reading, with every input that produced it kept visible.
 
-    `surprise_pct` is always the conservative reading. The per-source figures
-    stay alongside it so a later review can measure how often, and how far,
-    the vendors disagreed — the disagreement rate is data, not noise.
+    `actual` and `estimate` come from the SAME vendor, named in `source`.
+    There is no conservative-of-two reading any more, because there is no
+    second pair to be conservative between: a ratio built from one vendor's
+    actual over another's consensus compares an adjusted-basis estimate with a
+    possibly GAAP figure, and the resulting percentage means nothing however
+    conservatively it is chosen (EW移行 Ver2 §1).
+
+    What the OTHER vendor said is not thrown away — it is kept on the print
+    row (`eps_actual_rows`) and the consensus row (`eps_calendar`), and when
+    the two actuals differ materially the leg says so in a flag. It just no
+    longer decides anything.
     """
     leg: str
     status: LegStatus
     surprise_pct: Optional[float] = None
-    yahoo_surprise_pct: Optional[float] = None
-    finnhub_surprise_pct: Optional[float] = None
     actual: Optional[float] = None
-    # Each vendor's own actual, kept apart from the resolved one. Since a
-    # disputed leg can now be scored (2026-08-03(b)), the two figures have to
-    # remain readable — they are what the disagreement IS, and both the
-    # tribunal's brief and the Japanese report name them.
-    actual_yahoo: Optional[float] = None
-    actual_finnhub: Optional[float] = None
-    sources: int = 0                       # consensus sources compared
+    estimate: Optional[float] = None
+    source: str = ""                       # the vendor BOTH figures came from
+    # What the other vendor reported for the same leg, for the record and for
+    # the Adversary to attack. Never an input to the reading above.
+    other_actual: Optional[float] = None
     analysts: Optional[int] = None
     # Machine-readable reasons, never prose. The Japanese wording lives in
     # `hawkeye/reports/quality_ja.py` and the English wording in
@@ -131,150 +138,69 @@ def _relative_gap(a: float, b: float) -> float:
     return abs(a - b) / scale * 100.0 if scale else 0.0
 
 
-def _resolve_actual(yahoo: Optional[float], finnhub: Optional[float],
-                    config, absolute_floor: Optional[float]
-                    ) -> tuple[Optional[float], list[str]]:
-    """The actual to judge on, and what was wrong with getting there.
-
-    The two vendors must agree — and "agree" is two conditions, not one,
-    because on a $0.30 EPS a single cent of rounding is 3%.
-
-    There used to be a third input: a figure read from the company's own
-    release, which overrode both. Nothing produces one now that the scan has
-    stopped reading releases, so the branch was removed rather than left as a
-    parameter every caller passes None to.
-    """
-    flags: list[str] = []
-    present = [v for v in (yahoo, finnhub) if v is not None]
-    if not present:
-        return None, ["no_actual"]
-    if len(present) == 1:
-        return present[0], ["single_source_actual"]
-    gap_pct = _relative_gap(yahoo, finnhub)
-    gap_abs = abs(yahoo - finnhub)
-    disputed = gap_pct > config.earnings_actual_dispute_pct and (
-        absolute_floor is None or gap_abs > absolute_floor)
-    if disputed:
-        flags.append("actual_disputed")
-    # Conservative even when they agree: the smaller reading is the one that
-    # cannot overstate the beat, and picking "the one that looks right" is
-    # the judgment this system exists to remove.
-    return min(present), flags
-
-
 def _assess_leg(leg: str, actual: Optional[float], actual_flags: list[str],
-                yahoo_estimate: Optional[float],
-                finnhub_estimate: Optional[float],
-                analysts: Optional[int], config,
+                estimate: Optional[float], analysts: Optional[int], config,
+                source: str = "",
                 min_abs_estimate: Optional[float] = None,
-                actual_yahoo: Optional[float] = None,
-                actual_finnhub: Optional[float] = None) -> LegVerdict:
-    flags = list(actual_flags)
-    estimates = [v for v in (yahoo_estimate, finnhub_estimate) if v is not None]
-    yahoo_pct = _pct(actual, yahoo_estimate)
-    finnhub_pct = _pct(actual, finnhub_estimate)
-    readings = [p for p in (yahoo_pct, finnhub_pct) if p is not None]
-    conservative = min(readings) if readings else None
+                other_actual: Optional[float] = None) -> LegVerdict:
+    """One leg read from ONE vendor's actual over the SAME vendor's consensus.
 
-    if len(estimates) == 2 and _relative_gap(*estimates) > \
-            config.earnings_consensus_dispute_pct:
-        flags.append("consensus_disputed")
-    if len(estimates) == 1:
-        flags.append("single_source_consensus")
+    This used to take two estimates and score the conservative of the two
+    readings. That rule died with the move to one vendor per print: the
+    figures it compared were an adjusted-basis consensus and a possibly-GAAP
+    actual, so "conservative" was picking the smaller of two numbers that were
+    never measuring the same thing (EW移行 Ver2 §1).
+
+    What the other vendor reported is still recorded and, when it differs
+    materially, flagged — as a fact for the Adversary to use, never as an
+    input to the reading.
+    """
+    flags = list(actual_flags)
+    pct = _pct(actual, estimate)
+
+    if estimate is None:
+        flags.append("no_consensus")
     if analysts is not None and analysts < config.earnings_min_analysts:
         flags.append("thin_coverage")
-    if (min_abs_estimate is not None and estimates
-            and min(abs(v) for v in estimates) < min_abs_estimate):
+    if (min_abs_estimate is not None and estimate is not None
+            and abs(estimate) < min_abs_estimate):
         flags.append("estimate_too_small")
-    if len(readings) == 2 and (readings[0] > 0) != (readings[1] > 0):
-        flags.append("sources_disagree_on_direction")
+    if (other_actual is not None and actual is not None
+            and _relative_gap(actual, other_actual)
+            > config.earnings_actual_dispute_pct
+            and abs(actual - other_actual)
+            > config.earnings_actual_dispute_abs_usd):
+        flags.append("vendors_report_different_actuals")
 
-    status = _leg_status(readings, estimates, flags, _blocking(config))
-    if status is LegStatus.MISS and "actual_disputed" in flags:
-        status = _disputed_miss_status(actual_yahoo, actual_finnhub,
-                                       estimates)
-    return LegVerdict(leg=leg, status=status, surprise_pct=conservative,
-                      yahoo_surprise_pct=yahoo_pct,
-                      finnhub_surprise_pct=finnhub_pct, actual=actual,
-                      actual_yahoo=actual_yahoo, actual_finnhub=actual_finnhub,
-                      sources=len(estimates), analysts=analysts,
-                      flags=tuple(flags))
+    return LegVerdict(leg=leg, status=_leg_status(pct, estimate, flags),
+                      surprise_pct=pct, actual=actual, estimate=estimate,
+                      source=source, other_actual=other_actual,
+                      analysts=analysts, flags=tuple(flags))
 
 
-_BLOCKING_FLAGS = ("no_actual", "thin_coverage", "estimate_too_small")
+# What makes a leg unverified. `no_actual` and `no_consensus` are invariant 6
+# in code: missing data scores zero and says so, and must never read either as
+# a beat or as the company having done badly. The other two are doctrine
+# numbers and live in config.
+_BLOCKING_FLAGS = ("no_actual", "no_consensus", "thin_coverage",
+                   "estimate_too_small")
 
 
-def _disputed_miss_status(actual_yahoo: Optional[float],
-                          actual_finnhub: Optional[float],
-                          estimates: list[float]) -> LegStatus:
-    """Whether a MISS read off the conservative actual is actually provable.
-
-    A beat and a miss are not symmetric here, and the asymmetry is the whole
-    reason a disputed leg may be scored at all. The leg is judged on the
-    SMALLER actual, so:
-
-    - a beat under it is a beat under the larger one too — established;
-    - a miss under it says nothing about the larger one, which may well be a
-      beat. AAPL's 2.02 and 1.91 differ by a one-off; a company that took a
-      CHARGE instead shows the same gap the other way round.
-
-    So a miss has to hold for the LARGER actual as well. Otherwise the leg
-    goes back to unverified — scoring zero rather than subtracting, because
-    our inability to tell which figure is comparable must never read as the
-    company having done badly (invariant 6).
-    """
-    actuals = [v for v in (actual_yahoo, actual_finnhub) if v is not None]
-    if len(actuals) < 2 or not estimates:
-        return LegStatus.UNVERIFIED
-    readings = [p for p in (_pct(max(actuals), e) for e in estimates)
-                if p is not None]
-    if readings and max(readings) < 0:
-        return LegStatus.MISS
-    return LegStatus.UNVERIFIED
-
-
-def _blocking(config) -> tuple[str, ...]:
-    """Which flags make a leg unverified, under the doctrine in force.
-
-    Two of them are switches, and both were turned off by measurement rather
-    than by preference:
-
-    - a disputed ACTUAL stopped blocking on 2026-08-03(b) — the reading is
-      already the smaller actual against the larger consensus, so a beat under
-      dispute holds under either vendor's numbers;
-    - a SINGLE-SOURCE consensus stopped blocking on 2026-08-05, when
-      EarningsWhispers became the one source of earnings numbers. Every
-      consensus is single-source now, so the rule had stopped selecting
-      anything and had become an unconditional veto.
-
-    See `config.earnings_actual_dispute_blocks` and
-    `config.earnings_single_source_consensus_blocks` for the full rationale;
-    this function exists so each doctrine change is one config diff and not an
-    edit scattered through the judgment.
-    """
-    blocking = _BLOCKING_FLAGS
-    if getattr(config, "earnings_actual_dispute_blocks", False):
-        blocking += ("actual_disputed",)
-    if getattr(config, "earnings_single_source_consensus_blocks", True):
-        blocking += ("single_source_consensus",)
-    return blocking
-
-
-def _leg_status(readings: list[float], estimates: list[float],
-                flags: list[str], blocking: tuple[str, ...]) -> LegStatus:
+def _leg_status(pct: Optional[float], estimate: Optional[float],
+                flags: list[str]) -> LegStatus:
     """Unverified beats every other reading.
 
     A leg that cannot be confirmed must not be scored as a beat OR written
     off as a miss: both would be claims the data does not support. It scores
     zero and travels onward saying so (invariant 6).
     """
-    if not estimates and not readings:
-        return LegStatus.ABSENT if not flags else LegStatus.UNVERIFIED
-    if any(flag in blocking for flag in flags) or not readings:
+    if pct is None and estimate is None and not flags:
+        return LegStatus.ABSENT
+    if pct is None or any(flag in _BLOCKING_FLAGS for flag in flags):
         return LegStatus.UNVERIFIED
-    if min(readings) > 0:
+    if pct > 0:
         return LegStatus.BEAT
-    if max(readings) < 0:
+    if pct < 0:
         return LegStatus.MISS
     return LegStatus.INLINE
 
@@ -336,7 +262,8 @@ def _guidance_leg(print_row: EarningsPrint,
               else LegStatus.MISS if surprise and surprise < 0
               else LegStatus.INLINE)
     return LegVerdict(leg="guidance", status=status, surprise_pct=surprise,
-                      actual=midpoint, sources=1, flags=(f"on_{unit}",))
+                      actual=midpoint, estimate=yardstick,
+                      flags=(f"on_{unit}",))
 
 
 def _verdict(eps: LegVerdict, revenue: LegVerdict,
@@ -360,37 +287,30 @@ _EN_LEG = {"eps": "EPS", "revenue": "Revenue", "guidance": "Guidance"}
 
 
 def _dispute_line_en(quality: "EarningsQuality") -> str:
-    """What the reader has to know when a scored leg rests on two figures
-    that disagree.
+    """What the reader has to know when the two vendors report different
+    actuals for the same quarter.
 
-    Since 2026-08-03(b) such a leg CAN be a beat, so the weakness has to be
-    stated where the numbers are, not left to be inferred from a flag. Both
-    actuals are named: the gap is usually GAAP against the street's adjusted
-    basis, which is a fact about the quarter the Adversary should be able to
-    attack directly.
+    The reading is not affected — it stands on one vendor's actual over the
+    same vendor's consensus — but the gap is usually GAAP against the
+    street's adjusted basis, which is a fact about the quarter the Adversary
+    should be able to attack directly.
     """
     leg = quality.eps
-    if "actual_disputed" not in leg.flags:
+    if "vendors_report_different_actuals" not in leg.flags:
         return ""
-    figures = " vs ".join(f"{v:g}" for v in (leg.actual_yahoo,
-                                             leg.actual_finnhub)
-                          if v is not None)
-    return (f" NOTE: the two data vendors report DIFFERENT EPS actuals for "
-            f"this quarter ({figures}). The reading above takes the smaller "
-            f"actual against the larger consensus, so it holds under either "
-            f"vendor's numbers — but the basis is not settled, and nothing "
-            f"in this system will settle it.")
+    return (f" NOTE: the earnings calendar reports a DIFFERENT EPS actual for "
+            f"this quarter ({leg.other_actual:g}) than the {leg.source} figure "
+            f"the reading above uses ({leg.actual:g}). Both figures stand; the "
+            f"gap is usually GAAP against an adjusted basis, and nothing in "
+            f"this system will settle which one the consensus was set on.")
 
 
 def _leg_line_en(leg: LegVerdict) -> str:
     head = f"{_EN_LEG.get(leg.leg, leg.leg)} {_EN_STATUS[leg.status]} consensus"
     if leg.surprise_pct is not None:
-        head += f" {leg.surprise_pct:+.1f}% (conservative of the two readings"
-        pair = [f"Yahoo {leg.yahoo_surprise_pct:+.1f}%"
-                if leg.yahoo_surprise_pct is not None else "",
-                f"Finnhub {leg.finnhub_surprise_pct:+.1f}%"
-                if leg.finnhub_surprise_pct is not None else ""]
-        head += ": " + ", ".join(p for p in pair if p) + ")"
+        head += f" {leg.surprise_pct:+.1f}%"
+        if leg.source:
+            head += f" (actual and consensus both from {leg.source})"
     if leg.analysts is not None:
         head += f", {leg.analysts} analysts"
     if leg.flags:
@@ -410,8 +330,9 @@ def describe_quality_en(quality: "EarningsQuality") -> str:
     legs = ", ".join(_leg_line_en(leg) for leg in quality.legs)
     tail = ("A leg marked UNVERIFIED is a known unknown: it earns no ranking "
             "score and must not be argued as a beat.")
-    return (f"Earnings quality on three legs (a beat requires BOTH sources to "
-            f"agree): {legs}. {tail}{_dispute_line_en(quality)}")
+    return (f"Earnings quality on three legs (each percentage is one vendor's "
+            f"actual over that same vendor's consensus, never a mix): "
+            f"{legs}. {tail}{_dispute_line_en(quality)}")
 
 
 def print_from_event(event: EarningsEvent, stock_id: str,
@@ -430,9 +351,9 @@ def print_from_event(event: EarningsEvent, stock_id: str,
     pre-registered consensus nor collides with the correct row, so the error
     left no trace anywhere (EW移行 §2).
     """
-    verified = event.eps_source == "yahoo"
-    verified_actual = event.eps_actual if verified else None
-    calendar_actual = (event.calendar_eps_actual if verified
+    from_feed = event.numbers_source == "whispers"
+    feed_actual = event.eps_actual if from_feed else None
+    calendar_actual = (event.calendar_eps_actual if from_feed
                        else event.eps_actual)
     # Every actual the calendar gave for this print, not just the row that
     # won the collapse: two of them means the source contradicts itself.
@@ -442,10 +363,12 @@ def print_from_event(event: EarningsEvent, stock_id: str,
         stock_id=stock_id, ticker=event.ticker,
         fiscal_quarter=(fiscal_quarter or event.fiscal_quarter or ""),
         report_date=event.day,
-        source=PrintSource.YAHOO if verified else PrintSource.FINNHUB,
-        eps_actual=verified_actual,
+        reported_at=event.announced_at,
+        source=PrintSource.WHISPERS if from_feed else PrintSource.FINNHUB,
+        eps_actual=feed_actual,
         eps_actual_rows=calendar_actuals,
-        revenue_actual=event.revenue_actual)
+        revenue_actual=event.revenue_actual,
+        guidance=event.guidance)
 
 
 def reconstructed_consensus(event: EarningsEvent, stock_id: str,
@@ -464,17 +387,23 @@ def reconstructed_consensus(event: EarningsEvent, stock_id: str,
     Its fiscal quarter is left empty when no source stated one, for the same
     reason as `print_from_event`.
     """
-    verified = event.eps_source == "yahoo"
+    from_feed = event.numbers_source == "whispers"
     return ConsensusSnapshot(
         stock_id=stock_id, ticker=event.ticker,
         fiscal_quarter=(fiscal_quarter or event.fiscal_quarter or ""),
         captured_at=captured_at or now(),
         kind=SnapshotKind.RECONSTRUCTED,
         expected_report_date=event.day,
-        eps_avg=event.eps_estimate if verified else None,
-        eps_calendar=(event.calendar_eps_estimate if verified
+        eps_avg=event.eps_estimate if from_feed else None,
+        eps_calendar=(event.calendar_eps_estimate if from_feed
                       else event.eps_estimate),
-        revenue_calendar=event.revenue_estimate,
+        # Revenue moves with EPS or not at all: the vendor that supplied the
+        # actual supplied the consensus it is measured against, so putting the
+        # feed's revenue estimate in the calendar's field would recreate the
+        # cross-vendor ratio one field lower down.
+        revenue_avg=event.revenue_estimate if from_feed else None,
+        revenue_calendar=(event.calendar_revenue_estimate if from_feed
+                          else event.revenue_estimate),
         source_note="reconstructed after the print; no analyst count or range")
 
 
@@ -508,27 +437,38 @@ def assess_earnings(print_row: EarningsPrint,
     reaction confirms the print without exhausting it, and a negative one is
     the market disagreeing with the number we just validated.
     """
-    eps_actual, eps_flags = _resolve_actual(
-        print_row.eps_actual, print_row.eps_actual_rows_usable, config,
-        absolute_floor=config.earnings_actual_dispute_abs_usd)
-    if print_row.eps_actual_rows and print_row.eps_actual_rows_usable is None:
-        eps_flags.insert(0, "finnhub_actual_conflict")
+    # One vendor decides both legs of this print, and `source` on the row is
+    # who that is. The other vendor's figures are still on the row and still
+    # reach the reader — they simply do not enter the arithmetic.
+    from_feed = print_row.source is PrintSource.WHISPERS
+    calendar_actual = print_row.eps_actual_rows_usable
+    eps_actual = print_row.eps_actual if from_feed else calendar_actual
+    eps_flags: list[str] = []
+    if print_row.eps_actual_rows and calendar_actual is None:
+        # The calendar contradicting ITSELF (AMZN: 1.88 on one row, 1.97 on
+        # another). Fatal only when the calendar is the chosen vendor; when
+        # the feed supplied the figures it is a fact worth recording, and the
+        # reading stands on numbers the calendar never touched.
+        eps_flags.append("finnhub_actual_conflict")
+    if eps_actual is None:
+        eps_flags.append("no_actual")
     eps = _assess_leg(
         "eps", eps_actual, eps_flags,
-        consensus.eps_avg if consensus else None,
-        consensus.eps_calendar if consensus else None,
+        (consensus.eps_avg if from_feed else consensus.eps_calendar)
+        if consensus else None,
         consensus.eps_analysts if consensus else None, config,
+        source=print_row.source.value,
         min_abs_estimate=config.scout_min_abs_eps_estimate,
-        actual_yahoo=print_row.eps_actual,
-        actual_finnhub=print_row.eps_actual_rows_usable)
+        other_actual=calendar_actual if from_feed else None)
 
-    revenue_actual, revenue_flags = _resolve_actual(
-        None, print_row.revenue_actual, config, absolute_floor=None)
+    revenue_actual = print_row.revenue_actual
     revenue = _assess_leg(
-        "revenue", revenue_actual, revenue_flags,
-        consensus.revenue_avg if consensus else None,
-        consensus.revenue_calendar if consensus else None,
-        consensus.revenue_analysts if consensus else None, config)
+        "revenue", revenue_actual,
+        [] if revenue_actual is not None else ["no_actual"],
+        (consensus.revenue_avg if from_feed else consensus.revenue_calendar)
+        if consensus else None,
+        consensus.revenue_analysts if consensus else None, config,
+        source=print_row.source.value)
 
     guidance = _guidance_leg(print_row, consensus)
 

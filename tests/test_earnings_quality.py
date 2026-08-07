@@ -1,18 +1,23 @@
 """Judging a quarter on three legs (docs/design/MASTER_OVERVIEW.ja.md §5.3).
 
-Every case here is a name that was actually measured on 2026-08-02, because
-the whole design came out of those measurements rather than out of theory:
-AMZN's +215% that is really ~+7%, AAPL's two correct-but-different actuals,
+Every case here is a name that was actually measured, because the design came
+out of those measurements rather than out of theory: AMZN's calendar returning
+two different actuals for one print, AAPL's two correct-but-different actuals,
 BIIB's consensus that moved 3.98 -> 2.15, INVH's consensus built from one
 analyst.
 
-The rule the tests defend: a beat is only a beat when BOTH sources say so,
-and everything that cannot be confirmed scores zero rather than passing
+The rule the tests defend, since 2026-08-07: **every percentage is one
+vendor's actual over that SAME vendor's consensus.** Which vendor is chosen
+once per print, before the ranking, and recorded on the row. What the other
+vendor said is kept and reported and never enters the arithmetic — because a
+ratio built from an adjusted-basis consensus and a possibly-GAAP actual has no
+referent, however conservatively its inputs are picked.
+
+Everything that cannot be confirmed still scores zero rather than passing
 quietly.
 """
 from __future__ import annotations
 
-import dataclasses
 from datetime import date
 
 from hawkeye.config import HawkeyeConfig
@@ -29,14 +34,26 @@ CONFIG = HawkeyeConfig()
 
 
 def a_print(**overrides) -> EarningsPrint:
+    """A print the earnings feed supplied.
+
+    `eps_actual` is the chosen vendor's figure; `eps_actual_rows` is what the
+    calendar returned for the same print, kept for the record.
+    """
     base = dict(stock_id="cik:0001018724", ticker="TEST",
                 fiscal_quarter="2026-Q2", report_date=date(2026, 7, 31),
-                source=PrintSource.YAHOO)
+                source=PrintSource.WHISPERS)
     base.update(overrides)
     return EarningsPrint(**base)
 
 
+def a_calendar_print(**overrides) -> EarningsPrint:
+    """A print the feed could not answer for, so the calendar stands."""
+    return a_print(source=PrintSource.FINNHUB, **overrides)
+
+
 def a_consensus(**overrides) -> ConsensusSnapshot:
+    """`*_avg` is the feed's consensus, `*_calendar` the calendar's point
+    estimate. Which one a leg uses is decided by the print's `source`."""
     base = dict(stock_id="cik:0001018724", ticker="TEST",
                 fiscal_quarter="2026-Q2", kind=SnapshotKind.PRE_REGISTERED,
                 eps_avg=1.00, eps_calendar=1.00, eps_analysts=20,
@@ -45,133 +62,135 @@ def a_consensus(**overrides) -> ConsensusSnapshot:
     return ConsensusSnapshot(**base)
 
 
-# --- EPS: a beat needs both sources ---------------------------------------
+# --- one vendor decides the whole ratio -----------------------------------
 
-def test_both_sources_agreeing_on_a_beat_is_a_beat():
+def test_a_feed_backed_beat_is_measured_on_the_feeds_own_pair():
     quality = assess_earnings(
         a_print(eps_actual=1.20, eps_actual_rows=[1.20]),
         a_consensus(eps_avg=1.00, eps_calendar=1.00), CONFIG)
 
     assert quality.eps.status is LegStatus.BEAT
     assert quality.eps.surprise_pct == 20.0
-    assert quality.eps.sources == 2
+    assert quality.eps.source == "whispers"
+    assert quality.eps.actual == 1.20 and quality.eps.estimate == 1.00
 
 
-def test_a_beat_on_one_consensus_and_a_miss_on_the_other_is_not_a_beat():
-    """TBBK / PCAR / CARR / TRS sat exactly here on the measured week: the
-    consensus figures differ by 1-2% across the screen's threshold, and no
-    precision in the actual can settle it — consensus has no primary source
-    (§5.3(7))."""
+def test_a_calendar_backed_print_is_measured_on_the_calendars_own_pair():
+    """The feed declining sends the WHOLE print to the calendar, so the leg
+    reads the calendar's actual against the calendar's estimate."""
     quality = assess_earnings(
-        a_print(eps_actual=1.00, eps_actual_rows=[1.00]),
-        a_consensus(eps_avg=0.98, eps_calendar=1.02), CONFIG)
+        a_calendar_print(eps_actual_rows=[1.20]),
+        a_consensus(eps_avg=None, eps_calendar=1.00), CONFIG)
 
-    assert quality.eps.status is LegStatus.INLINE
-    assert quality.eps.surprise_pct < 0            # ranked on the conservative side
-    assert "sources_disagree_on_direction" in quality.eps.flags
+    assert quality.eps.status is LegStatus.BEAT
+    assert quality.eps.source == "finnhub"
+    assert quality.eps.actual == 1.20 and quality.eps.estimate == 1.00
 
 
-def test_a_disputed_consensus_is_ranked_on_the_conservative_reading():
-    """BIIB: 3.98 vs 2.15. Ranked at +20%, not +77% — the same
-    collapse-to-conservative rule already applied to Finnhub's duplicate
-    rows, extended across vendors (§5.3 決定4)."""
+def test_the_other_vendors_consensus_cannot_veto_a_beat():
+    """BIIB: 3.98 from one vendor, 2.15 from the other. The old rule scored
+    the conservative of the two readings and called that safety; it was not.
+    The two figures are on different accounting bases, so the smaller is not
+    a stricter reading of the same thing — it is a different measurement.
+
+    The reading now stands on the pair that belong together, and the vendor
+    the print did NOT come from has no vote.
+    """
     quality = assess_earnings(
         a_print(eps_actual=2.58, eps_actual_rows=[2.58]),
         a_consensus(eps_avg=2.15, eps_calendar=3.98), CONFIG)
 
-    assert "consensus_disputed" in quality.eps.flags
-    assert quality.eps.status is LegStatus.INLINE          # one source says miss
-    assert round(quality.eps.surprise_pct, 1) == -35.2
+    assert quality.eps.status is LegStatus.BEAT
+    assert quality.eps.estimate == 2.15
+    assert round(quality.eps.surprise_pct, 1) == 20.0
 
 
-def test_disagreeing_actuals_are_judged_on_the_smaller_of_the_two():
-    """AAPL: Yahoo 2.02 (matches the filing), Finnhub 1.91 (= 2.02 - 0.11 of
-    tariff refunds). Neither is wrong; the bases differ.
-
-    Doctrine change of 2026-08-03(b) (`earnings_actual_dispute_blocks`): the
-    dispute no longer makes the leg unverified. Judging it on the SMALLER
-    actual against the LARGER consensus means the beat holds under either
-    vendor's reading of either number — which is strictly stronger evidence
-    than the single-source actual this system already accepts. The flag stays
-    on the leg, and nothing settles it: the escalation that used to read the
-    company's own release is gone (tests/test_removed_escalations.py).
+def test_a_feed_backed_print_with_no_feed_consensus_is_unverified():
+    """Never quietly borrows the calendar's estimate. In production this pair
+    cannot come apart — the feed only wins when it supplied both figures — so
+    a row in this shape means something upstream broke, and inventing a
+    denominator would hide it behind a plausible percentage.
     """
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20]),
+        a_consensus(eps_avg=None, eps_analysts=None, eps_calendar=1.00),
+        CONFIG)
+
+    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert "no_consensus" in quality.eps.flags
+    assert quality.score == 0.0
+
+
+# --- what the other vendor said is recorded, not used ---------------------
+
+def test_a_differing_actual_from_the_other_vendor_is_named_not_used():
+    """AAPL: the feed 2.02 (matches the filing), the calendar 1.91 (= 2.02
+    minus $0.11 of tariff refunds). Neither is wrong; the bases differ. The
+    reading uses the feed's pair, and the gap becomes a fact the Adversary
+    can attack."""
     quality = assess_earnings(
         a_print(eps_actual=2.02, eps_actual_rows=[1.91]),
         a_consensus(eps_avg=1.89, eps_calendar=1.89), CONFIG)
 
     assert quality.eps.status is LegStatus.BEAT
-    assert quality.eps.actual == 1.91                   # the conservative one
-    assert round(quality.eps.surprise_pct, 2) == 1.06
-    assert "actual_disputed" in quality.eps.flags
-    assert quality.score > 0.0
+    assert quality.eps.actual == 2.02
+    assert quality.eps.other_actual == 1.91
+    assert "vendors_report_different_actuals" in quality.eps.flags
+    assert round(quality.eps.surprise_pct, 2) == 6.88
 
 
-def test_a_dispute_that_only_the_larger_reading_survives_is_not_a_beat():
-    """The conservative rule has to bite, not merely be stated: the smaller
-    actual lands below consensus, so no beat is established.
-
-    Nor is a MISS. A beat and a miss are not symmetric under a dispute — the
-    leg is judged on the smaller actual, so a beat under it holds under the
-    larger one too, while a miss under it says nothing about the larger one
-    (a company that took a CHARGE shows AAPL's gap in reverse). Calling it a
-    miss would SUBTRACT points, i.e. our inability to tell which figure is
-    comparable would read as the company having done badly.
-    """
+def test_a_penny_of_rounding_is_not_worth_reporting():
     quality = assess_earnings(
-        a_print(eps_actual=1.30, eps_actual_rows=[0.95]),
+        a_print(eps_actual=1.11, eps_actual_rows=[1.10]),
         a_consensus(eps_avg=1.00, eps_calendar=1.00), CONFIG)
 
-    assert quality.eps.actual == 0.95
-    assert quality.eps.status is LegStatus.UNVERIFIED
-    assert "actual_disputed" in quality.eps.flags
-    assert quality.score == 0.0
+    assert "vendors_report_different_actuals" not in quality.eps.flags
+    assert quality.eps.status is LegStatus.BEAT
+    assert quality.eps.surprise_pct == 11.0        # the feed's own actual
 
 
-def test_a_miss_both_vendors_agree_on_still_subtracts():
-    """The other half of the same rule: when even the LARGER actual missed,
-    the miss is established and costs what a beat of that size would earn."""
-    quality = assess_earnings(
-        a_print(eps_actual=0.80, eps_actual_rows=[0.60]),
-        a_consensus(eps_avg=1.00, eps_calendar=1.00), CONFIG)
-
-    assert quality.eps.status is LegStatus.MISS
-    assert "actual_disputed" in quality.eps.flags
-    assert quality.score < 0.0
-
-
-def test_the_tribunal_is_told_the_two_sources_disagreed():
+def test_the_tribunal_is_told_the_vendors_report_different_actuals():
     """The prompts tell the Bull and the Adversary to prefer structured
-    numbers over prose, so a figure that is now allowed to score has to carry
-    its weakness in the same place they are looking."""
+    numbers over prose, so a figure another vendor contradicts has to carry
+    that in the same place they are looking."""
     from hawkeye.scout.quality import describe_quality_en
 
     text = describe_quality_en(assess_earnings(
         a_print(eps_actual=2.02, eps_actual_rows=[1.91]),
         a_consensus(eps_avg=1.89, eps_calendar=1.89), CONFIG))
 
-    assert "actual_disputed" in text
+    assert "vendors_report_different_actuals" in text
     assert "2.02" in text and "1.91" in text
-    assert "conservative" in text.lower()
+    assert "whispers" in text
 
 
-def test_the_old_blocking_behaviour_is_one_config_flag_away():
-    """A doctrine change is a config diff (invariant 7). Flipping it back has
-    to restore the previous judgment exactly, or the flag is decoration."""
-    blocking = dataclasses.replace(CONFIG, earnings_actual_dispute_blocks=True)
+def test_the_calendar_contradicting_itself_only_bites_when_it_is_the_source():
+    """AMZN's calendar returned 1.88 AND 1.97 for one print. When the feed
+    supplied the figures this is recorded and nothing more — the reading
+    never touched the calendar. When the calendar IS the source, its actual
+    is unusable and the leg is unverified: picking the more plausible row is
+    exactly the judgment this system exists to remove."""
+    from_feed = assess_earnings(
+        a_print(eps_actual=5.75, eps_actual_rows=[1.88, 1.97]),
+        a_consensus(eps_avg=1.83, eps_calendar=1.83), CONFIG)
+    from_calendar = assess_earnings(
+        a_calendar_print(eps_actual_rows=[1.88, 1.97]),
+        a_consensus(eps_avg=None, eps_calendar=1.83), CONFIG)
 
-    quality = assess_earnings(
-        a_print(eps_actual=2.02, eps_actual_rows=[1.91]),
-        a_consensus(eps_avg=1.89, eps_calendar=1.89), blocking)
+    assert "finnhub_actual_conflict" in from_feed.eps.flags
+    assert from_feed.eps.status is LegStatus.BEAT
+    assert from_feed.score <= 70.0                    # capped, never +215
 
-    assert quality.eps.status is LegStatus.UNVERIFIED
-    assert quality.score == 0.0
+    assert from_calendar.eps.status is LegStatus.UNVERIFIED
+    assert "no_actual" in from_calendar.eps.flags
+    assert from_calendar.score == 0.0
 
 
-def test_a_leg_with_no_actual_at_all_is_still_unverified():
-    """The change is narrow. Invariant 6 is about MISSING data, and missing
-    is still missing: two readings that disagree are more information than
-    one, but no readings are none."""
+# --- what still makes a leg unverified ------------------------------------
+
+def test_a_leg_with_no_actual_at_all_is_unverified():
+    """Invariant 6: missing data scores zero and says so. It must never read
+    as a beat, nor as the company having done badly."""
     quality = assess_earnings(
         a_print(), a_consensus(eps_avg=1.00, eps_calendar=1.00), CONFIG)
 
@@ -179,34 +198,9 @@ def test_a_leg_with_no_actual_at_all_is_still_unverified():
     assert "no_actual" in quality.eps.flags
 
 
-def test_a_penny_of_rounding_is_not_a_dispute():
-    quality = assess_earnings(
-        a_print(eps_actual=1.11, eps_actual_rows=[1.10]),
-        a_consensus(eps_avg=1.00, eps_calendar=1.00), CONFIG)
-
-    assert "actual_disputed" not in quality.eps.flags
-    assert quality.eps.status is LegStatus.BEAT
-    assert quality.eps.surprise_pct == 10.0        # the conservative actual
-
-
-def test_finnhubs_contradictory_rows_make_its_actual_unusable():
-    """AMZN's calendar returned 1.88 AND 1.97 for one print. Picking the row
-    that happens to match Yahoo would be exactly the "choose the more
-    plausible one" judgment this system exists to remove — so Finnhub simply
-    contributes no actual, and the reading stands on one source."""
-    quality = assess_earnings(
-        a_print(eps_actual=5.75, eps_actual_rows=[1.88, 1.97]),
-        a_consensus(eps_avg=1.83, eps_calendar=1.83), CONFIG)
-
-    assert "finnhub_actual_conflict" in quality.eps.flags
-    assert "single_source_actual" in quality.eps.flags
-    assert quality.eps.status is LegStatus.BEAT       # both CONSENSUS agree
-    assert quality.score <= 70.0                      # capped, never +215
-
-
 def test_a_consensus_from_too_few_analysts_is_unverified():
     """INVH's EPS consensus was built from ONE analyst, and nothing in the
-    vendor response says so — only the pre-registered Yahoo row does."""
+    vendor response says so — only a pre-registered row with a count does."""
     quality = assess_earnings(
         a_print(eps_actual=1.50, eps_actual_rows=[1.50]),
         a_consensus(eps_avg=1.00, eps_calendar=1.00, eps_analysts=1), CONFIG)
@@ -227,34 +221,15 @@ def test_a_near_zero_consensus_cannot_buy_a_ranking_slot():
     assert quality.score == 0.0
 
 
-def test_one_consensus_source_is_recorded_as_thin_but_no_longer_vetoes():
-    """Rewritten on 2026-08-05 with the move to one source of numbers.
-
-    It used to assert the opposite, and that was right while two vendors
-    supplied consensus: one opinion could not satisfy "both sources agree".
-    With EarningsWhispers as the only source there is never a second opinion,
-    so the veto stopped selecting anything. What survives is the disclosure —
-    the flag rides on the leg and reaches the tribunal — and the switch to
-    put the veto back (`earnings_single_source_consensus_blocks`).
-    """
-    quality = assess_earnings(
-        a_print(eps_actual=1.20, eps_actual_rows=[1.20]),
-        a_consensus(eps_avg=None, eps_analysts=None, eps_calendar=1.00), CONFIG)
-
-    assert quality.eps.status is LegStatus.BEAT
-    assert "single_source_consensus" in quality.eps.flags
-    assert quality.eps.surprise_pct == 20.0        # still reported
-
-
-def test_no_consensus_at_all_is_absent_not_a_beat():
+def test_no_consensus_row_at_all_is_unverified_not_a_beat():
     quality = assess_earnings(a_print(eps_actual=1.20), None, CONFIG)
     assert quality.eps.status is LegStatus.UNVERIFIED
     assert quality.verdict is QuarterVerdict.UNVERIFIED
 
 
-# --- revenue ---------------------------------------------------------------
+# --- revenue: the same vendor, or nothing ---------------------------------
 
-def test_revenue_beats_on_both_sources_add_to_the_score():
+def test_revenue_is_measured_on_the_same_vendor_as_eps():
     beat = assess_earnings(
         a_print(eps_actual=1.20, eps_actual_rows=[1.20],
                 revenue_actual=1.05e9),
@@ -264,8 +239,22 @@ def test_revenue_beats_on_both_sources_add_to_the_score():
         a_consensus(revenue_avg=None, revenue_calendar=None), CONFIG)
 
     assert beat.revenue.status is LegStatus.BEAT
+    assert beat.revenue.source == "whispers"
     assert round(beat.revenue.surprise_pct, 1) == 5.0
     assert beat.score > flat.score
+
+
+def test_the_other_vendors_revenue_consensus_is_not_consulted():
+    """The mixing this rule forbids is just as wrong one leg down. A revenue
+    actual from the feed measured against the calendar's revenue estimate is
+    the same error in a bigger unit."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9),
+        a_consensus(revenue_avg=1.0e9, revenue_calendar=1.30e9), CONFIG)
+
+    assert quality.revenue.status is LegStatus.BEAT
+    assert quality.revenue.estimate == 1.0e9
 
 
 def test_a_revenue_miss_is_reported_even_when_eps_beat():
@@ -309,33 +298,6 @@ def test_guidance_above_consensus_earns_a_small_bonus():
     assert with_guidance.guidance.status is LegStatus.BEAT
     assert (with_guidance.score - without.score
             == CONFIG.guidance_beat_score)
-
-
-def test_one_consensus_source_still_lets_a_beat_count():
-    """With EarningsWhispers as the one source of numbers (2026-08-05), every
-    consensus is single-source. Keeping the old veto would mark every leg of
-    every name unverified — a rule that can never be satisfied is not a
-    safety rule, it is an off switch.
-    """
-    quality = assess_earnings(
-        a_print(eps_actual_rows=[1.20], revenue_actual=1.05e9),
-        a_consensus(eps_avg=1.00, eps_calendar=None,
-                    revenue_avg=1.0e9, revenue_calendar=None), CONFIG)
-
-    assert quality.eps.status is LegStatus.BEAT
-    # The thinness is still on the record; only its veto is gone.
-    assert "single_source_consensus" in quality.eps.flags
-
-
-def test_the_single_source_veto_can_be_switched_back_on():
-    strict = dataclasses.replace(
-        CONFIG, earnings_single_source_consensus_blocks=True)
-    quality = assess_earnings(
-        a_print(eps_actual_rows=[1.20], revenue_actual=1.05e9),
-        a_consensus(eps_avg=1.00, eps_calendar=None,
-                    revenue_avg=1.0e9, revenue_calendar=None), strict)
-
-    assert quality.eps.status is LegStatus.UNVERIFIED
 
 
 def test_full_year_guidance_is_never_scored_against_a_quarterly_consensus():
@@ -466,6 +428,15 @@ def test_a_missing_revenue_reading_is_not_a_penalty():
         a_consensus(), CONFIG)
 
     assert no_data.score > missed.score
+
+
+def test_a_miss_the_chosen_vendor_establishes_still_subtracts():
+    quality = assess_earnings(
+        a_print(eps_actual=0.80, eps_actual_rows=[0.80]),
+        a_consensus(eps_avg=1.00, eps_calendar=1.00), CONFIG)
+
+    assert quality.eps.status is LegStatus.MISS
+    assert quality.score < 0.0
 
 
 def test_the_event_day_reaction_still_shapes_the_score():

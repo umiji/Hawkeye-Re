@@ -202,19 +202,22 @@ def render_scout_ja(result) -> str:
                  f"{f['screened']}件 → 既出を除外 {f['duplicates']}件 → "
                  f"詳細取得 {f['enriched']}件 → "
                  f"ゲート通過 {f['gate_passed']}件")
-    # How much of the shortlist rests on numbers a second source confirmed.
-    # "Nobody checked" and "checked and agreed" must not read the same way.
-    v = getattr(result, "verification", None)
-    if v is not None and v.attempted:
-        line = (f"数値の照合: {v.attempted}件を Yahoo で再取得 → 確認 "
-                f"{v.verified}件 / 未確認 {v.unverified}件")
-        if v.disagreed:
-            line += f"、うちカレンダーと食い違い {v.disagreed}件"
-        lines.append(line)
-        if v.budget_exhausted:
-            lines.append(f"⚠️ 照合の上限({v.attempted}件)に達しました。"
+    # どの銘柄が「決算専門サイト(EarningsWhispers)の数字で順位を付けられたか」。
+    # 断られ方は3つに分けて出す — 意味も、次にやることも違うため。
+    # 「まだ取り込まれていない」は待てば来る、「サイトに繋がらなかった」は
+    # 会社についての事実ではない、「物差しが欠けている」は待っても増えない。
+    n = getattr(result, "numbers", None)
+    if n is not None and n.attempted:
+        lines.append(
+            f"決算数値の取得: {n.attempted}件を決算専門サイトに問い合わせ → "
+            f"同サイトの数字で判定 {n.from_whispers}件 / "
+            f"カレンダーの数字のまま {n.fell_back}件 / "
+            f"前期のレコードが返った {n.stale}件 / "
+            f"サイトに繋がらなかった {n.unreachable}件")
+        if n.budget_exhausted:
+            lines.append(f"⚠️ 問い合わせの上限({n.attempted}件)に達しました。"
                          "残りはカレンダーの数値のままです"
-                         "(`scout_max_verify` で調整)。")
+                         "(`scout_max_whispers` で調整)。")
     if getattr(result, "enrichment_ceiling_hit", False):
         lines.append("")
         lines.append("⚠️ **詳細取得の試行上限に達したため、ゲート通過候補が"

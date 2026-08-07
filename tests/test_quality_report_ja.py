@@ -28,17 +28,32 @@ CONFIG = HawkeyeConfig()
 
 
 def amzn_like():
-    """AMZN's real shape: one usable actual, two contradictory Finnhub rows,
+    """AMZN's real shape: the feed's actual, two contradictory calendar rows,
     and a huge headline beat."""
     return assess_earnings(
         EarningsPrint(stock_id="cik:0001018724", ticker="AMZN",
                       fiscal_quarter="2026-Q2",
                       report_date=date(2026, 7, 30),
-                      source=PrintSource.YAHOO, eps_actual=5.75,
+                      source=PrintSource.WHISPERS, eps_actual=5.75,
                       eps_actual_rows=[1.88, 1.97]),
         ConsensusSnapshot(stock_id="cik:0001018724", ticker="AMZN",
                           fiscal_quarter="2026-Q2", eps_avg=1.956,
                           eps_calendar=1.94, eps_analysts=44),
+        CONFIG)
+
+
+def aapl_like():
+    """AAPL's real shape: both vendors have a usable actual and they differ
+    ($2.02 against $1.91, a tariff-refund one-off)."""
+    return assess_earnings(
+        EarningsPrint(stock_id="cik:0000320193", ticker="AAPL",
+                      fiscal_quarter="2026-Q3",
+                      report_date=date(2026, 7, 31),
+                      source=PrintSource.WHISPERS, eps_actual=2.02,
+                      eps_actual_rows=[1.91]),
+        ConsensusSnapshot(stock_id="cik:0000320193", ticker="AAPL",
+                          fiscal_quarter="2026-Q3", eps_avg=1.89,
+                          eps_calendar=1.89, eps_analysts=28),
         CONFIG)
 
 
@@ -50,17 +65,27 @@ def test_the_contradictory_source_is_named_in_plain_language():
     assert "finnhub_actual_conflict" not in text      # never a bare identifier
 
 
-def test_the_reader_is_told_the_actual_rests_on_one_source():
-    """With Finnhub's rows unusable the beat stands on Yahoo alone. That is a
-    real weakening of the evidence, so it has to be on the page — otherwise a
-    single-source reading and a two-source one look identical."""
+def test_the_reader_is_told_which_vendor_the_percentage_was_built_from():
+    """Every percentage is one vendor's actual over that same vendor's
+    consensus, so which vendor it was IS part of what the number means. A
+    page that omits it makes two incomparable readings look identical."""
     text = render_quality_ja(amzn_like())
 
-    assert "実績値のソースが1つだけ" in text
-    assert "single_source_actual" not in text
+    assert "決算専門サイトの実績と予想" in text
+    assert "whispers" not in text                     # never a bare identifier
 
 
-def test_the_headline_number_is_shown_next_to_both_readings():
+def test_a_differing_actual_from_the_other_vendor_shows_both_figures():
+    """It does not change the reading, but the reader cannot check the work
+    without seeing what the two vendors actually reported."""
+    text = render_quality_ja(aapl_like())
+
+    assert "2.02" in text and "1.91" in text
+    assert "判定に使用" in text
+    assert "vendors_report_different_actuals" not in text
+
+
+def test_the_headline_number_is_shown_next_to_the_analyst_count():
     text = render_quality_ja(amzn_like())
 
     assert "+194" in text or "+193" in text

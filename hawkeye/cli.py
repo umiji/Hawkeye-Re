@@ -43,7 +43,7 @@ from hawkeye.marketdata.base import CalendarUnavailable
 from hawkeye.marketdata.finnhub import CompositeProvider, FinnhubProvider
 from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
-from hawkeye.marketdata.yahoo_earnings import YahooEarningsSource
+from hawkeye.marketdata.whispers import WhispersSource
 from hawkeye.reports.render_ja import (
     fmt_jst,
     render_drop_cycle_ja,
@@ -178,7 +178,7 @@ def _rounded(value):
 def _judged_earnings(args: argparse.Namespace):
     """The three-leg reading of a named stock's latest quarter, or None.
 
-    Same path the funnel uses — same second source, same both-sources-agree
+    Same path the funnel uses — same earnings feed, same one-vendor-per-print
     rule, same pinned consensus — so a stock a person named arrives at the
     tribunal on exactly the evidence a discovered one would.
     """
@@ -186,14 +186,14 @@ def _judged_earnings(args: argparse.Namespace):
     if not finnhub.available:
         print("--from-earnings には FINNHUB_API_KEY が必要です", file=sys.stderr)
         return None
-    numbers = YahooEarningsSource()
+    numbers = WhispersSource()
     return judge_ticker(
         args.ticker, finnhub, HawkeyeConfig.from_env(),
         report_date=(date.fromisoformat(args.event_date)
                      if args.event_date else None),
-        numbers_source=numbers if numbers.available else None,
+        numbers_source=numbers,
         stock_store=_stock_store(), directory=EdgarDirectory(),
-        consensus_source=YahooConsensusSource() if numbers.available else None)
+        consensus_source=YahooConsensusSource())
 
 
 def cmd_case_open(args: argparse.Namespace) -> int:
@@ -344,14 +344,11 @@ def cmd_scout(args: argparse.Namespace) -> int:
     # lookback instead, for backfills and one-off exploration.
     window = (None if args.days
               else scan_window(today, ledger.last_scan_at(), config))
-    # Discovery stays with the calendar; the EPS numbers are re-read from
-    # Yahoo before ranking (hawkeye/scout/verify.py). If yfinance is missing
-    # the source reports itself unavailable and the scan runs on the
-    # calendar's own figures rather than failing.
-    numbers = YahooEarningsSource()
-    if not numbers.available:
-        print("yfinance が未インストールのため、決算数値はカレンダーの値のまま"
-              "使います(pip install yfinance lxml)", file=sys.stderr)
+    # Discovery stays with the calendar; every number the ranking rests on is
+    # read from the earnings feed before the shortlist is decided
+    # (hawkeye/scout/numbers.py). A name the feed cannot answer for keeps the
+    # calendar's own figures, for BOTH legs, and says so.
+    numbers = WhispersSource()
     # The stock master turns each print into a stored quarter judged against
     # the consensus that was in force before it. Without a pre-registered row
     # the funnel reconstructs one and says so — it never silently treats an
@@ -365,11 +362,10 @@ def cmd_scout(args: argparse.Namespace) -> int:
         result = run_scout(finnhub, provider, config, days_back=args.days,
                            window=window, already_seen=ledger.seen_events(),
                            today=today,
-                           numbers_source=numbers if numbers.available else None,
+                           numbers_source=numbers,
                            stock_store=_stock_store(),
                            directory=EdgarDirectory(),
-                           consensus_source=(YahooConsensusSource()
-                                             if numbers.available else None))
+                           consensus_source=YahooConsensusSource())
     except CalendarUnavailable as exc:
         print(f"決算カレンダーを読めなかったため、走査を中止しました: {exc}",
               file=sys.stderr)
@@ -390,7 +386,7 @@ def cmd_scout(args: argparse.Namespace) -> int:
                 "days_back_override": args.days,
                 "duplicates_skipped": result.duplicates,
                 "min_eps_surprise": config.scout_min_eps_surprise_pct,
-                **result.verification.as_dict()},
+                **result.numbers.as_dict()},
         scanned=result.scanned, screened=result.screened,
         enriched=result.enriched, gate_passed=len(result.passed),
         tickers=[c.ticker for c in result.passed])

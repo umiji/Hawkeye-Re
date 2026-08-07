@@ -1,7 +1,8 @@
 """Live dry run of the three-leg earnings judgment for one ticker.
 
 Deliberately OUTSIDE `tests/`: the offline suite talks to nothing, and this
-script exists precisely to talk to Finnhub, Yahoo and EDGAR. It writes to a
+script exists precisely to talk to Finnhub, EarningsWhispers, Yahoo and
+EDGAR. It writes to a
 throwaway database (`--db`, default under the system temp directory) so a
 rehearsal never touches the real ledger.
 
@@ -58,14 +59,36 @@ from hawkeye.marketdata.consensus import (                    # noqa: E402
 )
 from hawkeye.marketdata.edgar import EdgarDirectory           # noqa: E402
 from hawkeye.marketdata.finnhub import FinnhubProvider        # noqa: E402
-from hawkeye.marketdata.yahoo_earnings import YahooEarningsSource  # noqa: E402
+from hawkeye.marketdata.whispers import (                     # noqa: E402
+    WhispersSource,
+    WhispersUnavailable,
+    read_guidance,
+)
 from hawkeye.reports.quality_ja import render_quality_ja      # noqa: E402
 from hawkeye.scout.earnings import parse_calendar             # noqa: E402
+from hawkeye.scout.numbers import read_numbers                # noqa: E402
 from hawkeye.scout.quality import (                           # noqa: E402
     assess_earnings,
     print_from_event,
     reconstructed_consensus,
 )
+
+class _FeedStub:
+    """The record fetched above, handed to production's selection rule.
+
+    A second live request would be a second answer, and the page would then
+    explain a reading the code never made.
+    """
+
+    def __init__(self, record, error: str) -> None:
+        self._record = record
+        self._error = error
+
+    def details(self, ticker: str):
+        if self._error:
+            raise WhispersUnavailable(self._error)
+        return self._record
+
 
 def _fmt(value: Optional[float]) -> str:
     if value is None:
@@ -140,16 +163,40 @@ def main(argv: Optional[list[str]] = None) -> int:
           f"  (同一決算の実績値: "
           f"{', '.join(_fmt(v) for v in event.all_eps_actuals) or '—'})")
 
-    # 2. Yahoo --------------------------------------------------------------
-    yahoo_print = YahooEarningsSource().verified_earnings(ticker, event.day)
-    consensus_reading = YahooConsensusSource().consensus(ticker)
-    print("\n[2] Yahoo")
-    if yahoo_print is None:
-        print("    実績: 取得できませんでした(未検証)")
+    # 2. the earnings feed ---------------------------------------------------
+    # 順位付けに使う数値の出所。⚠️ 1つの決算につき提供元は1つ — 実績と
+    # コンセンサスは必ず同じ提供元から取る。本番と同じ read_numbers を通す。
+    print("\n[2] 決算専門サイト(EarningsWhispers)")
+    try:
+        record = WhispersSource().details(ticker)
+    except WhispersUnavailable as exc:
+        record, feed_error = None, str(exc)
     else:
-        print(f"    実績 EPS {_fmt(yahoo_print.eps_actual)}"
-              f" / 予想 {_fmt(yahoo_print.eps_estimate)}"
-              f" / 公表サプライズ {yahoo_print.surprise_pct:+.2f}%")
+        feed_error = ""
+    if record is None:
+        print(f"    レコードを取得できませんでした"
+              f"{f'({feed_error})' if feed_error else ''}")
+    else:
+        print(f"    実績 EPS {_fmt(record.eps_actual)}"
+              f" / コンセンサス {_fmt(record.eps_consensus)}")
+        print(f"    実績 売上 {_fmt(record.revenue_actual)}"
+              f" / コンセンサス {_fmt(record.revenue_consensus)}")
+        print(f"    四半期 {record.fiscal_quarter or '—'}"
+              f" / 発表 {record.announced_at}"
+              f" / 取得できなかった項目: {', '.join(record.gaps) or 'なし'}")
+        readout = read_guidance(record)
+        print(f"    ガイダンス読み取り: "
+              f"{readout.reading or readout.reason or '—'}")
+
+    read, stats = read_numbers([event], [], _FeedStub(record, feed_error),
+                               limit=1, always=[(event.ticker, event.day)])
+    event = read[0]
+    print(f"    → 採用した提供元: {event.numbers_source}"
+          f"{f' ({event.numbers_reason})' if event.numbers_reason else ''}")
+
+    # 3. Yahoo: ガイダンスの物差しだけ ---------------------------------------
+    consensus_reading = YahooConsensusSource().consensus(ticker)
+    print("\n[3] Yahoo(ガイダンスの比較対象としてのみ使用)")
     if consensus_reading is None:
         print("    コンセンサス: 取得できませんでした")
     else:
@@ -170,12 +217,12 @@ def main(argv: Optional[list[str]] = None) -> int:
           "したがってガイダンスの比較対象としてのみ使い、"
           "発表済み四半期の予想は決算履歴側の値を使います。")
 
-    # 3. guidance, read by hand or by an agent ------------------------------
+    # 4. guidance, read by hand or by an agent ------------------------------
     directory = EdgarDirectory()
     cik = directory.cik_for(ticker)
     extracted = _load_guidance(args.guidance)
     guidance = None
-    print("\n[3] 決算発表文からの読み取り(ガイダンスのみ)")
+    print("\n[4] 決算発表文からの読み取り(ガイダンスの手入力)")
     if not extracted:
         print("    (--guidance が指定されていないため、ガイダンスは"
               "不明のままです)")
@@ -190,27 +237,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("    ※ この読み取りを検算する手段はありません(EDGARのXBRL照合を"
               "廃止したため)。誤読はそのまま判定に入ります。")
 
-    # 4. store and judge ----------------------------------------------------
+    # 5. store and judge ----------------------------------------------------
     store = StockStore(db)
     stock_id = store.put_stock(Stock(cik=cik, ticker=ticker,
                                      name=directory.name_for(ticker)))
+    # print_from_event already stamps the chosen vendor and carries the feed's
+    # guidance; only a hand-supplied reading overrides it here.
     row = print_from_event(event, stock_id)
-    row = row.model_copy(update={
-        "eps_actual": (yahoo_print.eps_actual if yahoo_print
-                       else row.eps_actual),
-        "guidance": guidance,
-        "reported_at": datetime.combine(event.day, datetime.min.time()),
-        "source": (PrintSource.YAHOO if yahoo_print
-                   else PrintSource.FINNHUB)})
+    if guidance is not None:
+        row = row.model_copy(update={"guidance": guidance})
+    if row.reported_at is None:
+        row = row.model_copy(update={
+            "reported_at": datetime.combine(event.day, datetime.min.time())})
 
-    # The reported quarter's consensus comes from the print itself (Yahoo's
-    # earnings history and the calendar). The forward endpoint read AFTER the
-    # release is one quarter out — its "this quarter" is the quarter now in
-    # progress — so it contributes ONLY the guidance yardstick.
+    # The reported quarter's consensus comes from the print itself, from
+    # whichever vendor supplied the actual. The forward endpoint read AFTER
+    # the release is one quarter out — its "this quarter" is the quarter now
+    # in progress — so it contributes ONLY the guidance yardstick.
     snapshot = reconstructed_consensus(event, stock_id, row.fiscal_quarter)
-    if yahoo_print is not None:
-        snapshot = snapshot.model_copy(
-            update={"eps_avg": yahoo_print.eps_estimate})
     if consensus_reading is not None:
         shifted = shift_after_print(consensus_reading)
         snapshot = snapshot.model_copy(update={
