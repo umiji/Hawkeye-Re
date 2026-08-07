@@ -14,6 +14,28 @@ The user reads explanations as a human decision-maker, not as a code
 reviewer. This applies to all explanations in this project — bug reports,
 behavior descriptions, review summaries, everything.
 
+**Starting premise: assume the reader knows nothing about the code.** Not
+the internals, not the processing flow, not the function/table/file names,
+not the design concepts, not the domain jargon — nothing. Whatever you have
+just read in the source, the user has not read. Nothing is shared context
+until you have put it into words in this conversation. Writing as if the
+reader already knows is the single most common failure in this project's
+explanations, and it makes the answer useless no matter how correct it is.
+
+0. **Every word appearing for the FIRST time in the session gets a short
+   gloss — no exceptions.** Not just this project's own vocabulary: code
+   symbols (functions, variables, classes), table and column names, file and
+   module names, CLI subcommands, external services and APIs, library names,
+   and general technical jargon all count. On first mention, say in plain
+   Japanese what it is and what it is for, then use the bare name freely for
+   the rest of the session. One line is enough — the cost of an unnecessary
+   gloss is one line; the cost of a missing one is an explanation the reader
+   cannot follow at all, so when in doubt, gloss it.
+   - 悪い例: 「earnings_prints に前期のレコードが入っていました」
+   - 良い例: 「決算の実績値を1行ずつ貯めておくテーブル（`earnings_prints`）に、
+     今回ではなく前四半期の決算のレコードが入っていました」
+   - Being asked "それは何？" about a term you already used means this rule
+     was broken — apologising is not the fix; glossing on first use is.
 1. **Don't lead with bare symbol names.** Avoid dumping function/variable/
    table names as the explanation itself (e.g. "`ensureGaConfigured` 内の
    `isDev` が `false` になる"). The reader can't tell what that means without
@@ -27,14 +49,15 @@ behavior descriptions, review summaries, everything.
      `false`（本番環境判定）になってしまうため...」
 3. **State root cause and user-visible impact**, not just code behavior —
    what changes on screen or in system behavior as a result.
-4. **Explain domain/strategy terms the first time they come up in a
-   session**, not just code symbols. This project has its own vocabulary
-   (Bull / Adversary / Judge roles, gates, EV hurdle, thesis-accuracy,
-   pre-registration, etc. — see `strategy/INVESTMENT_DOCTRINE.md` and
-   `strategy/VERIFICATION_PROTOCOL.md`). When one of these appears for the
-   first time in a conversation, give a one-line plain-language gloss of
-   what that role/mechanism actually does before using it as shorthand
-   (e.g. "Bull（強気側の主張だけを作る役割。Adversaryの反論は見えない）").
+4. **Domain/strategy terms are the highest-risk case of rule 0.** This
+   project has its own vocabulary (Bull / Adversary / Judge roles, gates,
+   EV hurdle, thesis-accuracy, pre-registration, 審理 vs 審査, etc. — see
+   `strategy/INVESTMENT_DOCTRINE.md` and `strategy/VERIFICATION_PROTOCOL.md`).
+   These read like ordinary words, so they slip past unglossed more often
+   than code symbols do. On first mention give a one-line plain-language
+   gloss of what that role/mechanism actually *does* before using it as
+   shorthand (e.g. "Bull（強気側の主張だけを作る役割。Adversaryの反論は
+   見えない）").
 
 ## Invariants (do not break)
 
