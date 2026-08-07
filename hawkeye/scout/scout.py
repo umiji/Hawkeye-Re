@@ -351,6 +351,23 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                              config.scout_min_abs_eps_estimate,
                              config.scout_max_trusted_revenue_surprise_pct)
 
+    # Deduplicate before anything is paid for: windows overlap by design, so
+    # the same earnings event recurs across runs. Re-evaluating it would waste
+    # free-tier calls and double-count it in the drop statistics. On a 7-day
+    # window run daily, six prints in seven arrive again — so this ran in the
+    # wrong place for as long as it sat after the second-source pass, which
+    # read every one of them and then discarded the reading.
+    #
+    # There used to be one exemption — a print this system had asked for a
+    # release document about was let through even though it was already seen.
+    # Nothing asks for documents now, so nothing is exempt. The 48-hour hold
+    # for a print whose OWN numbers have not arrived will need an exemption of
+    # its own; it is a different condition and gets written with that feature.
+    seen = already_seen or set()
+
+    def unseen(rows: list[ScreenedEvent]) -> list[ScreenedEvent]:
+        return [s for s in rows if (s.event.ticker, s.event.day) not in seen]
+
     raw = calendar_source.earnings_calendar(window.start, window.end)
     events = parse_calendar(raw)
     # Screened twice on purpose. The first pass is provisional — it only
@@ -359,27 +376,21 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     # second source stands behind. Verifying after the ranking would leave
     # the 2026-08-01 defect intact: the broken metric was also the metric
     # choosing which candidates were ever looked at.
-    screened = screen(events)
-    events, verification = verify_events(events, screened, numbers_source,
-                                         config.scout_max_verify)
-    if verification.verified:
-        screened = screen(events)
-
-    # Deduplicate before enrichment: windows overlap by design, so the same
-    # earnings event recurs across runs. Re-evaluating it would both waste
-    # free-tier calls and double-count it in the drop statistics.
     #
-    # There used to be one exemption — a print this system had asked for a
-    # release document about was let through even though it was already seen.
-    # Nothing asks for documents now, so nothing is exempt. The 48-hour hold
-    # for a print whose OWN numbers have not arrived will need an exemption of
-    # its own; it is a different condition and gets written with that feature.
-    seen = already_seen or set()
-    screened_tickers = {s.event.ticker for s in screened}
-    fresh = [s for s in screened
-             if (s.event.ticker, s.event.day) not in seen]
-    duplicates = len(screened) - len(fresh)
-    screened_total, screened = len(screened), fresh
+    # `all_screened` keeps the pre-dedup list because the reported counts are
+    # about the screen ("how many prints cleared the thresholds") while the
+    # walk below is about this run's new work.
+    all_screened = screen(events)
+    screened = unseen(all_screened)
+    events, verification = verify_events(events, screened, numbers_source,
+                                         config.scout_max_verify, skip=seen)
+    if verification.verified:
+        all_screened = screen(events)
+        screened = unseen(all_screened)
+
+    screened_tickers = {s.event.ticker for s in all_screened}
+    duplicates = len(all_screened) - len(screened)
+    screened_total = len(all_screened)
 
     # Walk the ranked screen until enough candidates have PASSED the gates,
     # not until a fixed number have been TRIED. A fixed slice meant a day

@@ -374,6 +374,45 @@ def test_candidates_below_the_stop_point_are_still_recorded(config):
     assert all(c.score_version == "partial_no_gap" for c in result.capped)
 
 
+class CountingNumbers:
+    """A second source that records who it was asked about, so a test can
+    assert on the requests a scan does NOT make."""
+
+    def __init__(self):
+        self.asked: list[str] = []
+
+    def verified_earnings(self, ticker, day):
+        self.asked.append(ticker)
+        return None
+
+
+def test_a_duplicate_costs_no_second_source_request(config):
+    """Dedup used to run AFTER the second-source pass, so every print the
+    overlapping window brought back was re-read and then thrown away. On a
+    7-day window run daily that is six requests in seven wasted — which
+    matters once the second source is the earnings feed rather than a
+    quota-free scraper."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [
+        {"symbol": "SEEN", "date": event_day.isoformat(),
+         "epsActual": 1.30, "epsEstimate": 1.00},
+        {"symbol": "NEW", "date": event_day.isoformat(),
+         "epsActual": 1.20, "epsEstimate": 1.00},
+    ]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    provider = StaticProvider(bars=bars, profile_data={"market_cap": 5e9})
+    numbers = CountingNumbers()
+
+    result = run_scout(FakeCalendar(entries), provider, config, today=today,
+                       already_seen={("SEEN", event_day)},
+                       numbers_source=numbers)
+
+    assert numbers.asked == ["NEW"]
+    assert result.duplicates == 1
+    assert [c.ticker for c in result.passed] == ["NEW"]
+
+
 def test_already_seen_is_per_event_not_per_ticker(config):
     """The same ticker reporting a *different* quarter is a new candidate."""
     today = date.today()

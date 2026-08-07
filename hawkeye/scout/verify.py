@@ -78,20 +78,30 @@ _MATERIAL_DISAGREEMENT_PCT = 1.0
 def verification_targets(events: list[EarningsEvent],
                          screened: list[ScreenedEvent],
                          limit: int,
-                         always: Optional[list[tuple[str, date]]] = None
+                         always: Optional[list[tuple[str, date]]] = None,
+                         skip: Optional[set[tuple[str, date]]] = None
                          ) -> list[tuple[str, date]]:
     """(ticker, day) keys to verify, in priority order, capped at `limit`.
 
     `always` goes first and is the caller naming a print outright — a person
     asking about one stock. The screen decides who is worth looking at when
     nobody asked; once someone has asked, that question is answered.
+
+    `skip` is what an earlier scan already recorded. It bounds both tiers,
+    because a print the dedup is about to discard cannot change anything this
+    run decides — and a request spent on it is a request not spent on a name
+    that can. `always` outranks it: the skip set exists to stop the scan
+    re-reading its own window overlap, not to refuse a direct question.
     """
+    skipped = skip or set()
     kept = list(always or []) + [(s.event.ticker, s.event.day)
-                                 for s in screened]
+                                 for s in screened
+                                 if (s.event.ticker, s.event.day) not in skipped]
     kept = list(dict.fromkeys(kept))
     kept_set = set(kept)
     suspect = [(e.ticker, e.day) for e in events
-               if e.conflicting_estimates and (e.ticker, e.day) not in kept_set]
+               if e.conflicting_estimates and (e.ticker, e.day) not in kept_set
+               and (e.ticker, e.day) not in skipped]
     return (kept + suspect)[:max(limit, 0)]
 
 
@@ -100,19 +110,21 @@ def verify_events(events: list[EarningsEvent],
                   source: Optional[EarningsNumberSource],
                   limit: int,
                   always: Optional[list[tuple[str, date]]] = None,
+                  skip: Optional[set[tuple[str, date]]] = None,
                   ) -> tuple[list[EarningsEvent], VerificationStats]:
     """Return `events` with verified EPS substituted, plus what happened.
 
     Every event is returned whether or not it was verified — the caller
     re-screens the whole list, so dropping unverified ones here would
-    silently narrow the universe.
+    silently narrow the universe. That holds for skipped events too: they
+    are not read, but they are still returned.
     """
     if source is None or limit <= 0:
         return events, VerificationStats()
 
-    targets = verification_targets(events, screened, limit, always)
+    targets = verification_targets(events, screened, limit, always, skip)
     eligible = len(verification_targets(events, screened, len(events) + 1,
-                                        always))
+                                        always, skip))
     wanted = set(targets)
     attempted = verified = unverified = disagreed = 0
 

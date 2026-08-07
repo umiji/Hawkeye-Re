@@ -155,6 +155,45 @@ def test_a_name_the_screen_dropped_without_a_conflict_is_left_alone():
     assert verification_targets([quiet], screened=[], limit=10) == []
 
 
+def test_a_print_an_earlier_scan_recorded_is_never_verified_again():
+    """Scan windows overlap by design, so on a 7-day window run daily six of
+    every seven prints arrive again. Verifying them spends a request per name
+    to re-derive a number an earlier scan already recorded and the dedup is
+    about to discard, so the skip set bounds BOTH tiers — the screen's
+    survivors and the conflicting-row suspects."""
+    kept = _event("AAA", actual=1.2, estimate=1.0)
+    suspect = _event("ZZZ", actual=1.0, estimate=1.0, conflicting_estimates=True)
+    screened = screen_events([kept], 5.0, 0.0, 0.10, 50.0)
+    day = date(2026, 7, 30)
+
+    assert verification_targets([kept, suspect], screened, limit=10,
+                                skip={("AAA", day)}) == [("ZZZ", day)]
+    assert verification_targets([kept, suspect], screened, limit=10,
+                                skip={("ZZZ", day)}) == [("AAA", day)]
+
+
+def test_a_named_print_is_verified_even_when_an_earlier_scan_saw_it():
+    """`always` is a person asking about one stock outright. The skip set
+    exists to stop the scan re-reading its own overlap, not to refuse a
+    direct question."""
+    event = _event("AAA", actual=1.2, estimate=1.0)
+    day = date(2026, 7, 30)
+    assert verification_targets([event], screened=[], limit=10,
+                                always=[("AAA", day)],
+                                skip={("AAA", day)}) == [("AAA", day)]
+
+
+def test_a_skipped_print_costs_no_request():
+    a = _event("AAA", actual=1.2, estimate=1.0, conflicting_estimates=True)
+    b = _event("BBB", actual=1.2, estimate=1.0, conflicting_estimates=True)
+    calls: list[str] = []
+    out, stats = verify_events([a, b], [], _source({}, calls), limit=10,
+                               skip={("AAA", date(2026, 7, 30))})
+    assert calls == ["BBB"]
+    assert stats.attempted == 1
+    assert [e.ticker for e in out] == ["AAA", "BBB"]   # universe unchanged
+
+
 def test_budget_exhausted_distinguishes_not_asked_from_asked_and_agreed():
     a = _event("AAA", actual=1.2, estimate=1.0, conflicting_estimates=True)
     b = _event("BBB", actual=1.2, estimate=1.0, conflicting_estimates=True)
