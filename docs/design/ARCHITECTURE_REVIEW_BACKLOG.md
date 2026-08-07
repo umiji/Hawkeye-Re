@@ -329,14 +329,21 @@ user always executes) makes `hawkeye positions` a sufficient manual
 backstop; not worth a fail-closed recheck at `record-entry` time. **Do not
 implement a fix without new instruction.**
 
-### M11. `scout_max_enrich` truncates on EPS-surprise order, but the final ranking formula weighs more than EPS surprise (OPEN)
+### M11. `scout_max_enrich` truncates on EPS-surprise order, but the final ranking formula weighs more than EPS surprise (FIXED 2026-08-01/2026-08-02)
 
 **Source:** methodology-auditor.
-**Where:** `hawkeye/scout/scout.py` — `screen_events()` sorts by EPS
-surprise descending; `to_enrich = screened[:config.scout_max_enrich]`
-truncates on that narrower criterion; `score_candidate()` (which also
-weighs revenue surprise and event-day gap) only ever runs on the truncated
-subset.
+**Where (as reported):** `hawkeye/scout/scout.py` — `screen_events()` sorted
+by EPS surprise descending; `to_enrich = screened[:config.scout_max_enrich]`
+truncated on that narrower criterion.
+
+**Resolution:** neither line exists now. `screen_events()` sorts by
+`score_candidate()` itself (2026-08-01), so the truncation criterion and the
+ranking criterion are the same function. The fixed slice went too
+(2026-08-02): the walk goes down the ranking one name at a time until
+`scout_target_gate_passed` have PASSED the gates, bounded by
+`scout_max_enrich` attempts. The remaining bias is a different one and is
+recorded in `MASTER_OVERVIEW.ja.md` §5.2(6) — the ordering is still built
+from surprise alone, before any price or news is fetched.
 
 **Failure scenario:** a candidate with a modest EPS beat but an
 exceptional revenue beat + ideal gap could score highest under the
@@ -417,7 +424,13 @@ the API driver (`pipeline.py`), not the session driver.
 **Source:** architect agent, F13. Resolves automatically once M1/M2 are
 fixed.
 
-### L3. §5.1 (missed-candidate feature, not yet implemented) proposes storing the reject-pile record outside the hash chain — a structural self-dealing risk in the proposal itself (OPEN — design note for whenever §5.1 is implemented, not current code)
+### L3. The reject-pile record must not sit outside the hash chain (FIXED 2026-07-29)
+
+**Resolution:** implemented as proposed. `Ledger.record_screened_candidates()`
+writes the rows and then anchors the whole batch as ONE journal event carrying
+a `batch_hash` over the sorted payloads. Per-row chaining was rejected on write
+cost (hundreds of rows per scan); the batch hash gives the tamper-evidence the
+Phase-0 denominator needs.
 
 **Source:** architect agent, F14.
 **Where:** `docs/design/MASTER_OVERVIEW.ja.md` §5.1, §6 — proposes treating the
@@ -444,12 +457,14 @@ happen. Suggested fix when implemented: pass a recording sink into
 `run_scout()` itself rather than making recording a CLI-layer
 responsibility.
 
-### L5. §5.1's proposed reject-pile schema doesn't reuse existing contract models, and the "lightweight enrichment-cap-only" tier can't be scored on the same formula as fully-enriched tiers (OPEN — design note)
+### L5. The reject-pile schema must reuse existing contract models and tag the scoring feature set (FIXED 2026-07-29)
 
-**Source:** architect agent, F16. When implemented: define a
-`ScreenedCandidate` contract reusing `GateResult`; tag records with a
-`score_version` so cross-tier comparisons don't silently compare different
-feature sets.
+**Source:** architect agent, F16.
+**Resolution:** implemented as proposed. `ScreenedCandidate` carries a
+`gate_report: GateReport` (so `GateResult` is reused, not re-declared) and a
+`score_version` field (`partial_no_gap` / `full` / `three_leg`), so a
+comparison across tiers cannot silently put two different feature sets on the
+same axis.
 
 ### L6. Case list sorts by filename, not by `created_at` (OPEN, cosmetic)
 
