@@ -49,6 +49,40 @@ explanations, and it makes the answer useless no matter how correct it is.
      `false`（本番環境判定）になってしまうため...」
 3. **State root cause and user-visible impact**, not just code behavior —
    what changes on screen or in system behavior as a result.
+3.5. **Write subject–verb–object. Name the actor.** "判定が書かれる" tells the
+   reader nothing: who writes it, into what, when? Say "走査が、入口ゲートの
+   判定直後に、銘柄マスタ（`stocks` テーブル）の3つの列に書く". Passive voice
+   with the actor dropped is the single most common way an explanation in this
+   project becomes unreadable.
+
+3.6. **Never reuse a bare noun that has several referents in this system.**
+   The words 走査 / 足切り / スクリーン / ゲート / 判定 / 候補 / マスタ /
+   落選記録 all name more than one thing if left unqualified. Say WHICH one,
+   every time, even at the cost of repetition. The reader should never have to
+   ask "どのゲートの話？".
+
+   Concrete failures from 2026-08-08, all of which forced the user to ask again:
+   - 悪い: 「ゲートに到達した銘柄だけ」→ 良い: 「入口ゲート（審理に送ってよいか
+     を判定する7条件）まで到達した銘柄だけ」
+   - 悪い: 「トリアージ判定」→ 良い: 「会社そのものを対象外にする判定（入口
+     ゲート7条件のうち、株価・時価総額・売買代金の3つだけを見たもの）」
+   - 悪い: 「numbers_reason を候補と落選記録に載せた」→ 良い: 「EWが数字を出せ
+     なかった理由を、走査中の作業用データと、台帳に永久保存される
+     `screened_candidates` テーブルの両方に、銘柄ごとに書くようにした」
+   - 悪い: 「マスタ870件のうち判定を持つのは2件」→ この文は、マスタが何か・
+     870がどこから来た数字か・2が候補数ではないことを全部説明しないと通じない。
+
+3.7. **Show the real artifact instead of describing it.** When the user asks
+   what something is, print the actual JSON field, the actual sentence, the
+   actual row. One `summary` excerpt from a fixture explained "ガイダンス" in
+   a way three paragraphs of prose had failed to.
+
+3.8. **State the limits of what you built, unprompted.** On 2026-08-08 a
+   feature was wired in and described as useful; the user's questions exposed
+   that it saves one API call per run at best and probably never fires. That
+   should have been said when it was built, not extracted. If a mechanism has
+   a condition that makes it rarely fire, that condition IS the headline.
+
 4. **Domain/strategy terms are the highest-risk case of rule 0.** This
    project has its own vocabulary (Bull / Adversary / Judge roles, gates,
    EV hurdle, thesis-accuracy, pre-registration, 審理 vs 審査, etc. — see
