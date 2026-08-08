@@ -33,6 +33,7 @@ def make_whispers(ticker: str = "TEST", announced: date = date(2026, 7, 31),
         announced_at=datetime(announced.year, announced.month, announced.day,
                               16, 5, tzinfo=EASTERN),
         quarter_end=date(2026, 6, 30), fiscal_quarter="2026-Q2",
+        year_end=date(2026, 12, 31),
         eps_actual=1.20, eps_consensus=1.00,
         eps_consensus_high=None, eps_consensus_low=None,
         revenue_actual=1.05e9, revenue_consensus=1.00e9, whisper=None)

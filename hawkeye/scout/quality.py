@@ -218,52 +218,77 @@ def _next_quarter(fiscal_quarter: str) -> str:
     return f"{int(year) + 1}-Q1" if number == 4 else f"{year}-Q{number + 1}"
 
 
+def _yardsticks(period: str, print_row: EarningsPrint,
+                consensus: Optional[ConsensusSnapshot]
+                ) -> tuple[Optional[float], Optional[float], str]:
+    """(EPS bar, revenue bar, why there is none) for the period guided.
+
+    Two yardsticks are captured, and which one applies is decided by the
+    period the company guided FOR — never by which one happens to be
+    populated. Left unchecked this is not a small error: ADM guided FY2026 EPS
+    of $5.15-$5.60 against a quarterly consensus near $1.20, and the
+    comparison came out as a +348% guidance beat the company never gave.
+
+    An unlabelled reading keeps its old meaning (next quarter) so that
+    readings recorded before the label existed still count.
+    """
+    if period.startswith("FY"):
+        # The full-year bar has to state its own year. A figure for another
+        # year is the same cross-period error one period up, and an unstated
+        # one cannot be checked at all — both refuse (invariant 6).
+        stated = consensus.full_year_period if consensus else ""
+        if not stated:
+            return None, None, "no_full_year_consensus_to_compare"
+        if stated != period:
+            return None, None, "full_year_consensus_is_another_year"
+        return consensus.full_year_eps_avg, consensus.full_year_revenue_avg, ""
+    if period and period != _next_quarter(print_row.fiscal_quarter):
+        return None, None, "guidance_period_not_comparable"
+    if consensus is None:
+        return None, None, ""
+    return consensus.next_quarter_eps_avg, consensus.next_quarter_revenue_avg, ""
+
+
 def _guidance_leg(print_row: EarningsPrint,
                   consensus: Optional[ConsensusSnapshot]) -> LegVerdict:
-    """Guidance against next quarter's consensus, captured at the same moment.
+    """Guidance against the consensus for the SAME period, captured with it.
 
     Absence is neutral by design and is the normal case: there is no
     structured source for guidance on any free tier, so penalising its
     absence would quietly penalise the data gap rather than the company.
     """
     guidance = print_row.guidance
-    # The only yardstick captured anywhere in this system is NEXT QUARTER's
-    # consensus, so guidance for any other period has nothing here to be
-    # measured against. Left unchecked this is not a small error: ADM guided
-    # FY2026 EPS of $5.15-$5.60 against a quarterly consensus near $1.20, and
-    # the comparison came out as a +348% guidance beat the company never gave.
-    # An unlabelled reading keeps its old meaning (next quarter) so that the
-    # readings recorded before the label existed still count.
-    if guidance is not None and guidance.period and (
-            guidance.period != _next_quarter(print_row.fiscal_quarter)):
+    if guidance is None:
         return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
-                          flags=("guidance_period_not_comparable",
-                                 f"guided_{guidance.period}"))
+                          flags=("guidance_not_published",))
+    eps_bar, revenue_bar, refusal = _yardsticks(guidance.period, print_row,
+                                                consensus)
+    if refusal:
+        return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
+                          flags=(refusal, f"guided_{guidance.period}"))
     # EPS first, revenue second. Plenty of companies guide only on sales —
     # Amazon gives net sales and operating income and never an EPS range —
     # and scoring those as "no guidance" would describe our reading rather
     # than the company.
-    pairs = (((guidance.eps_midpoint if guidance else None),
-              (consensus.next_quarter_eps_avg if consensus else None),
-              "eps"),
-             ((guidance.revenue_midpoint if guidance else None),
-              (consensus.next_quarter_revenue_avg if consensus else None),
-              "revenue"))
+    pairs = ((guidance.eps_midpoint, eps_bar, "eps"),
+             (guidance.revenue_midpoint, revenue_bar, "revenue"))
     usable = [(value, yardstick, unit) for value, yardstick, unit in pairs
               if value is not None and yardstick is not None]
-    if guidance is None or not usable:
-        flag = ("guidance_not_published" if guidance is None
-                else "no_forward_consensus_to_compare")
+    if not usable:
         return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
-                          flags=(flag,))
+                          flags=("no_forward_consensus_to_compare",))
     midpoint, yardstick, unit = usable[0]
     surprise = _pct(midpoint, yardstick)
     status = (LegStatus.BEAT if surprise and surprise > 0
               else LegStatus.MISS if surprise and surprise < 0
               else LegStatus.INLINE)
+    # The period is carried on the verdict, not just used to pick the bar: a
+    # +13% guidance beat means a different thing for a year than for a
+    # quarter, and the reader is entitled to know which one was measured.
+    period_flag = (f"against_{guidance.period}",) if guidance.period else ()
     return LegVerdict(leg="guidance", status=status, surprise_pct=surprise,
                       actual=midpoint, estimate=yardstick,
-                      flags=(f"on_{unit}",))
+                      flags=(f"on_{unit}",) + period_flag)
 
 
 def _verdict(eps: LegVerdict, revenue: LegVerdict,
@@ -404,6 +429,13 @@ def reconstructed_consensus(event: EarningsEvent, stock_id: str,
         revenue_avg=event.revenue_estimate if from_feed else None,
         revenue_calendar=(event.calendar_revenue_estimate if from_feed
                           else event.revenue_estimate),
+        # The full-year yardstick, read off the same summary that carried the
+        # guidance it measures. It is NOT governed by the one-vendor rule —
+        # that rule binds the surprise ratio's own numerator and denominator —
+        # so it travels even when the ratio fell back to the calendar.
+        full_year_eps_avg=event.full_year_eps_estimate,
+        full_year_revenue_avg=event.full_year_revenue_estimate,
+        full_year_period=event.full_year_period,
         source_note="reconstructed after the print; no analyst count or range")
 
 

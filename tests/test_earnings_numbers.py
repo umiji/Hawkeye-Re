@@ -36,7 +36,7 @@ def _record(ticker="AAA", announced=DAY, eps_actual=1.30, eps_consensus=1.00,
             **kw) -> WhispersRecord:
     base = dict(
         ticker=ticker, name=ticker, quarter_end=date(2026, 6, 30),
-        fiscal_quarter="2026-Q2",
+        fiscal_quarter="2026-Q2", year_end=date(2026, 12, 31),
         announced_at=(datetime(announced.year, announced.month, announced.day,
                                16, 5, tzinfo=EASTERN)
                       if announced is not None else None),
@@ -186,6 +186,38 @@ def test_the_guidance_survives_a_fallback_on_the_numbers():
     assert out[0].guidance is not None                  # the third leg did not
     assert out[0].guidance.period == "2026-Q3"
     assert out[0].announced_at is not None
+
+
+_FULL_YEAR_SUMMARY = (
+    "The company said it expects 2026 earnings of $5.15 to $5.60 per share. "
+    "The company's previous guidance was earnings of $4.15 to $4.70 per "
+    "share, and the current consensus earnings estimate is $4.76 per share "
+    "for the year ending December 31, 2026.")
+
+
+def test_the_full_year_yardstick_travels_with_the_guidance_it_measures():
+    """A full-year guidance and the full-year consensus that judges it are in
+    one string. Reading the first without the second is what recorded ADM as
+    having guided nothing."""
+    event = _event()
+    feed = _Feed({"AAA": _record(summary=_FULL_YEAR_SUMMARY)})
+    out, _ = read_numbers([event], _screened([event]), feed, limit=5)
+
+    assert out[0].guidance.period == "FY2026"
+    assert out[0].full_year_eps_estimate == 4.76
+    assert out[0].full_year_period == "FY2026"
+
+
+def test_the_full_year_yardstick_survives_a_fallback_on_the_numbers():
+    """Same reasoning as the guidance it belongs to: the one-vendor rule binds
+    the surprise ratio, and a yardstick without its guidance is useless."""
+    event = _event()
+    feed = _Feed({"AAA": _record(revenue_consensus=None,
+                                 summary=_FULL_YEAR_SUMMARY)})
+    out, _ = read_numbers([event], _screened([event]), feed, limit=5)
+
+    assert out[0].numbers_source == "calendar"
+    assert out[0].full_year_eps_estimate == 4.76
 
 
 def test_guidance_from_a_record_about_a_DIFFERENT_print_is_refused():

@@ -47,6 +47,7 @@ from typing import Optional, Protocol
 from hawkeye.marketdata.whispers import (
     WhispersRecord,
     WhispersUnavailable,
+    read_consensus,
     read_guidance,
 )
 from hawkeye.scout.earnings import (
@@ -150,6 +151,23 @@ def _read_one(source: WhispersReader,
     return record, ""
 
 
+def _forward_legs(record: WhispersRecord) -> dict:
+    """What the summary says about the FUTURE: the company's guidance and the
+    analysts' yardstick for it, read from one string in one pass.
+
+    They are kept together deliberately. A guidance without its yardstick is
+    scored against whatever else is lying around — which for a full-year range
+    used to be next quarter's consensus, and read as a four-fold beat.
+    """
+    guidance = read_guidance(record)
+    consensus = read_consensus(record)
+    return {"guidance": guidance.reading or guidance.full_year,
+            "guidance_reason": guidance.reason,
+            "full_year_eps_estimate": consensus.full_year_eps,
+            "full_year_revenue_estimate": consensus.full_year_revenue,
+            "full_year_period": consensus.full_year_period}
+
+
 def _substituted(event: EarningsEvent,
                  record: WhispersRecord) -> EarningsEvent:
     """`event` restated on the feed's figures, with the calendar's kept."""
@@ -161,9 +179,9 @@ def _substituted(event: EarningsEvent,
     # is what keeps a beat from arriving labelled as a miss.
     reported = (record.vendor_eps_surprise_pct
                 if record.vendor_surprise_basis == "consensus" else None)
-    guidance = read_guidance(record)
     return replace(
         event,
+        **_forward_legs(record),
         eps_actual=record.eps_actual,
         eps_estimate=record.eps_consensus,
         revenue_actual=record.revenue_actual,
@@ -183,9 +201,7 @@ def _substituted(event: EarningsEvent,
         # ends, which is the strongest of the four bases; the calendar's
         # year/quarter fields are the second. Prefer the stronger one.
         fiscal_quarter=record.fiscal_quarter or event.fiscal_quarter,
-        announced_at=record.announced_at,
-        guidance=guidance.reading,
-        guidance_reason=guidance.reason)
+        announced_at=record.announced_at)
 
 
 def _declined(event: EarningsEvent, record: Optional[WhispersRecord],
@@ -210,11 +226,9 @@ def _declined(event: EarningsEvent, record: Optional[WhispersRecord],
     """
     if record is None or not record.covers(event.day):
         return replace(event, numbers_reason=reason)
-    guidance = read_guidance(record)
     return replace(event, numbers_reason=reason,
                    announced_at=record.announced_at or event.announced_at,
-                   guidance=guidance.reading,
-                   guidance_reason=guidance.reason)
+                   **_forward_legs(record))
 
 
 def read_numbers(events: list[EarningsEvent],

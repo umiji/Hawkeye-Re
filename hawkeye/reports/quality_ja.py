@@ -43,10 +43,16 @@ _FLAG = {
     "no_actual": "実績値を取得できていない",
     "guidance_not_published": "会社がガイダンスを開示していない",
     "no_forward_consensus_to_compare": "比較対象の翌四半期コンセンサスが無い",
-    "guidance_period_not_comparable": "会社が示した見通しの期間が翌四半期では"
-                                      "ないため比較していない(通期見通しを"
-                                      "翌四半期コンセンサスと比べると、期間の"
-                                      "長さの差がそのまま偽の上振れになる)",
+    "guidance_period_not_comparable": "会社が示した見通しの期間が翌四半期でも"
+                                      "通期でもないため比較していない(期間の"
+                                      "長さが違う数字を比べると、その差が"
+                                      "そのまま偽の上振れになる)",
+    "no_full_year_consensus_to_compare": "会社は通期の見通しを示しているが、"
+                                         "比較対象の通期コンセンサスを"
+                                         "取得できていないため比較していない",
+    "full_year_consensus_is_another_year": "取得できている通期コンセンサスが、"
+                                           "会社の見通しとは別の年度のもの"
+                                           "なので比較していない",
     "on_eps": "EPSレンジの中央値で比較",
     "on_revenue": "売上レンジの中央値で比較(EPSレンジの開示が無いため)",
 }
@@ -57,6 +63,11 @@ def _flag_ja(flag: str) -> str:
     # above; without this branch the reader would see the raw flag name.
     if flag.startswith("guided_"):
         return f"会社が示した見通しの期間: {flag[len('guided_'):]}"
+    # `against_FY2026` says which period's consensus the percentage above was
+    # measured against. A +13% beat means a different thing for a year than
+    # for a quarter, so the period cannot be left off the line.
+    if flag.startswith("against_"):
+        return f"比較した期間: {flag[len('against_'):]}のコンセンサス"
     body = flag[len("revenue_"):] if flag.startswith("revenue_") else flag
     text = _FLAG.get(body, body)
     return f"売上: {text}" if flag.startswith("revenue_") else text

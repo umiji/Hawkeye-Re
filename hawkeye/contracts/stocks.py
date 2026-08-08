@@ -306,6 +306,12 @@ class ConsensusSnapshot(BaseModel):
     next_quarter_revenue_avg: Optional[float] = None
     full_year_eps_avg: Optional[float] = None
     full_year_revenue_avg: Optional[float] = None
+    # WHICH year the two figures above describe (`FY2026`). Without it there is
+    # no way to refuse a full-year guidance measured against another year's
+    # consensus, and that comparison does not look wrong downstream — it looks
+    # like a beat. Empty means the source never stated one, and a guidance
+    # comparison then refuses rather than assumes (invariant 6).
+    full_year_period: str = ""
 
     source_note: str = ""
 
@@ -325,7 +331,7 @@ class ConsensusSnapshot(BaseModel):
                 self.revenue_low, self.revenue_high, self.revenue_analysts,
                 self.revenue_calendar, self.next_quarter_eps_avg,
                 self.next_quarter_revenue_avg, self.full_year_eps_avg,
-                self.full_year_revenue_avg)
+                self.full_year_revenue_avg, self.full_year_period)
 
 
 class EarningsPrint(BaseModel):

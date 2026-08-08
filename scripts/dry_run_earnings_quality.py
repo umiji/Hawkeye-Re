@@ -62,6 +62,7 @@ from hawkeye.marketdata.finnhub import FinnhubProvider        # noqa: E402
 from hawkeye.marketdata.whispers import (                     # noqa: E402
     WhispersSource,
     WhispersUnavailable,
+    read_consensus,
     read_guidance,
 )
 from hawkeye.reports.quality_ja import render_quality_ja      # noqa: E402
@@ -187,6 +188,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         readout = read_guidance(record)
         print(f"    ガイダンス読み取り: "
               f"{readout.reading or readout.reason or '—'}")
+        # The full-year yardstick lives in the SAME summary string, and a
+        # full-year guidance is unjudgeable without it. Printed beside the
+        # guidance so the pair can be checked together.
+        bar = read_consensus(record)
+        print(f"    通期コンセンサス読み取り: "
+              f"{bar.full_year_period or bar.reason or '—'} EPS "
+              f"{_fmt(bar.full_year_eps)} / 売上 "
+              f"{_fmt(bar.full_year_revenue)}")
 
     read, stats = read_numbers([event], [], _FeedStub(record, feed_error),
                                limit=1, always=[(event.ticker, event.day)])

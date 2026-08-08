@@ -150,6 +150,21 @@ def test_a_reconstructed_consensus_says_so():
     assert snapshot.eps_analysts is None      # a count exists only pre-print
 
 
+def test_the_full_year_yardstick_reaches_the_snapshot_that_judges_guidance():
+    """The full-year consensus is read off the print's own summary, so the
+    reconstruction is where it has to land — it is what a full-year guidance
+    is measured against, and without it that guidance reads as absent."""
+    snapshot = reconstructed_consensus(
+        an_event(numbers_source="whispers", full_year_eps_estimate=4.76,
+                 full_year_revenue_estimate=2.08e9,
+                 full_year_period="FY2026"),
+        stock_id="cik:0000007084")
+
+    assert snapshot.full_year_eps_avg == 4.76
+    assert snapshot.full_year_revenue_avg == 2.08e9
+    assert snapshot.full_year_period == "FY2026"
+
+
 # --- the funnel ------------------------------------------------------------
 
 def _config():

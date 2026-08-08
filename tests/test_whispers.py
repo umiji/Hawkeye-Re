@@ -26,6 +26,7 @@ from hawkeye.marketdata.whispers import (
     WhispersSource,
     WhispersUnavailable,
     parse_details,
+    read_consensus,
     read_guidance,
 )
 
@@ -283,6 +284,81 @@ def test_the_excerpt_is_the_sentence_the_numbers_were_read_from():
     assert "2026 revenue of $5.80 billion to $6.00 billion" in out.excerpt
 
 
+# -- the analyst consensus in the same prose -------------------------------
+#
+# The full-year yardstick is in the SAME summary string the guidance came from,
+# so reading it costs no request. Without it a company that guided the year —
+# 13 of the 47 recorded names — is recorded as having guided nothing, because
+# the only yardstick this system captured was next quarter's (EW移行 §5).
+
+def test_the_full_year_eps_consensus_is_read_from_the_same_summary():
+    out = read_consensus(record("AME"))
+    assert out.full_year_eps == pytest.approx(8.14)
+    assert out.full_year_period == "FY2026"
+
+
+def test_the_full_year_revenue_consensus_is_converted_into_dollars():
+    # ACA states it in billions, and every contract here is in dollars.
+    out = read_consensus(record("ACA"))
+    assert out.full_year_revenue == pytest.approx(3_020_000_000.0)
+    assert out.full_year_eps is None
+
+
+def test_one_clause_can_state_both_a_full_year_eps_and_revenue_consensus():
+    # AMRC: "$1.13 per share on revenue of $2.08 billion for the year ending".
+    out = read_consensus(record("AMRC"))
+    assert out.full_year_eps == pytest.approx(1.13)
+    assert out.full_year_revenue == pytest.approx(2_080_000_000.0)
+
+
+def test_the_quarterly_figure_in_the_same_sentence_is_never_read_as_the_year():
+    # AGNT states both: $1.36 billion for the quarter, $5.02 billion for the
+    # year. Taking the first would put a quarter's bar under a year's guidance.
+    out = read_consensus(record("AGNT"))
+    assert out.full_year_revenue == pytest.approx(5_020_000_000.0)
+    assert out.next_quarter_revenue == pytest.approx(1_360_000_000.0)
+
+
+def test_the_companys_own_guidance_is_never_read_as_the_analyst_consensus():
+    # ADMA's sentence carries three revenue figures: the company's new
+    # guidance ($530-560m), its previous guidance ($635m), and the consensus
+    # ($611.67m). Only the last is a yardstick.
+    out = read_consensus(record("ADMA"))
+    assert out.full_year_revenue == pytest.approx(611_670_000.0)
+
+
+def test_a_non_december_fiscal_year_keeps_the_companys_own_year_end():
+    # ADNT's year ends in September. The label has to follow the company, not
+    # the calendar, or its guidance is measured against a different year.
+    out = read_consensus(record("ADNT"))
+    assert out.full_year_period == "FY2026"
+    assert out.full_year_revenue == pytest.approx(14_580_000_000.0)
+
+
+def test_a_summary_that_names_only_a_quarter_has_no_full_year_yardstick():
+    # AMD's consensus sentence stops at the quarter. Absence is named, never
+    # a bare None (invariant 6).
+    out = read_consensus(record("AMD"))
+    assert out.full_year_eps is None and out.full_year_revenue is None
+    assert out.reason == "no_full_year_consensus"
+
+
+def test_a_summary_with_no_consensus_sentence_at_all_says_so():
+    out = read_consensus(record("ACEL"))
+    assert out.full_year_period == ""
+    assert out.reason == "no_consensus_clause"
+
+
+def test_a_year_the_prose_and_the_feeds_own_reference_disagree_on_is_refused():
+    # Two independent statements of one fact. When they differ neither is
+    # used — a yardstick from the wrong year is worse than no yardstick.
+    body = payload("ADM")
+    body["fY1Ref"] = "202712"
+    out = read_consensus(parse_details(body))
+    assert out.full_year_eps is None
+    assert out.reason == "full_year_period_disputed"
+
+
 # -- the whole recorded corpus ---------------------------------------------
 #
 # The standard the user set: for EVERY name, each leg is either a value or a
@@ -324,6 +400,35 @@ def test_every_guidance_outcome_carries_a_reason_from_the_known_set(ticker):
             f"clause was {out.excerpt!r}")
     assert (out.reading is not None or out.full_year is not None
             or out.reason), f"{ticker}: no guidance and no reason"
+
+
+_KNOWN_CONSENSUS_REASONS = {"", "no_consensus_clause", "no_full_year_consensus",
+                            "full_year_period_disputed",
+                            "full_year_amount_unreadable"}
+
+
+@pytest.mark.parametrize("ticker", ALL)
+def test_every_consensus_outcome_carries_a_reason_from_the_known_set(ticker):
+    out = read_consensus(record(ticker))
+    assert out.reason in _KNOWN_CONSENSUS_REASONS, (
+        f"{ticker}: unexplained consensus outcome {out.reason!r} — "
+        f"clause was {out.excerpt!r}")
+    assert (out.full_year_eps is not None or out.full_year_revenue is not None
+            or out.reason), f"{ticker}: no full-year yardstick and no reason"
+
+
+def test_the_full_year_yardstick_is_read_for_every_name_that_states_one():
+    # 18 of the 47 recorded summaries carry "for the year ending" (measured
+    # 2026-08-09). A parser that reads fewer is dropping yardsticks that are
+    # sitting in a string the scan already holds.
+    stated = [t for t in ALL
+              if "for the year ending" in (record(t).summary or "")]
+    read = [t for t in stated
+            if read_consensus(record(t)).full_year_eps is not None
+            or read_consensus(record(t)).full_year_revenue is not None]
+    assert len(stated) == 18
+    assert sorted(read) == sorted(stated), (
+        f"stated but not read: {sorted(set(stated) - set(read))}")
 
 
 def test_no_recorded_response_defeats_the_guidance_parser():

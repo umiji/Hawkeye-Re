@@ -109,6 +109,10 @@ class WhispersRecord:
     announced_at: Optional[datetime]
     quarter_end: Optional[date]
     fiscal_quarter: Optional[str]
+    # The company's own FISCAL YEAR end (`fY1Ref`), kept because the summary
+    # states the same year in prose and the two are cross-checked before a
+    # full-year yardstick is accepted (`read_consensus`).
+    year_end: Optional[date]
     eps_actual: Optional[float]
     eps_consensus: Optional[float]
     eps_consensus_high: Optional[float]
@@ -341,6 +345,132 @@ def read_guidance(record: "WhispersRecord") -> GuidanceReadout:
                            or "unparsed_clause", clause)
 
 
+# -- the analyst consensus in the same prose -------------------------------
+#
+# The summary's last numeric sentence is the analysts', not the company's:
+# "the current consensus revenue estimate is $5.02 billion for the year ending
+# December 31, 2026". It is the ONLY full-year yardstick this system has access
+# to, and it arrives in a string the scan is already holding — so a company
+# that guided the year is otherwise recorded as having guided nothing, purely
+# because the yardstick was thrown away (13 of 47 measured, EW移行 §5).
+#
+# The sentence can name two periods at once, and which figure belongs to which
+# is the whole difficulty: AGNT states $1.36 billion for the quarter and $5.02
+# billion for the year in one breath. Amounts are therefore assigned to the
+# period phrase that FOLLOWS them, never searched for globally.
+
+_CONSENSUS_CLAUSE = re.compile(r"[Tt]he\s+current\s+consensus")
+_PERIOD_PHRASE = re.compile(
+    r"for the (quarter|year) ending ([A-Z][a-z]+)\s+\d{1,2},\s*(20\d\d)")
+_CONSENSUS_EPS = re.compile(rf"\${_NUM} per share", re.I)
+_CONSENSUS_REV = re.compile(rf"\${_NUM} (million|billion)", re.I)
+_MONTHS = {name.lower(): number
+           for number, name in enumerate(calendar.month_name) if name}
+
+
+@dataclass(frozen=True)
+class ConsensusReadout:
+    """What analysts expect, as the feed's own summary states it.
+
+    `full_year_period` is carried beside the figures rather than assumed from
+    the print's quarter, because guidance is only comparable against a
+    yardstick for the SAME year. Without the label the caller has no way to
+    refuse a FY2027 guidance measured against a FY2026 consensus, and that
+    comparison is the exact shape of the +348% ADM never guided.
+
+    `next_quarter_*` is read and recorded but nothing consumes it yet: the
+    quarterly yardstick still comes from the pre-registered snapshot, and
+    moving it here changes which candidates score a guidance beat. That is a
+    decision of its own (the agreed order puts it after task 8.5), so the
+    figures are parsed and left where the change can be made in one line.
+    """
+    full_year_eps: Optional[float] = None
+    full_year_revenue: Optional[float] = None      # dollars
+    full_year_period: str = ""                     # `FY2026`
+    next_quarter_eps: Optional[float] = None
+    next_quarter_revenue: Optional[float] = None
+    reason: str = ""
+    excerpt: str = ""
+
+
+def _consensus_clause(summary: str) -> str:
+    """The analysts' sentence, from its opening words to the end of the line."""
+    text = re.sub(r"\s+", " ", summary or "")
+    match = _CONSENSUS_CLAUSE.search(text)
+    if match is None:
+        return ""
+    clause = text[match.start():]
+    cut = clause.find("<br")
+    return (clause[:cut] if cut > 0 else clause).strip()
+
+
+def _last_amounts(segment: str) -> tuple[Optional[float], Optional[float]]:
+    """(EPS, revenue in dollars) stated in one segment, nearest the period.
+
+    The LAST match wins because the segment is read backwards from its period
+    phrase: in "$1.13 per share on revenue of $2.08 billion for the year
+    ending", both figures belong to the year, and in a segment that begins
+    mid-sentence the nearer figure is the one the phrase governs.
+    """
+    eps = [m for m in _CONSENSUS_EPS.finditer(segment)]
+    rev = [m for m in _CONSENSUS_REV.finditer(segment)]
+    return (_amount(eps[-1].group(1)) if eps else None,
+            _amount(rev[-1].group(1)) * _SCALE[rev[-1].group(2).lower()]
+            if rev else None)
+
+
+def read_consensus(record: "WhispersRecord") -> ConsensusReadout:
+    """Read the analysts' full-year yardstick out of the summary prose.
+
+    Deterministic, like `read_guidance`, and fail-closed for the same reason:
+    a yardstick from the wrong year would not look wrong downstream, it would
+    look like a beat. The prose year is therefore checked against the feed's
+    own fiscal-year-end field (`fY1Ref`), two independent statements of one
+    fact, and a disagreement yields nothing rather than the likelier of the
+    two (EW移行 §2, the rule already used for the quarter label).
+    """
+    clause = _consensus_clause(record.summary)
+    if not clause:
+        return ConsensusReadout(reason="no_consensus_clause")
+
+    figures: dict[str, tuple[Optional[float], Optional[float]]] = {}
+    year_stated: Optional[tuple[int, int]] = None
+    cursor = 0
+    for phrase in _PERIOD_PHRASE.finditer(clause):
+        segment = clause[cursor:phrase.start()]
+        cursor = phrase.end()
+        kind = phrase.group(1).lower()
+        figures[kind] = _last_amounts(segment)
+        if kind == "year":
+            month = _MONTHS.get(phrase.group(2).lower())
+            year_stated = (int(phrase.group(3)), month) if month else None
+
+    quarter_eps, quarter_revenue = figures.get("quarter", (None, None))
+    if "year" not in figures:
+        return ConsensusReadout(next_quarter_eps=quarter_eps,
+                                next_quarter_revenue=quarter_revenue,
+                                reason="no_full_year_consensus", excerpt=clause)
+    if year_stated is None or (
+            record.year_end is not None
+            and (record.year_end.year, record.year_end.month) != year_stated):
+        return ConsensusReadout(next_quarter_eps=quarter_eps,
+                                next_quarter_revenue=quarter_revenue,
+                                reason="full_year_period_disputed",
+                                excerpt=clause)
+
+    eps, revenue = figures["year"]
+    if eps is None and revenue is None:
+        return ConsensusReadout(next_quarter_eps=quarter_eps,
+                                next_quarter_revenue=quarter_revenue,
+                                reason="full_year_amount_unreadable",
+                                excerpt=clause)
+    return ConsensusReadout(full_year_eps=eps, full_year_revenue=revenue,
+                            full_year_period=f"FY{year_stated[0]}",
+                            next_quarter_eps=quarter_eps,
+                            next_quarter_revenue=quarter_revenue,
+                            excerpt=clause)
+
+
 def _percent(ratio: Any) -> Optional[float]:
     """The feed's surprise ratio (0.0503) as a percentage (5.03)."""
     number = _number(ratio)
@@ -432,6 +562,7 @@ def parse_details(payload: Any) -> WhispersRecord:
         announced_at=announced_at,
         quarter_end=quarter_end,
         fiscal_quarter=quarter.label or None,
+        year_end=year_end,
         eps_actual=eps_actual,
         eps_consensus=eps_consensus,
         eps_consensus_high=_sentinel_free(payload.get("highEstimate"),

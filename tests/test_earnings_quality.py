@@ -305,9 +305,8 @@ def test_full_year_guidance_is_never_scored_against_a_quarterly_consensus():
     near $1.20. Comparing the two reads as a +360% guidance beat that the
     company never gave — the numbers are simply for different periods.
 
-    The yardstick this system captures is next quarter's consensus, so a
-    full-year range has nothing here to be compared against, and saying so is
-    the only honest outcome (invariant 6).
+    A full-year range is judged only against a full-year yardstick. With none
+    captured, saying so is the only honest outcome (invariant 6).
     """
     quality = assess_earnings(
         a_print(eps_actual=1.20, eps_actual_rows=[1.20],
@@ -317,8 +316,73 @@ def test_full_year_guidance_is_never_scored_against_a_quarterly_consensus():
         a_consensus(next_quarter_eps_avg=1.20), CONFIG)
 
     assert quality.guidance.status is LegStatus.ABSENT
-    assert "guidance_period_not_comparable" in quality.guidance.flags
+    assert "no_full_year_consensus_to_compare" in quality.guidance.flags
     assert quality.guidance.surprise_pct is None
+
+
+def test_full_year_guidance_is_scored_against_the_full_year_consensus():
+    """The rescue this exists for. ADM guided FY2026 EPS of $5.15-$5.60 and
+    the analysts' figure for the same year — stated in the same summary
+    sentence — was $4.76. That is a real beat, and it was previously recorded
+    as "no guidance published"."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="FY2026", eps_low=5.15,
+                                         eps_high=5.60)),
+        a_consensus(next_quarter_eps_avg=1.20, full_year_eps_avg=4.76,
+                    full_year_period="FY2026"), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
+    assert quality.guidance.estimate == 4.76          # never the 1.20
+    assert round(quality.guidance.surprise_pct, 1) == 12.9
+    assert "on_eps" in quality.guidance.flags
+
+
+def test_a_full_year_yardstick_for_another_year_is_refused():
+    """Same shape of error as the quarterly one, one period up: FY2027
+    guidance measured against a FY2026 consensus is a comparison nobody made.
+    """
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="FY2027", eps_low=5.15,
+                                         eps_high=5.60)),
+        a_consensus(full_year_eps_avg=4.76, full_year_period="FY2026"), CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "full_year_consensus_is_another_year" in quality.guidance.flags
+    assert quality.guidance.surprise_pct is None
+
+
+def test_an_unlabelled_full_year_yardstick_is_not_trusted():
+    """A figure whose year nobody stated could be any year. Fail closed."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="FY2026", eps_low=5.15,
+                                         eps_high=5.60)),
+        a_consensus(full_year_eps_avg=4.76), CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "no_full_year_consensus_to_compare" in quality.guidance.flags
+
+
+def test_full_year_revenue_guidance_uses_the_full_year_revenue_yardstick():
+    """The common case in the corpus: 14 of the 18 names that state a
+    full-year consensus state it on revenue, not EPS."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="FY2026",
+                                         revenue_low=5.70e9,
+                                         revenue_high=6.00e9)),
+        a_consensus(full_year_revenue_avg=5.80e9,
+                    full_year_period="FY2026"), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
+    assert quality.guidance.estimate == 5.80e9
+    assert "on_revenue" in quality.guidance.flags
 
 
 def test_guidance_for_a_quarter_other_than_the_next_one_is_not_compared():

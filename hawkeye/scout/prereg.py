@@ -248,7 +248,10 @@ def capture_consensus(store, prints: list[UpcomingPrint],
         # is nothing at all, and it would make the master look covered where
         # it is blank. A live two-day window carries ~560 names, plenty of
         # them with neither a calendar estimate nor a Yahoo reading.
-        if all(v is None for v in snapshot.content_key()[1:]):
+        # An unstated label counts as nothing, the same as a missing number:
+        # the key carries a period string as well as figures now, and a row
+        # holding only `""` is still a row holding nothing.
+        if all(v is None or v == "" for v in snapshot.content_key()[1:]):
             empty += 1
             continue
         stored_id = store.capture_consensus(snapshot)

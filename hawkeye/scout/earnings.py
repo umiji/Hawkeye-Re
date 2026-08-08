@@ -85,6 +85,15 @@ class EarningsEvent:
     # one that guided nothing (invariant 6).
     guidance: Optional[GuidanceReading] = None
     guidance_reason: str = ""
+    # The analysts' FULL-YEAR figures, read from the same sentence that named
+    # the guidance above. They travel together because they only mean anything
+    # together: a full-year range judged against next quarter's consensus is
+    # the +348% ADM never guided, and judged against nothing at all it is
+    # recorded as a company that published no outlook. `full_year_period`
+    # is what lets the comparison refuse a yardstick from another year.
+    full_year_eps_estimate: Optional[float] = None
+    full_year_revenue_estimate: Optional[float] = None
+    full_year_period: str = ""
     # The source's own fiscal label (`2026-Q2`), when the calendar gave one.
     # Preferred over the calendar quarter of the report date, which is wrong
     # for any company whose fiscal year does not end in December.
