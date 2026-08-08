@@ -64,6 +64,28 @@ def test_absent_whisper_number_reads_as_missing_not_as_999():
     assert record("AATC").whisper is None
 
 
+def test_an_absent_consensus_reads_as_missing_not_as_a_999_dollar_bar():
+    """The 999 sentinel is not confined to the whisper field. 8 of the 47
+    recorded companies carry `estimate: 999.0`, and they are exactly the 8
+    with no high/low pair — the ones nobody published a consensus for.
+
+    Read as a figure it is a $999 EPS bar, so a company that reported $0.30
+    against no consensus at all becomes a 100% MISS. The screen drops it
+    either way, which is why this hid: the name disappears for a plausible
+    reason, and the drop record then says the company failed rather than
+    that we had nothing to measure it against (invariant 6)."""
+    row = record("AATC")
+    assert row.eps_consensus is None
+    assert "eps_consensus_missing" in row.gaps
+
+
+def test_a_sentinel_high_low_pair_does_not_become_a_range():
+    row = record("ABTC")
+    assert row.eps_consensus is None
+    assert row.eps_consensus_high is None
+    assert row.eps_consensus_low is None
+
+
 def test_a_real_whisper_number_survives():
     assert record("ADM").whisper == pytest.approx(1.47)
 

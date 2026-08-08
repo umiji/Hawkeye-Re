@@ -50,7 +50,14 @@ _BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 EASTERN = ZoneInfo("America/New_York")
 
 _MILLIONS = 1_000_000.0
-_NO_WHISPER = 999.0
+# 999 is the feed's "no value here" across every estimate field, not just the
+# whisper number. Measured 2026-08-08 over the 47-ticker corpus: 8 records
+# carry `estimate: 999.0`, and they are exactly the 8 with no high/low pair —
+# i.e. the companies nobody published a consensus for. Read as a number it is
+# a $999 EPS consensus, which turns "we have no bar" into "the company missed
+# by 100%" (invariant 6, in the direction that is easy to miss because the
+# screen drops the name either way).
+_NO_VALUE = 999.0
 # Vendors disagree by a day on prints released after the close, so a record
 # whose announcement sits one day either side of the calendar's date is the
 # same print. Two days apart is a different quarter's print.
@@ -383,10 +390,14 @@ def parse_details(payload: Any) -> WhispersRecord:
         quarter_end=quarter_end, year_end=year_end,
         quarter_text=str(payload.get("quarter") or ""))
     announced_at = _announced_at(payload.get("epsDate"))
+    # Every estimate field is sentinel-stripped, not just the whisper number.
+    # `estimate: 999.0` means nobody published a consensus, and reading it as
+    # a figure turns "no bar" into "missed by 100%".
     eps_actual = _number(payload.get("eps"))
-    eps_consensus = _number(payload.get("estimate"))
+    eps_consensus = _sentinel_free(payload.get("estimate"), _NO_VALUE)
     revenue_actual = _dollars(payload.get("revenue"))
-    revenue_consensus = _dollars(payload.get("revenueEstimate"))
+    revenue_consensus = _dollars(
+        _sentinel_free(payload.get("revenueEstimate"), _NO_VALUE))
     summary = str(payload.get("summary") or "")
 
     gaps: list[str] = []
@@ -407,7 +418,7 @@ def parse_details(payload: Any) -> WhispersRecord:
     if not summary:
         gaps.append("summary_missing")
 
-    whisper = _sentinel_free(payload.get("whisper"), _NO_WHISPER)
+    whisper = _sentinel_free(payload.get("whisper"), _NO_VALUE)
     vendor_eps_pct = _percent(payload.get("earningsSurprise"))
     return WhispersRecord(
         ticker=str(payload.get("ticker") or "").strip().upper(),
@@ -417,8 +428,10 @@ def parse_details(payload: Any) -> WhispersRecord:
         fiscal_quarter=quarter.label or None,
         eps_actual=eps_actual,
         eps_consensus=eps_consensus,
-        eps_consensus_high=_number(payload.get("highEstimate")),
-        eps_consensus_low=_number(payload.get("lowEstimate")),
+        eps_consensus_high=_sentinel_free(payload.get("highEstimate"),
+                                         _NO_VALUE),
+        eps_consensus_low=_sentinel_free(payload.get("lowEstimate"),
+                                         _NO_VALUE),
         revenue_actual=revenue_actual,
         revenue_consensus=revenue_consensus,
         whisper=whisper,
