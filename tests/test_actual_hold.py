@@ -49,6 +49,25 @@ class FakeCalendar:
         return self.entries
 
 
+def a_business_day_ago(days: int, today: date) -> date:
+    """`days` trading days before `today`.
+
+    NOT `today - timedelta(days)`. The entry gate that measures how fresh a
+    catalyst is counts TRADING days from the price series, so an event dated
+    on a Saturday reads as older than it is — and these tests then pass Monday
+    to Friday and fail at the weekend. Found on a Sunday, 2026-08-09.
+    """
+    day = today
+    stepped = 0
+    while stepped < days:
+        day -= timedelta(days=1)
+        if day.weekday() < 5:
+            stepped += 1
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day
+
+
 def _event(**kw) -> EarningsEvent:
     base = dict(ticker="AAA", day=date(2026, 8, 5), eps_actual=1.20,
                 eps_estimate=1.00, revenue_actual=1.02e9,
@@ -161,7 +180,7 @@ def test_a_held_print_is_not_enriched_ranked_or_recorded(tmp_path):
     from hawkeye.ledger.stocks import StockStore
 
     today = date.today()
-    day = today - timedelta(days=1)
+    day = a_business_day_ago(1, today)
     store = StockStore(str(tmp_path / "hawkeye.db"))
 
     result = run_scout(FakeCalendar(_entries(day)), _provider(), CONFIG,
@@ -179,7 +198,7 @@ def test_a_held_print_is_not_enriched_ranked_or_recorded(tmp_path):
 
 def test_a_held_print_is_recorded_as_pending_not_as_a_rejection(tmp_path):
     today = date.today()
-    day = today - timedelta(days=1)
+    day = a_business_day_ago(1, today)
 
     result = run_scout(FakeCalendar(_entries(day)), _provider(), CONFIG,
                        today=today, numbers_source=_feed(day))
@@ -195,7 +214,7 @@ def test_a_held_print_is_recorded_as_pending_not_as_a_rejection(tmp_path):
 
 def test_a_held_print_past_the_window_is_given_up_on():
     today = date.today()
-    day = today - timedelta(days=5)          # well past 48 hours
+    day = a_business_day_ago(5, today)          # well past 48 hours
 
     result = run_scout(FakeCalendar(_entries(day)), _provider(), CONFIG,
                        today=today, numbers_source=_feed(day))
@@ -207,7 +226,7 @@ def test_a_held_print_past_the_window_is_given_up_on():
 
 def test_an_unreachable_feed_holds_the_print_rather_than_ranking_it():
     today = date.today()
-    day = today - timedelta(days=1)
+    day = a_business_day_ago(1, today)
     feed = FakeWhispers({"HELD": WhispersUnavailable("boom"),
                          "READY": make_whispers("READY", announced=day)})
 
@@ -225,7 +244,7 @@ def test_a_pending_print_is_read_again_on_the_next_scan(tmp_path):
     open — and the print would never be read again."""
     ledger = Ledger(str(tmp_path / "hawkeye.db"))
     today = date.today()
-    day = today - timedelta(days=1)
+    day = a_business_day_ago(1, today)
 
     scan_id = ledger.record_scan(params={}, scanned=2, screened=2, enriched=1,
                                  gate_passed=1, tickers=["READY"])
@@ -244,7 +263,7 @@ def test_a_pending_print_is_read_again_on_the_next_scan(tmp_path):
 def test_a_print_given_up_on_is_never_read_again(tmp_path):
     ledger = Ledger(str(tmp_path / "hawkeye.db"))
     today = date.today()
-    day = today - timedelta(days=5)
+    day = a_business_day_ago(5, today)
 
     scan_id = ledger.record_scan(params={}, scanned=2, screened=2, enriched=1,
                                  gate_passed=1, tickers=[])
@@ -261,7 +280,7 @@ def test_the_hold_survives_being_switched_off_by_config():
     held print is given up on immediately, which is the behaviour before this
     feature existed — minus the silent ranking on the calendar's numbers."""
     today = date.today()
-    day = today - timedelta(days=1)
+    day = a_business_day_ago(1, today)
     off = dc_replace(CONFIG, earnings_actual_wait_hours=0)
 
     result = run_scout(FakeCalendar(_entries(day)), _provider(), off,

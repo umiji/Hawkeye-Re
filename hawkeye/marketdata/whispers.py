@@ -396,8 +396,14 @@ def parse_details(payload: Any) -> WhispersRecord:
     eps_actual = _number(payload.get("eps"))
     eps_consensus = _sentinel_free(payload.get("estimate"), _NO_VALUE)
     revenue_actual = _dollars(payload.get("revenue"))
-    revenue_consensus = _dollars(
-        _sentinel_free(payload.get("revenueEstimate"), _NO_VALUE))
+    # NOT sentinel-stripped, unlike the EPS fields. Revenue arrives in
+    # MILLIONS, so 999 there is $999m — an ordinary figure for a mid-cap, not
+    # a marker. Stripping it would turn a real consensus into a missing one
+    # and send the whole print to the calendar for no reason. The corpus
+    # agrees: 8 of 47 records carry `estimate: 999.0` and none carries
+    # `revenueEstimate: 999.0`. A missing revenue consensus is spelled `null`
+    # here (verified live 2026-08-09 on VXRT/PMTS/LCUT/RHP/OSCR/SPT).
+    revenue_consensus = _dollars(payload.get("revenueEstimate"))
     summary = str(payload.get("summary") or "")
 
     gaps: list[str] = []

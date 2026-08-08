@@ -79,6 +79,17 @@ def test_an_absent_consensus_reads_as_missing_not_as_a_999_dollar_bar():
     assert "eps_consensus_missing" in row.gaps
 
 
+def test_999_is_not_a_sentinel_in_the_revenue_fields():
+    """Revenue arrives in MILLIONS, so 999 there is $999m — an ordinary
+    mid-cap figure, not a marker. Stripping it would turn a real consensus
+    into a missing one and send the whole print to the calendar for nothing.
+    A missing revenue consensus is spelled `null` in this feed."""
+    row = parse_details({"ticker": "X", "revenue": 999.0,
+                         "revenueEstimate": 999.0})
+    assert row.revenue_actual == pytest.approx(999_000_000.0)
+    assert row.revenue_consensus == pytest.approx(999_000_000.0)
+
+
 def test_a_sentinel_high_low_pair_does_not_become_a_range():
     row = record("ABTC")
     assert row.eps_consensus is None
