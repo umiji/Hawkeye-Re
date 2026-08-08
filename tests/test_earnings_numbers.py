@@ -167,6 +167,40 @@ def test_a_missing_eps_consensus_sends_the_whole_print_to_the_calendar():
     assert out[0].numbers_reason == "whispers_eps_incomplete"
 
 
+def test_the_guidance_survives_a_fallback_on_the_numbers():
+    """The one-vendor rule governs the surprise RATIO — its actual and its
+    consensus. Guidance is a third leg measured against next quarter's
+    consensus, so reading it off the feed's prose while the ratio stands on
+    the calendar's numbers mixes nothing. Throwing it away was pure loss: 8 of
+    50 names on a live run declined for a missing revenue consensus while the
+    same response held their guidance sentence, and guidance has no other free
+    source anywhere."""
+    event = _event()
+    feed = _Feed({"AAA": _record(revenue_consensus=None, summary=(
+        "The company said it expects third quarter earnings of $1.10 to "
+        "$1.20 per share."))})
+    out, _ = read_numbers([event], _screened([event]), feed, limit=5)
+
+    assert out[0].numbers_source == "calendar"          # the ratio fell back
+    assert out[0].numbers_reason == "whispers_revenue_incomplete"
+    assert out[0].guidance is not None                  # the third leg did not
+    assert out[0].guidance.period == "2026-Q3"
+    assert out[0].announced_at is not None
+
+
+def test_guidance_from_a_record_about_a_DIFFERENT_print_is_refused():
+    """A stale record's summary describes the PREVIOUS quarter's guidance.
+    Attaching it would put last quarter's outlook on this quarter's print."""
+    event = _event()
+    feed = _Feed({"AAA": _record(announced=date(2026, 4, 28), summary=(
+        "The company said it expects third quarter earnings of $1.10 to "
+        "$1.20 per share."))})
+    out, _ = read_numbers([event], _screened([event]), feed, limit=5)
+
+    assert out[0].numbers_reason == "whispers_previous_quarter"
+    assert out[0].guidance is None
+
+
 # --- the feed answering about a DIFFERENT print ---------------------------
 
 def test_a_record_from_the_previous_quarter_is_refused_and_named():

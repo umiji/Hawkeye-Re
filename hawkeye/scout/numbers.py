@@ -188,6 +188,35 @@ def _substituted(event: EarningsEvent,
         guidance_reason=guidance.reason)
 
 
+def _declined(event: EarningsEvent, record: Optional[WhispersRecord],
+              reason: str) -> EarningsEvent:
+    """`event` on the calendar's figures, keeping whatever the feed's answer
+    still carries that the numbers rule does not govern.
+
+    Guidance is the case that matters. The one-vendor rule is about the
+    SURPRISE RATIO: its actual and its consensus have to come from the same
+    place, because one vendor's adjusted-basis estimate over another's GAAP
+    actual is a percentage with no referent. Guidance is a third leg measured
+    against a third figure entirely — next quarter's consensus — so reading it
+    off the feed's prose while the ratio stands on the calendar's numbers
+    mixes nothing.
+
+    Discarding it was measurable waste: 8 of 50 names on a live run declined
+    for a missing revenue consensus while the same response held their
+    guidance sentence, and guidance has no other free source anywhere.
+
+    A record for a DIFFERENT print is the exception. Its summary describes the
+    previous quarter's guidance, so `covers()` gates this.
+    """
+    if record is None or not record.covers(event.day):
+        return replace(event, numbers_reason=reason)
+    guidance = read_guidance(record)
+    return replace(event, numbers_reason=reason,
+                   announced_at=record.announced_at or event.announced_at,
+                   guidance=guidance.reading,
+                   guidance_reason=guidance.reason)
+
+
 def read_numbers(events: list[EarningsEvent],
                  screened: list[ScreenedEvent],
                  source: Optional[WhispersReader],
@@ -228,7 +257,7 @@ def read_numbers(events: list[EarningsEvent],
             stale += 1
         else:
             fell_back += 1
-        out.append(replace(event, numbers_reason=reason))
+        out.append(_declined(event, record, reason))
 
     return out, NumbersStats(
         attempted=attempted, from_whispers=chosen, fell_back=fell_back,
