@@ -264,6 +264,7 @@ def capture_consensus(store, prints: list[UpcomingPrint],
             revenue_calendar=item.revenue_estimate,
             eps_avg=reading.eps_estimate if reading else None,
             revenue_avg=reading.revenue_estimate if reading else None,
+            eps_whisper=reading.whisper if reading else None,
             source_note="whispers+finnhub" if reading else "finnhub_only")
         # A row with no numbers in it is not "the estimate held still" — it
         # is nothing at all, and it would make the master look covered where

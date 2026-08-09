@@ -305,6 +305,12 @@ class ConsensusSnapshot(BaseModel):
     eps_high: Optional[float] = None
     eps_analysts: Optional[int] = None
     eps_calendar: Optional[float] = None
+    # The feed's unofficial expectation, published beside the consensus above
+    # and measured against a DIFFERENT question: consensus is what analysts
+    # filed, the whisper is what the market is actually braced for. Kept apart
+    # from `eps_avg` for that reason — pooling them would make the surprise
+    # ratio's denominator depend on which of the two happened to be present.
+    eps_whisper: Optional[float] = None
 
     revenue_avg: Optional[float] = None
     revenue_low: Optional[float] = None

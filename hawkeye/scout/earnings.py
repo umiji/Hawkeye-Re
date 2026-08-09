@@ -105,6 +105,12 @@ class EarningsEvent:
     # Preferred over the calendar quarter of the report date, which is wrong
     # for any company whose fiscal year does not end in December.
     fiscal_quarter: Optional[str] = None
+    # The feed's unofficial expectation for THIS print, carried so the ranking
+    # can pay a small bonus for clearing it (task 8). Only ever set from the
+    # feed's own response, so it is present exactly when `numbers_source` is
+    # the feed — a whisper beside a calendar actual would be two vendors in
+    # one comparison.
+    whisper: Optional[float] = None
     # Every distinct EPS actual the calendar returned for this one print.
     # AMZN's came back as 1.88 on one row and 1.97 on another; collapsing to
     # the conservative row is right for ranking, but a print row holding only

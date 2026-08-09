@@ -134,6 +134,11 @@ class EarningsQuality:
     verdict: QuarterVerdict
     score: float
     flags: tuple[str, ...] = field(default_factory=tuple)
+    # The feed's unofficial expectation and how far the print cleared it, kept
+    # on the verdict because they moved `score` above. A ranking term the
+    # reader cannot see is a ranking term they cannot argue with.
+    whisper: Optional[float] = None
+    whisper_beat_pct: Optional[float] = None
 
     @property
     def legs(self) -> tuple[LegVerdict, LegVerdict, LegVerdict]:
@@ -459,6 +464,10 @@ def reconstructed_consensus(event: EarningsEvent, stock_id: str,
         # feed's revenue estimate in the calendar's field would recreate the
         # cross-vendor ratio one field lower down.
         revenue_avg=event.revenue_estimate if from_feed else None,
+        # Bound by the same one-vendor rule as the pair above: a whisper is an
+        # expectation the FEED published, and it only means something beside an
+        # actual the feed also supplied.
+        eps_whisper=event.whisper if from_feed else None,
         revenue_calendar=(event.calendar_revenue_estimate if from_feed
                           else event.revenue_estimate),
         # The full-year yardstick, read off the same summary that carried the
@@ -490,6 +499,39 @@ def assess_event(event: EarningsEvent,
         consensus = reconstructed_consensus(event, stock_id,
                                             row.fiscal_quarter)
     return assess_earnings(row, consensus, config, gap_on_event_pct)
+
+
+def whisper_beat_pct(print_row: EarningsPrint,
+                     consensus: Optional[ConsensusSnapshot],
+                     eps: LegVerdict) -> Optional[float]:
+    """How far the reported EPS cleared the feed's unofficial expectation, or
+    None when the two cannot be compared.
+
+    Three conditions, and all three are refusals rather than fallbacks:
+
+    - the feed supplied the actual. A calendar actual over a feed whisper is
+      two vendors in one ratio, which is what task 7.5 removed everywhere else.
+    - the EPS leg is a confirmed beat. An unverified leg earns nothing anywhere
+      (invariant 6), and a leg that missed consensus has already been scored.
+    - the whisper is not zero, which would make the percentage meaningless.
+    """
+    if print_row.source is not PrintSource.WHISPERS:
+        return None
+    if eps.scored_pct is None or eps.actual is None:
+        return None
+    whisper = consensus.eps_whisper if consensus else None
+    if whisper is None or whisper == 0:
+        return None
+    return (eps.actual - whisper) / abs(whisper) * 100.0
+
+
+def whisper_points(beat_pct: Optional[float], config) -> float:
+    """Ranking points for clearing the whisper. Never negative: see
+    `whisper_beat_weight` in `hawkeye/config.py` for why the signal adds but
+    does not subtract."""
+    if beat_pct is None or beat_pct <= 0:
+        return 0.0
+    return min(beat_pct * config.whisper_beat_weight, config.whisper_beat_cap)
 
 
 def assess_earnings(print_row: EarningsPrint,
@@ -553,6 +595,8 @@ def assess_earnings(print_row: EarningsPrint,
     # guidance" and "weak guidance" must not collapse into one number
     # (§5.3 決定3).
     score += config.guidance_beat_score * guidance.beat_fraction
+    whisper_beat = whisper_beat_pct(print_row, consensus, eps)
+    score += whisper_points(whisper_beat, config)
     score = round(score, 2)
 
     flags = list(dict.fromkeys(
@@ -561,4 +605,8 @@ def assess_earnings(print_row: EarningsPrint,
         ticker=print_row.ticker, fiscal_quarter=print_row.fiscal_quarter,
         eps=eps, revenue=revenue, guidance=guidance,
         verdict=_verdict(eps, revenue, guidance), score=score,
-        flags=tuple(flags))
+        flags=tuple(flags),
+        whisper=(consensus.eps_whisper if consensus and whisper_beat is not None
+                 else None),
+        whisper_beat_pct=(round(whisper_beat, 4)
+                          if whisper_beat is not None else None))

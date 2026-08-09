@@ -103,6 +103,18 @@ def render_quality_ja(quality: EarningsQuality) -> str:
              f"{_VERDICT[quality.verdict]}",
              f"スコア {quality.score}"]
     lines += [render_leg_ja(leg) for leg in quality.legs]
+    # 「囁き予想」は、証券会社のアナリストが正式に出す予想平均(コンセンサス)
+    # とは別に、決算専門サイトが集計している非公式の市場予想。コンセンサスより
+    # 高いのが通例(実測11銘柄中11銘柄)なので、これを超えたかどうかは
+    # コンセンサス超えより厳しい判定になる。スコアを動かしている以上、
+    # 読み手に数字そのものを見せないと検算できない。
+    if quality.whisper_beat_pct is not None:
+        cleared = quality.whisper_beat_pct > 0
+        phrase = (f"を上回った" if cleared else "に届かなかった")
+        lines.append(f"  囁き予想(非公式の市場予想) {quality.whisper:g} "
+                     f"{phrase}: {quality.whisper_beat_pct:+.1f}%")
+        if not cleared:
+            lines.append("    ※ 届かなくても減点はしません(加点のみ)。")
     # Quarter-level warnings, which belong to the print rather than to one
     # leg. `unadjusted` is the reason this whole design exists — AMZN's
     # headline beat was a one-off — so it must never be stored and then left

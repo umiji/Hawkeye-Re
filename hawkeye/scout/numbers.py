@@ -189,6 +189,11 @@ def _substituted(event: EarningsEvent,
         eps_estimate=record.eps_consensus,
         revenue_actual=record.revenue_actual,
         revenue_estimate=record.revenue_consensus,
+        # Travels only on this branch, where the feed's own actual is what the
+        # event now stands on. The declined branch below deliberately does not
+        # carry it: a whisper beside a calendar actual is the cross-vendor
+        # comparison this module exists to prevent.
+        whisper=record.whisper,
         numbers_source="whispers",
         numbers_reason="",
         eps_surprise_pct_reported=reported,

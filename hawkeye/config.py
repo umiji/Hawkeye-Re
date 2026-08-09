@@ -104,6 +104,30 @@ class HawkeyeConfig:
     # case, has no structured source, and must not become a hidden gate
     # (§5.3 決定3). Deliberately far below the EPS/revenue contributions.
     guidance_beat_score: float = 5.0
+    # The feed's unofficial expectation ("whisper"), which sits ABOVE consensus
+    # on every name measured so far (11 of 11), so clearing it is the stricter
+    # test. Paid as a bonus on top of the consensus-based surprise and never as
+    # a replacement for it: swapping the denominator would lower every ratio,
+    # and a bonus on a silently reduced base cannot be told apart from one that
+    # is merely refilling what the swap removed.
+    #
+    # `weight` is points per 1% above the whisper; `cap` is the most the bonus
+    # can ever add — a fifth of the EPS cap (50) and half the revenue cap (20),
+    # so it reorders near-ties and never buys a slot from a genuinely larger
+    # surprise. Deliberately small because the evidence is contested:
+    # Bagnoli/Beneish/Watts (1999) predates Reg FD, later work reports the
+    # effect reversing, and the paper measured the PRE-print gap while this
+    # measures the print clearing it.
+    #
+    # 0.25 was measured, not chosen for looks. On the 47-name post-print corpus
+    # (2026-08-05) 11 records carry a whisper and 7 cleared it, by 3.0 / 5.1 /
+    # 11.1 / 14.2 / 25.2 / 26.8 / 103.4 percent. At a weight of 1.0 the cap
+    # bound on 5 of those 7, which would have made the bonus a flat +10 in
+    # nearly every case — the step function task 8 explicitly rejected, because
+    # a step ignores magnitude once it is crossed. At 0.25 the cap binds only
+    # on ALB's +103.4%, where the percentage has stopped being informative.
+    whisper_beat_weight: float = 0.25
+    whisper_beat_cap: float = 10.0
 
     # --- Consensus pre-registration (docs/design/MASTER_OVERVIEW.ja.md §6.1(D)) ---
     # Runs are manual, so a strict T-1 window loses a print's snapshot
