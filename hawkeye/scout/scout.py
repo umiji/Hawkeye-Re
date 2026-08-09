@@ -276,6 +276,14 @@ def _record_print(store, context: _QuarterContext) -> None:
     the user before anything is retired (task 8.5). Until that exists, a
     corrected actual is simply not picked up by the scan.
     """
+    # An unlabelled print is not recorded at all. The active-row index is
+    # (company, quarter), so a row with an empty quarter makes "" that
+    # company's quarter — and the next print that also fails to get a label
+    # then looks like a row already there, so the scan skips it silently.
+    # Nothing can join an unlabelled row to its consensus anyway, which is
+    # why pre-registration already refuses one (EW移行 §2).
+    if not context.print_row.fiscal_quarter:
+        return
     existing = store.active_print(context.stock_id,
                                   context.print_row.fiscal_quarter)
     if existing is not None:

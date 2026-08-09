@@ -119,13 +119,25 @@ def _from_fiscal_references(quarter_end: Optional[date],
                             year_end: Optional[date]) -> Optional[str]:
     """Counted back from the company's OWN year end, so a January year end
     puts a quarter ending April into the next fiscal year (NVDA: 2027-Q1,
-    where the calendar would say 2026-Q2 — a quarter it never reports)."""
+    where the calendar would say 2026-Q2 — a quarter it never reports).
+
+    Twelve months back is the company's LAST quarter, not "outside the year".
+    At a year-end print the feed's year-end reference has usually already
+    rolled forward to the year now beginning — PG's quarter ended June 2026
+    with `fY1Ref` saying June 2027 — and refusing that distance left every
+    fiscal Q4 unlabelled, which is one print in four for every company
+    (measured live 2026-08-09 on PG, SJM and CAG). Both spellings of the same
+    print therefore land on Q4: zero months back is the year that just ended,
+    twelve is the one before the year now beginning.
+    """
     if quarter_end is None or year_end is None:
         return None
     months_before = ((year_end.year * 12 + year_end.month)
                      - (quarter_end.year * 12 + quarter_end.month))
-    if months_before % 3 or not 0 <= months_before <= 9:
+    if months_before % 3 or not 0 <= months_before <= 12:
         return None
+    if months_before == 12:
+        return f"{year_end.year - 1}-Q4"
     return f"{year_end.year}-Q{4 - months_before // 3}"
 
 
