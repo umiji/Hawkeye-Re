@@ -40,8 +40,8 @@ class JudgedPrint:
 def judge_ticker(ticker: str, calendar_source, config, *,
                  report_date: Optional[date] = None,
                  today: Optional[date] = None,
-                 numbers_source=None, stock_store=None, directory=None,
-                 consensus_source=None) -> Optional[JudgedPrint]:
+                 numbers_source=None, stock_store=None,
+                 directory=None) -> Optional[JudgedPrint]:
     """The three-leg reading of `ticker`'s most recent reported quarter.
 
     None when the calendar holds no reported print for it in the window —
@@ -68,7 +68,7 @@ def judge_ticker(ticker: str, calendar_source, config, *,
                            always=[(event.ticker, event.day)])
     event = read[0]
 
-    context = _quarter_context(stock_store, directory, event, consensus_source)
+    context = _quarter_context(stock_store, directory, event)
     if context is None:
         raise ValueError("judge_ticker needs a stock store: the quarter and "
                          "the consensus it is judged against are both stored")

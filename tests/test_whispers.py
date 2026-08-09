@@ -372,6 +372,48 @@ def test_a_year_the_prose_and_the_feeds_own_reference_disagree_on_is_refused():
     assert out.reason == "full_year_period_disputed"
 
 
+# -- the quarterly yardstick in the same prose -----------------------------
+#
+# After a print the consensus sentence describes the quarter AHEAD, which is
+# the quarter the guidance given at that print is about. Measured over the
+# 47-name corpus 2026-08-09: 12 records state one, and in all 12 it is the
+# quarter immediately after the one reported.
+
+def test_a_next_quarter_consensus_carries_the_quarter_it_is_for():
+    # AMD reported the quarter ending June 2026; the sentence names September.
+    out = read_consensus(record("AMD"))
+    assert out.next_quarter_revenue == pytest.approx(12_620_000_000.0)
+    assert out.next_quarter_period == "2026-Q3"
+
+
+def test_a_non_calendar_year_end_still_names_the_quarter_that_follows():
+    # NVDA's quarters end in April/July; the sentence names July after an
+    # April print, and the label has to follow the company's own year end.
+    out = read_consensus(record("NVDA"))
+    assert out.next_quarter_period == "2027-Q2"
+
+
+def test_a_quarter_that_is_not_the_one_after_this_print_is_refused():
+    """The sentence names December while the print covers June — two quarters
+    apart. Used as "next quarter" it would put a bar from six months later
+    under this print's guidance, which is the cross-period error that read as
+    a +348% guidance beat one period up (ADM)."""
+    body = payload("AMD")
+    body["summary"] = body["summary"].replace(
+        "for the quarter ending September 30, 2026",
+        "for the quarter ending December 31, 2026")
+    out = read_consensus(parse_details(body))
+    assert out.next_quarter_revenue is None
+    assert out.next_quarter_period == ""
+    assert out.next_quarter_reason == "next_quarter_period_disputed"
+
+
+def test_a_summary_with_no_quarterly_sentence_names_its_absence():
+    out = read_consensus(record("ACA"))
+    assert out.next_quarter_eps is None
+    assert out.next_quarter_reason == "no_next_quarter_consensus"
+
+
 # -- the whole recorded corpus ---------------------------------------------
 #
 # The standard the user set: for EVERY name, each leg is either a value or a

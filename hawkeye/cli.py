@@ -75,7 +75,6 @@ from hawkeye.scout.benchmark import (
     reason_snippet,
 )
 from hawkeye.ledger.stocks import StockStore
-from hawkeye.marketdata.consensus import YahooConsensusSource
 from hawkeye.marketdata.edgar import EdgarDirectory
 from hawkeye.reports.quality_ja import (
     render_quality_ja,
@@ -193,8 +192,7 @@ def _judged_earnings(args: argparse.Namespace):
         report_date=(date.fromisoformat(args.event_date)
                      if args.event_date else None),
         numbers_source=numbers,
-        stock_store=_stock_store(), directory=EdgarDirectory(),
-        consensus_source=YahooConsensusSource())
+        stock_store=_stock_store(), directory=EdgarDirectory())
 
 
 def cmd_case_open(args: argparse.Namespace) -> int:
@@ -365,8 +363,7 @@ def cmd_scout(args: argparse.Namespace) -> int:
                            today=today,
                            numbers_source=numbers,
                            stock_store=_stock_store(),
-                           directory=EdgarDirectory(),
-                           consensus_source=YahooConsensusSource())
+                           directory=EdgarDirectory())
     except CalendarUnavailable as exc:
         print(f"決算カレンダーを読めなかったため、走査を中止しました: {exc}",
               file=sys.stderr)

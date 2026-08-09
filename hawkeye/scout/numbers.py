@@ -165,7 +165,10 @@ def _forward_legs(record: WhispersRecord) -> dict:
             "guidance_reason": guidance.reason,
             "full_year_eps_estimate": consensus.full_year_eps,
             "full_year_revenue_estimate": consensus.full_year_revenue,
-            "full_year_period": consensus.full_year_period}
+            "full_year_period": consensus.full_year_period,
+            "next_quarter_eps_estimate": consensus.next_quarter_eps,
+            "next_quarter_revenue_estimate": consensus.next_quarter_revenue,
+            "next_quarter_period": consensus.next_quarter_period}
 
 
 def _substituted(event: EarningsEvent,

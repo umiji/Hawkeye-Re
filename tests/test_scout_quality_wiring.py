@@ -284,32 +284,88 @@ def test_an_unconfirmable_beat_cannot_outrank_a_confirmed_one(tmp_path):
     assert result.passed[1].quality.eps.status is LegStatus.UNVERIFIED
 
 
-def test_the_funnel_can_fill_the_guidance_yardstick_after_the_print(tmp_path):
-    """Guidance is only judgeable against next quarter's consensus, and after
-    a print that is the `0q` row (see test_consensus_capture). Without this
-    the funnel would record every guidance leg as "absent", which describes
-    our data collection rather than the company."""
-    from hawkeye.marketdata.consensus import ConsensusReading
+_QUARTERLY_GUIDANCE = (
+    "The company said it expects third quarter earnings of $2.50 to $2.70 "
+    "per share. The current consensus earnings estimate is $2.44 per share "
+    "for the quarter ending September 30, 2026.")
+_FULL_YEAR_GUIDANCE = (
+    "The company said it expects 2026 earnings of $5.15 to $5.60 per share. "
+    "The current consensus earnings estimate is $4.76 per share for the year "
+    "ending December 31, 2026.")
 
+
+def _feed(event_day: date, summary: str) -> FakeWhispers:
+    return FakeWhispers({"AMZN": make_whispers(
+        "AMZN", announced=event_day, summary=summary)})
+
+
+def _pre_register(store, stock_id: str, event_day: date) -> str:
+    """A row captured the day before the print, with no yardstick on it —
+    which is every row the pre-registration pass can write, because the
+    forward endpoint states this quarter's consensus and nothing beyond it."""
+    return store.capture_consensus(ConsensusSnapshot(
+        stock_id=stock_id, ticker="AMZN", fiscal_quarter="2026-Q2",
+        captured_at=datetime.combine(event_day - timedelta(days=1),
+                                     datetime.min.time(), tzinfo=JST),
+        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.00, eps_calendar=1.00,
+        eps_analysts=25, revenue_avg=1.0e9, revenue_calendar=1.0e9,
+        revenue_analysts=20))
+
+
+def test_a_pre_registered_row_does_not_block_the_full_year_guidance_leg(tmp_path):
+    """The full-year yardstick only exists in the summary the print itself
+    carries, so a row captured BEFORE the print can never hold one. Judging
+    against the pre-registered row alone therefore recorded every
+    pre-registered name as having guided nothing — the company's own outlook
+    thrown away because of when the bar was captured."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    stock_id = store.put_stock(Stock(cik="0001018724", ticker="AMZN"))
+    pinned = _pre_register(store, stock_id, event_day)
+
+    result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
+                       _config(), today=today, stock_store=store,
+                       numbers_source=_feed(event_day, _FULL_YEAR_GUIDANCE))
+
+    guidance = result.passed[0].quality.guidance
+    assert guidance.status is LegStatus.BEAT
+    assert guidance.estimate == 4.76
+    # The pre-registered row is still what the surprise ratio stands on, and
+    # it is still exactly as it was written.
+    row = store.active_print(stock_id, "2026-Q2")
+    assert row.consensus_snapshot_id == pinned
+    assert store.consensus(pinned).full_year_eps_avg is None
+
+
+def test_the_quarterly_yardstick_comes_from_the_print_that_carried_the_guidance(
+        tmp_path):
+    """One sentence gives both the outlook and the bar it is measured against,
+    so they cannot be out of step. The bar used to come from a separate lookup
+    taken days later, against a guidance read here."""
     today = date.today()
     event_day = today - timedelta(days=3)
     store = StockStore(str(tmp_path / "hawkeye.db"))
 
-    class PostPrintConsensus:
-        def consensus(self, ticker):
-            return ConsensusReading(eps_avg=2.44, revenue_avg=2.4e11,
-                                    eps_analysts=43)
+    result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
+                       _config(), today=today, stock_store=store,
+                       numbers_source=_feed(event_day, _QUARTERLY_GUIDANCE))
 
-    run_scout(FakeCalendar(_entries(event_day)), _provider(), _config(),
-              today=today, stock_store=store,
-              consensus_source=PostPrintConsensus())
-
+    guidance = result.passed[0].quality.guidance
+    assert guidance.status is LegStatus.BEAT
+    assert guidance.estimate == 2.44
     stock = store.stock_by_ticker("AMZN")
     snapshot = store.consensus_in_force(stock.id, "2026-Q2")
+    # Recorded, not only used: a reconstruction is written after the print, so
+    # the bar the judgment stood on stays readable in the ledger.
     assert snapshot.next_quarter_eps_avg == 2.44
-    assert snapshot.next_quarter_revenue_avg == 2.4e11
-    # ...and it must NOT be mistaken for this quarter's own consensus
-    assert snapshot.eps_avg != 2.44
+    assert snapshot.eps_avg != 2.44        # never this quarter's own consensus
+
+
+# The guidance yardstick used to come from a second vendor read days after
+# the print (Yahoo's `0q` row, re-labelled by `shift_after_print`). It now
+# comes out of the summary the print itself carried — same string, same
+# moment, no extra request — which the two tests above pin.
 
 
 def test_the_screen_still_works_without_a_store():

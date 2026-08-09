@@ -468,6 +468,8 @@ def reconstructed_consensus(event: EarningsEvent, stock_id: str,
         full_year_eps_avg=event.full_year_eps_estimate,
         full_year_revenue_avg=event.full_year_revenue_estimate,
         full_year_period=event.full_year_period,
+        next_quarter_eps_avg=event.next_quarter_eps_estimate,
+        next_quarter_revenue_avg=event.next_quarter_revenue_estimate,
         source_note="reconstructed after the print; no analyst count or range")
 
 

@@ -94,6 +94,13 @@ class EarningsEvent:
     full_year_eps_estimate: Optional[float] = None
     full_year_revenue_estimate: Optional[float] = None
     full_year_period: str = ""
+    # The same thing one period down, for a company that guided the quarter
+    # rather than the year. It used to come from a separate Yahoo lookup taken
+    # at a different moment than the guidance it judges; it is in this
+    # response's own prose, so it now travels with it and costs no request.
+    next_quarter_eps_estimate: Optional[float] = None
+    next_quarter_revenue_estimate: Optional[float] = None
+    next_quarter_period: str = ""
     # The source's own fiscal label (`2026-Q2`), when the calendar gave one.
     # Preferred over the calendar quarter of the report date, which is wrong
     # for any company whose fiscal year does not end in December.

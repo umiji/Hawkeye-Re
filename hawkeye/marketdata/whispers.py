@@ -383,17 +383,24 @@ class ConsensusReadout:
     refuse a FY2027 guidance measured against a FY2026 consensus, and that
     comparison is the exact shape of the +348% ADM never guided.
 
-    `next_quarter_*` is read and recorded but nothing consumes it yet: the
-    quarterly yardstick still comes from the pre-registered snapshot, and
-    moving it here changes which candidates score a guidance beat. That is a
-    decision of its own (the agreed order puts it after task 8.5), so the
-    figures are parsed and left where the change can be made in one line.
+    `next_quarter_*` is the SAME idea one period down, and it carries its own
+    label for the same reason. After a print the sentence describes the
+    quarter ahead — the one the guidance just given is about — but only a
+    stated period proves it, so a sentence naming any other quarter yields
+    nothing rather than a bar from the wrong three months.
+
+    The two periods fail independently: a summary can state a readable
+    quarter and an unreadable year, so `reason` and `next_quarter_reason`
+    are separate. One shared field would report the year's refusal as the
+    quarter's.
     """
     full_year_eps: Optional[float] = None
     full_year_revenue: Optional[float] = None      # dollars
     full_year_period: str = ""                     # `FY2026`
     next_quarter_eps: Optional[float] = None
     next_quarter_revenue: Optional[float] = None
+    next_quarter_period: str = ""                  # `2026-Q3`
+    next_quarter_reason: str = ""
     reason: str = ""
     excerpt: str = ""
 
@@ -425,56 +432,83 @@ def _last_amounts(segment: str) -> tuple[Optional[float], Optional[float]]:
             if rev else None)
 
 
+def _quarter_after(quarter_end: Optional[date]) -> Optional[tuple[int, int]]:
+    """(year, month) of the quarter end three months after `quarter_end`."""
+    if quarter_end is None:
+        return None
+    month = quarter_end.month + 3
+    return ((quarter_end.year + 1, month - 12) if month > 12
+            else (quarter_end.year, month))
+
+
+def _next_quarter_bar(record: "WhispersRecord", figures: dict,
+                      stated: Optional[tuple[int, int]]) -> dict:
+    """The quarterly yardstick's fields, or the named reason there is none.
+
+    Same fail-closed rule as the year, one period down: the sentence has to
+    name the quarter that FOLLOWS the one just reported, checked against the
+    feed's own quarter-end reference. A sentence naming any other quarter is
+    refused rather than relabelled — a bar three or six months out of place
+    does not look wrong downstream, it looks like a guidance beat.
+    """
+    if "quarter" not in figures:
+        return {"next_quarter_reason": "no_next_quarter_consensus"}
+    label = _next_quarter_label(record)
+    if not label or stated is None or stated != _quarter_after(
+            record.quarter_end):
+        return {"next_quarter_reason": "next_quarter_period_disputed"}
+    eps, revenue = figures["quarter"]
+    if eps is None and revenue is None:
+        return {"next_quarter_reason": "next_quarter_amount_unreadable"}
+    return {"next_quarter_eps": eps, "next_quarter_revenue": revenue,
+            "next_quarter_period": label}
+
+
 def read_consensus(record: "WhispersRecord") -> ConsensusReadout:
-    """Read the analysts' full-year yardstick out of the summary prose.
+    """Read the analysts' yardsticks out of the summary prose.
 
     Deterministic, like `read_guidance`, and fail-closed for the same reason:
-    a yardstick from the wrong year would not look wrong downstream, it would
-    look like a beat. The prose year is therefore checked against the feed's
-    own fiscal-year-end field (`fY1Ref`), two independent statements of one
-    fact, and a disagreement yields nothing rather than the likelier of the
-    two (EW移行 §2, the rule already used for the quarter label).
+    a yardstick from the wrong period would not look wrong downstream, it
+    would look like a beat. The prose year is therefore checked against the
+    feed's own fiscal-year-end field (`fY1Ref`) and the prose quarter against
+    its quarter-end field (`q1Ref`) — two independent statements of one fact
+    in each case, and a disagreement yields nothing rather than the likelier
+    of the two (EW移行 §2, the rule already used for the quarter label).
     """
     clause = _consensus_clause(record.summary)
     if not clause:
-        return ConsensusReadout(reason="no_consensus_clause")
+        return ConsensusReadout(reason="no_consensus_clause",
+                                next_quarter_reason="no_consensus_clause")
 
     figures: dict[str, tuple[Optional[float], Optional[float]]] = {}
-    year_stated: Optional[tuple[int, int]] = None
+    stated: dict[str, Optional[tuple[int, int]]] = {}
     cursor = 0
     for phrase in _PERIOD_PHRASE.finditer(clause):
         segment = clause[cursor:phrase.start()]
         cursor = phrase.end()
         kind = phrase.group(1).lower()
         figures[kind] = _last_amounts(segment)
-        if kind == "year":
-            month = _MONTHS.get(phrase.group(2).lower())
-            year_stated = (int(phrase.group(3)), month) if month else None
+        month = _MONTHS.get(phrase.group(2).lower())
+        stated[kind] = (int(phrase.group(3)), month) if month else None
 
-    quarter_eps, quarter_revenue = figures.get("quarter", (None, None))
+    bar = _next_quarter_bar(record, figures, stated.get("quarter"))
+    year_stated = stated.get("year")
     if "year" not in figures:
-        return ConsensusReadout(next_quarter_eps=quarter_eps,
-                                next_quarter_revenue=quarter_revenue,
-                                reason="no_full_year_consensus", excerpt=clause)
+        return ConsensusReadout(reason="no_full_year_consensus",
+                                excerpt=clause, **bar)
     if year_stated is None or (
             record.year_end is not None
             and (record.year_end.year, record.year_end.month) != year_stated):
-        return ConsensusReadout(next_quarter_eps=quarter_eps,
-                                next_quarter_revenue=quarter_revenue,
-                                reason="full_year_period_disputed",
-                                excerpt=clause)
+        return ConsensusReadout(reason="full_year_period_disputed",
+                                excerpt=clause, **bar)
 
     eps, revenue = figures["year"]
     if eps is None and revenue is None:
-        return ConsensusReadout(next_quarter_eps=quarter_eps,
-                                next_quarter_revenue=quarter_revenue,
-                                reason="full_year_amount_unreadable",
-                                excerpt=clause)
+        return ConsensusReadout(reason="full_year_amount_unreadable",
+                                excerpt=clause, **bar)
     return ConsensusReadout(full_year_eps=eps, full_year_revenue=revenue,
                             full_year_period=f"FY{year_stated[0]}",
-                            next_quarter_eps=quarter_eps,
-                            next_quarter_revenue=quarter_revenue,
-                            excerpt=clause)
+                            excerpt=clause, **bar)
 
 
 def _percent(ratio: Any) -> Optional[float]:

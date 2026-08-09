@@ -220,6 +220,26 @@ def test_the_full_year_yardstick_survives_a_fallback_on_the_numbers():
     assert out[0].full_year_eps_estimate == 4.76
 
 
+_NEXT_QUARTER_SUMMARY = (
+    "The company said it expects third quarter earnings of $1.30 to $1.40 "
+    "per share. The current consensus earnings estimate is $1.20 per share "
+    "on revenue of $2.08 billion for the quarter ending September 30, 2026.")
+
+
+def test_the_next_quarter_yardstick_travels_with_the_guidance_it_measures():
+    """The bar a quarterly guidance is judged against is in the same summary,
+    so it costs no request. Before this it came from a separate Yahoo lookup
+    taken at a different moment."""
+    event = _event()
+    feed = _Feed({"AAA": _record(summary=_NEXT_QUARTER_SUMMARY)})
+    out, _ = read_numbers([event], _screened([event]), feed, limit=5)
+
+    assert out[0].guidance.period == "2026-Q3"
+    assert out[0].next_quarter_eps_estimate == 1.20
+    assert out[0].next_quarter_revenue_estimate == 2_080_000_000.0
+    assert out[0].next_quarter_period == "2026-Q3"
+
+
 def test_guidance_from_a_record_about_a_DIFFERENT_print_is_refused():
     """A stale record's summary describes the PREVIOUS quarter's guidance.
     Attaching it would put last quarter's outlook on this quarter's print."""
