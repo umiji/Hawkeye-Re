@@ -362,7 +362,12 @@ def read_guidance(record: "WhispersRecord") -> GuidanceReadout:
 _CONSENSUS_CLAUSE = re.compile(r"[Tt]he\s+current\s+consensus")
 _PERIOD_PHRASE = re.compile(
     r"for the (quarter|year) ending ([A-Z][a-z]+)\s+\d{1,2},\s*(20\d\d)")
-_CONSENSUS_EPS = re.compile(rf"\${_NUM} per share", re.I)
+# "a loss of $0.03 per share" is a NEGATIVE consensus, and it is the only way
+# this feed spells one — there is no minus sign anywhere in the prose. Read
+# without the prefix it becomes +0.03, which turns a company analysts expect
+# to lose money into one they expect to earn it, and every comparison against
+# that bar then carries the wrong sign (AIRG, 1 of 47 measured 2026-08-09).
+_CONSENSUS_EPS = re.compile(rf"(a loss of )?\${_NUM} per share", re.I)
 _CONSENSUS_REV = re.compile(rf"\${_NUM} (million|billion)", re.I)
 _MONTHS = {name.lower(): number
            for number, name in enumerate(calendar.month_name) if name}
@@ -414,7 +419,8 @@ def _last_amounts(segment: str) -> tuple[Optional[float], Optional[float]]:
     """
     eps = [m for m in _CONSENSUS_EPS.finditer(segment)]
     rev = [m for m in _CONSENSUS_REV.finditer(segment)]
-    return (_amount(eps[-1].group(1)) if eps else None,
+    sign = -1.0 if eps and eps[-1].group(1) else 1.0
+    return (sign * _amount(eps[-1].group(2)) if eps else None,
             _amount(rev[-1].group(1)) * _SCALE[rev[-1].group(2).lower()]
             if rev else None)
 

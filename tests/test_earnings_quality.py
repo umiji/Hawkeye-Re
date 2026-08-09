@@ -368,6 +368,63 @@ def test_an_unlabelled_full_year_yardstick_is_not_trusted():
     assert "no_full_year_consensus_to_compare" in quality.guidance.flags
 
 
+def test_guidance_on_both_eps_and_revenue_uses_BOTH():
+    """A company that guided EPS and sales published two statements about the
+    future, and scoring only the first throws one of them away. Both are
+    compared, and each carries its share of the bonus."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="2026-Q3", eps_low=2.10,
+                                         eps_high=2.30, revenue_low=1.10e9,
+                                         revenue_high=1.20e9)),
+        a_consensus(next_quarter_eps_avg=2.00,
+                    next_quarter_revenue_avg=1.00e9), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
+    assert [unit for unit, _ in quality.guidance.parts] == ["eps", "revenue"]
+    assert quality.guidance.beat_fraction == 1.0
+    assert "on_eps" in quality.guidance.flags
+    assert "on_revenue" in quality.guidance.flags
+
+
+def test_one_leg_of_a_two_leg_guidance_beating_earns_half_the_bonus():
+    """EPS above, sales below. Neither is discarded: the bonus is the share
+    of the legs that actually beat, and the leg that missed is still reported
+    — guidance misses are recorded, never subtracted (§5.3 決定3)."""
+    base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                   revenue_actual=1.05e9)
+    consensus = a_consensus(next_quarter_eps_avg=2.00,
+                            next_quarter_revenue_avg=1.00e9)
+    plain = assess_earnings(base, consensus, CONFIG)
+    split = assess_earnings(
+        base.model_copy(update={"guidance": GuidanceReading(
+            period="2026-Q3", eps_low=2.10, eps_high=2.30,
+            revenue_low=0.90e9, revenue_high=0.94e9)}),
+        consensus, CONFIG)
+
+    assert split.guidance.status is LegStatus.INLINE     # neither side wins
+    assert split.guidance.beat_fraction == 0.5
+    assert (split.score - plain.score
+            == round(CONFIG.guidance_beat_score * 0.5, 2))
+
+
+def test_a_guidance_that_misses_on_both_legs_still_costs_nothing():
+    base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                   revenue_actual=1.05e9)
+    consensus = a_consensus(next_quarter_eps_avg=2.00,
+                            next_quarter_revenue_avg=1.00e9)
+    plain = assess_earnings(base, consensus, CONFIG)
+    lowered = assess_earnings(
+        base.model_copy(update={"guidance": GuidanceReading(
+            period="2026-Q3", eps_low=1.60, eps_high=1.70,
+            revenue_low=0.90e9, revenue_high=0.94e9)}),
+        consensus, CONFIG)
+
+    assert lowered.guidance.status is LegStatus.MISS
+    assert lowered.guidance.beat_fraction == 0.0
+    assert lowered.score == plain.score
+
+
 def test_full_year_revenue_guidance_uses_the_full_year_revenue_yardstick():
     """The common case in the corpus: 14 of the 18 names that state a
     full-year consensus state it on revenue, not EPS."""

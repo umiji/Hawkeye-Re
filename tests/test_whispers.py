@@ -349,6 +349,19 @@ def test_a_summary_with_no_consensus_sentence_at_all_says_so():
     assert out.reason == "no_consensus_clause"
 
 
+def test_a_consensus_stated_as_a_loss_keeps_its_sign():
+    """AIRG's sentence reads "The current consensus estimate is a loss of
+    $0.03 per share". Read as +0.03 it turns a company analysts expect to
+    lose money into one they expect to earn it, and a guidance above the bar
+    would come out as a beat against a bar with the wrong sign."""
+    body = payload("AIRG")
+    body["summary"] = body["summary"].replace(
+        "for the quarter ending June 30, 2026",
+        "for the year ending December 31, 2026")
+    out = read_consensus(parse_details(body))
+    assert out.full_year_eps == pytest.approx(-0.03)
+
+
 def test_a_year_the_prose_and_the_feeds_own_reference_disagree_on_is_refused():
     # Two independent statements of one fact. When they differ neither is
     # used — a yardstick from the wrong year is worse than no yardstick.

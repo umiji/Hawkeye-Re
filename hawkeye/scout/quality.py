@@ -98,11 +98,30 @@ class LegVerdict:
     # `describe_quality_en` — a verdict that carried its own sentence would
     # decide the reader's language here, in the wrong layer.
     flags: tuple[str, ...] = ()
+    # Every comparison this verdict rests on, as (unit, surprise %). Only the
+    # guidance leg uses more than one: a company can guide EPS and sales at
+    # once, and reading only the first throws away half of what it published.
+    # `surprise_pct` above stays the primary reading so the existing display
+    # and the existing scoring of the other two legs are unchanged.
+    parts: tuple[tuple[str, float], ...] = ()
 
     @property
     def scored_pct(self) -> Optional[float]:
         """What ranking may use: a confirmed beat, or nothing."""
         return self.surprise_pct if self.status is LegStatus.BEAT else None
+
+    @property
+    def beat_fraction(self) -> float:
+        """The share of the compared legs that came in above consensus.
+
+        A company guiding two legs and beating on one has said something
+        weaker than one beating on both, and something stronger than one
+        beating on neither. The bonus follows that share rather than an
+        all-or-nothing reading of the first leg that happened to be present.
+        """
+        if not self.parts:
+            return 0.0
+        return sum(1 for _, pct in self.parts if pct > 0) / len(self.parts)
 
 
 @dataclass(frozen=True)
@@ -277,18 +296,31 @@ def _guidance_leg(print_row: EarningsPrint,
     if not usable:
         return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
                           flags=("no_forward_consensus_to_compare",))
-    midpoint, yardstick, unit = usable[0]
-    surprise = _pct(midpoint, yardstick)
-    status = (LegStatus.BEAT if surprise and surprise > 0
-              else LegStatus.MISS if surprise and surprise < 0
+    # EVERY leg the company guided and this system holds a bar for, not just
+    # the first. A company that guided EPS and sales made two statements, and
+    # scoring one of them describes our reading rather than the company.
+    parts = tuple((unit, _pct(value, yardstick))
+                  for value, yardstick, unit in usable
+                  if _pct(value, yardstick) is not None)
+    if not parts:
+        return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
+                          flags=("no_forward_consensus_to_compare",))
+    above = sum(1 for _, pct in parts if pct > 0)
+    below = sum(1 for _, pct in parts if pct < 0)
+    # Mixed reads as INLINE rather than as the stronger of the two: one leg
+    # up and one down is not a beat, and it is not a miss either.
+    status = (LegStatus.BEAT if above and not below
+              else LegStatus.MISS if below and not above
               else LegStatus.INLINE)
+    midpoint, yardstick, _ = usable[0]
     # The period is carried on the verdict, not just used to pick the bar: a
     # +13% guidance beat means a different thing for a year than for a
     # quarter, and the reader is entitled to know which one was measured.
     period_flag = (f"against_{guidance.period}",) if guidance.period else ()
-    return LegVerdict(leg="guidance", status=status, surprise_pct=surprise,
-                      actual=midpoint, estimate=yardstick,
-                      flags=(f"on_{unit}",) + period_flag)
+    return LegVerdict(leg="guidance", status=status, surprise_pct=parts[0][1],
+                      actual=midpoint, estimate=yardstick, parts=parts,
+                      flags=tuple(f"on_{unit}" for unit, _ in parts)
+                      + period_flag)
 
 
 def _verdict(eps: LegVerdict, revenue: LegVerdict,
@@ -513,8 +545,12 @@ def assess_earnings(print_row: EarningsPrint,
         score += eps_points(eps.surprise_pct)
     if revenue.status is LegStatus.MISS:
         score += revenue_points(revenue.surprise_pct)
-    if guidance.status is LegStatus.BEAT:
-        score += config.guidance_beat_score
+    # The share of the guided legs that beat, so a company guiding both EPS
+    # and sales and beating on one earns half of what beating on both earns.
+    # A leg that came in BELOW subtracts nothing, same as before: "no
+    # guidance" and "weak guidance" must not collapse into one number
+    # (§5.3 決定3).
+    score += config.guidance_beat_score * guidance.beat_fraction
     score = round(score, 2)
 
     flags = list(dict.fromkeys(
