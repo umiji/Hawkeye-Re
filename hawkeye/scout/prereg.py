@@ -26,12 +26,16 @@ from hawkeye.contracts.stocks import (
     Stock,
     resolve_fiscal_quarter,
 )
+from hawkeye.marketdata.whispers import WhispersUnavailable
 from hawkeye.scout.triage import is_investigation_target
 
 
 class ConsensusProvider(Protocol):
-    def consensus(self, ticker: str):
-        """A ConsensusReading, or None. None always means "not available"."""
+    def forecast(self, ticker: str):
+        """A WhispersForecast, or None when the feed holds no row for this
+        company. Raises WhispersUnavailable when it could not be read at all —
+        the two are never conflated, because only the first is a fact about
+        the company (invariant 6)."""
         ...
 
 
@@ -55,7 +59,13 @@ class CaptureReport:
     """
     captured: int = 0
     unchanged: int = 0
-    yahoo_missing: int = 0
+    # The feed answered, and had no row for that company. Its calendar
+    # estimate is still pre-registered.
+    consensus_missing: int = 0
+    # The feed could not be read at all. A fact about the connection, not
+    # about the company, and counted apart so a run that reached nothing
+    # cannot look like a day with no estimates (invariant 6).
+    consensus_unreachable: int = 0
     skipped_already_reported: int = 0
     nothing_to_record: int = 0
     # Names the entry gates have already refused structurally (§6.1(E)).
@@ -71,7 +81,8 @@ class CaptureReport:
 
     def as_dict(self) -> dict:
         return {"captured": self.captured, "unchanged": self.unchanged,
-                "yahoo_missing": self.yahoo_missing,
+                "consensus_missing": self.consensus_missing,
+                "consensus_unreachable": self.consensus_unreachable,
                 "skipped_already_reported": self.skipped_already_reported,
                 "nothing_to_record": self.nothing_to_record,
                 "skipped_not_target": self.skipped_not_target,
@@ -191,12 +202,19 @@ def capture_consensus(store, prints: list[UpcomingPrint],
     Both readings go into ONE row: they are two opinions about the same
     quantity taken at the same moment, and separating them would invite a
     later "which one is right" pick — the judgment this design exists to
-    remove. Where Yahoo cannot be reached the Finnhub point estimate is still
-    pre-registered, with the absent distribution visible in the row rather
-    than inferred from silence.
+    remove. Where the earnings feed has nothing the Finnhub point estimate is
+    still pre-registered, with the absence visible in the row rather than
+    inferred from silence.
+
+    The feed's reading is the one the print's actual will later be compared
+    against, and it comes from the same vendor as that actual — which is the
+    reason this stopped being a Yahoo lookup on 2026-08-09. What the change
+    gave up is the analyst count and the estimate range, neither of which
+    exists on this endpoint and both of which were already decided not to be
+    used; those columns now stay blank.
     """
     captured = unchanged = missing = skipped = empty = not_target = 0
-    unlabelled = 0
+    unlabelled = unreachable = 0
     touched: list[str] = []
     filtering = bool(config is not None
                      and getattr(config, "prereg_skip_non_targets", False))
@@ -221,9 +239,22 @@ def capture_consensus(store, prints: list[UpcomingPrint],
         if store.active_print(stock_id, item.fiscal_quarter) is not None:
             skipped += 1
             continue
-        reading = source.consensus(item.ticker) if source is not None else None
-        if reading is None:
-            missing += 1
+        reading = None
+        if source is not None:
+            try:
+                reading = source.forecast(item.ticker)
+            except WhispersUnavailable:
+                # Nothing came back, so nothing was learned about this
+                # company. The calendar's estimate is still pre-registered —
+                # a snapshot skipped today cannot be retaken tomorrow.
+                unreachable += 1
+            else:
+                if reading is None:
+                    missing += 1
+        # No guidance yardstick is written here, and none can be: this
+        # endpoint states the consensus for the print about to happen, so the
+        # bar for the guidance that print will GIVE does not exist yet. It is
+        # read afterwards, off the summary the print itself carries.
         snapshot = ConsensusSnapshot(
             stock_id=stock_id, ticker=item.ticker,
             fiscal_quarter=item.fiscal_quarter,
@@ -231,19 +262,9 @@ def capture_consensus(store, prints: list[UpcomingPrint],
             kind=kind, expected_report_date=item.report_date,
             eps_calendar=item.eps_estimate,
             revenue_calendar=item.revenue_estimate,
-            eps_avg=reading.eps_avg if reading else None,
-            eps_low=reading.eps_low if reading else None,
-            eps_high=reading.eps_high if reading else None,
-            eps_analysts=reading.eps_analysts if reading else None,
-            revenue_avg=reading.revenue_avg if reading else None,
-            revenue_low=reading.revenue_low if reading else None,
-            revenue_high=reading.revenue_high if reading else None,
-            revenue_analysts=reading.revenue_analysts if reading else None,
-            next_quarter_eps_avg=(reading.next_quarter_eps_avg
-                                  if reading else None),
-            next_quarter_revenue_avg=(reading.next_quarter_revenue_avg
-                                      if reading else None),
-            source_note="yahoo+finnhub" if reading else "finnhub_only")
+            eps_avg=reading.eps_estimate if reading else None,
+            revenue_avg=reading.revenue_estimate if reading else None,
+            source_note="whispers+finnhub" if reading else "finnhub_only")
         # A row with no numbers in it is not "the estimate held still" — it
         # is nothing at all, and it would make the master look covered where
         # it is blank. A live two-day window carries ~560 names, plenty of
@@ -261,7 +282,8 @@ def capture_consensus(store, prints: list[UpcomingPrint],
         else:
             unchanged += 1
     return CaptureReport(captured=captured, unchanged=unchanged,
-                         yahoo_missing=missing,
+                         consensus_missing=missing,
+                         consensus_unreachable=unreachable,
                          skipped_already_reported=skipped,
                          nothing_to_record=empty,
                          skipped_not_target=not_target,
@@ -271,7 +293,9 @@ def capture_consensus(store, prints: list[UpcomingPrint],
 def report_line(report: CaptureReport) -> str:
     """One-line Japanese summary for the CLI."""
     return (f"事前登録: 新規 {report.captured} 件 / 変化なし "
-            f"{report.unchanged} 件 / Yahoo未取得 {report.yahoo_missing} 件 / "
+            f"{report.unchanged} 件 / 決算専門サイトに予想の行がなく"
+            f"カレンダーの数字のみ {report.consensus_missing} 件 / "
+            f"決算専門サイトを読めず {report.consensus_unreachable} 件 / "
             f"発表済みのため対象外 {report.skipped_already_reported} 件 / "
             f"予想が1つも取れず記録なし {report.nothing_to_record} 件 / "
             f"入口ゲートの構造的条件を満たさず調査対象外 "

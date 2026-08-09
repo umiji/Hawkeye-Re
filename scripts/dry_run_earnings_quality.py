@@ -53,10 +53,6 @@ from hawkeye.contracts.stocks import (                        # noqa: E402
 )
 from hawkeye.envfile import load_local_env                    # noqa: E402
 from hawkeye.ledger.stocks import StockStore                  # noqa: E402
-from hawkeye.marketdata.consensus import (                    # noqa: E402
-    YahooConsensusSource,
-    shift_after_print,
-)
 from hawkeye.marketdata.edgar import EdgarDirectory           # noqa: E402
 from hawkeye.marketdata.finnhub import FinnhubProvider        # noqa: E402
 from hawkeye.marketdata.whispers import (                     # noqa: E402
@@ -203,28 +199,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"    → 採用した提供元: {event.numbers_source}"
           f"{f' ({event.numbers_reason})' if event.numbers_reason else ''}")
 
-    # 3. Yahoo: ガイダンスの物差しだけ ---------------------------------------
-    consensus_reading = YahooConsensusSource().consensus(ticker)
-    print("\n[3] Yahoo(ガイダンスの比較対象としてのみ使用)")
-    if consensus_reading is None:
-        print("    コンセンサス: 取得できませんでした")
-    else:
-        print(f"    進行中の四半期(=ガイダンスの対象) EPS 平均 "
-              f"{_fmt(consensus_reading.eps_avg)}"
-              f" (下限 {_fmt(consensus_reading.eps_low)} /"
-              f" 上限 {_fmt(consensus_reading.eps_high)} /"
-              f" アナリスト {consensus_reading.eps_analysts}人)")
-        print(f"    進行中の四半期 売上 平均 "
-              f"{_fmt(consensus_reading.revenue_avg)}"
-              f" (アナリスト {consensus_reading.revenue_analysts}人)")
-        print(f"    その次の四半期 EPS "
-              f"{_fmt(consensus_reading.next_quarter_eps_avg)} / 売上 "
-              f"{_fmt(consensus_reading.next_quarter_revenue_avg)}")
-    print("    ※ この予想は決算「後」に取得したものです。Yahooの期ラベルは"
-          "「今日から見た四半期」なので、発表済みの決算の予想は含まれません"
-          "(AMZNで実測: 0q=1.956 は Q2 の 1.83 ではなく Q3 の予想)。"
-          "したがってガイダンスの比較対象としてのみ使い、"
-          "発表済み四半期の予想は決算履歴側の値を使います。")
+    # 3. the guidance yardsticks, out of the same summary -------------------
+    print("\n[3] ガイダンスの比較対象(同じ要約文から読む)")
+    print(f"    翌四半期 {event.next_quarter_period or '—'}: EPS "
+          f"{_fmt(event.next_quarter_eps_estimate)} / 売上 "
+          f"{_fmt(event.next_quarter_revenue_estimate)}")
+    print(f"    通期 {event.full_year_period or '—'}: EPS "
+          f"{_fmt(event.full_year_eps_estimate)} / 売上 "
+          f"{_fmt(event.full_year_revenue_estimate)}")
+    print("    ※ 決算専門サイトの同じ要約文の中にあるので追加リクエストは"
+          "ゼロです。会社のガイダンスと同じ1文から読むため、両者の期が"
+          "ずれることがありません。")
 
     # 4. guidance, read by hand or by an agent ------------------------------
     directory = EdgarDirectory()
@@ -260,15 +245,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             "reported_at": datetime.combine(event.day, datetime.min.time())})
 
     # The reported quarter's consensus comes from the print itself, from
-    # whichever vendor supplied the actual. The forward endpoint read AFTER
-    # the release is one quarter out — its "this quarter" is the quarter now
-    # in progress — so it contributes ONLY the guidance yardstick.
+    # whichever vendor supplied the actual, and so do the two forward
+    # yardsticks — all of it out of the one response.
     snapshot = reconstructed_consensus(event, stock_id, row.fiscal_quarter)
-    if consensus_reading is not None:
-        shifted = shift_after_print(consensus_reading)
-        snapshot = snapshot.model_copy(update={
-            "next_quarter_eps_avg": shifted.next_quarter_eps_avg,
-            "next_quarter_revenue_avg": shifted.next_quarter_revenue_avg})
     snapshot_id = store.capture_consensus(snapshot)
     stored = store.consensus(snapshot_id)
     if store.active_print(stock_id, row.fiscal_quarter) is None:

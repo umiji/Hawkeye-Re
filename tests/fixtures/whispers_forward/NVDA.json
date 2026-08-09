@@ -1,0 +1,20 @@
+{
+  "ticker": "NVDA",
+  "company": "NVIDIA Corp.",
+  "nextEPSDate": "2026-08-26T00:00:00",
+  "releaseTime": 3,
+  "confirmDate": "2026-08-05T19:11:53.113",
+  "twitter": "nvidia",
+  "lastEPSTime": "2026-05-20T16:20:00",
+  "description": " NVIDIA Corporation is the worldwide leader in visual computing technologies and the inventor of the graphic processing unit, or GPU. Over the years, the company's focus has evolved from PC graphics to artificial intelligence (AI) based solutions that now support high performance computing (HPC), gaming and virtual reality (VR) platforms.NVIDIA's GPU success can be attributed to its parallel processing capabilities supported by thousands of computing cores, which are necessary to run deep learning algorithms. The company's GPU platforms are playing a major role in developing multi-billion-dollar end-markets like robotics and self-driving vehicles.NVIDIA is a dominant name in the Data Center, professional visualization and gaming markets where Intel and Advanced Micro Devices are playing a catch-up role. The company's partnership with almost all major cloud service providers (CSPs) and server vendors is a key catalyst.   \n",
+  "epsImpact": null,
+  "avgEPSMove": null,
+  "consensusEst": 2.01,
+  "revenueEst": 90720000000.0,
+  "whisper": 2.12,
+  "quarterDate": "2026-07-31T00:00:00",
+  "quarter": 2,
+  "indNo": 830,
+  "sectNo": 8,
+  "sectName": "Technology"
+}

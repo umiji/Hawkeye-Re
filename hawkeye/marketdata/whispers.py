@@ -511,6 +511,78 @@ def read_consensus(record: "WhispersRecord") -> ConsensusReadout:
                             excerpt=clause, **bar)
 
 
+# -- before the print ------------------------------------------------------
+#
+# `GET /api/getstocksdata/{ticker}` is the same feed looking FORWARD: what
+# analysts expect of the release still ahead, plus when the company says it
+# will report. It is the only endpoint that can answer before a print, which
+# makes it the only possible source for a pre-registration.
+#
+# It replaced Yahoo for that job so that a print's consensus and its actual
+# come from one vendor. What it does not publish is the analyst count and the
+# estimate range — both already decided not to be used.
+
+
+@dataclass(frozen=True)
+class WhispersForecast:
+    """What the feed expects of a print that has not happened yet.
+
+    No fiscal label is derived here, deliberately. The payload states the
+    quarter's end and its number but never the company's fiscal year end, and
+    those two alone cannot name a quarter: NVDA's quarter ending July 2026 is
+    its fiscal 2027 Q2, so reading the year off the end date files it a year
+    early. The calendar states the fiscal year outright, and that is where the
+    label keeps coming from (EW移行 §2).
+    """
+    ticker: str
+    eps_estimate: Optional[float] = None
+    revenue_estimate: Optional[float] = None      # dollars, NOT millions
+    whisper: Optional[float] = None
+    next_report_date: Optional[date] = None
+    # When the COMPANY confirmed the date above. None means the feed is
+    # projecting it, and a projected date can move.
+    confirmed_at: Optional[datetime] = None
+    quarter_end: Optional[date] = None
+
+    @property
+    def is_empty(self) -> bool:
+        return self.eps_estimate is None and self.revenue_estimate is None
+
+
+def _day(value: Any) -> Optional[date]:
+    moment = _announced_at(value)
+    return None if moment is None else moment.date()
+
+
+def parse_stocksdata(payload: Any) -> WhispersForecast:
+    """One `/api/getstocksdata/` response, in this system's units.
+
+    Raises rather than returning a hollow record when the response is not an
+    object, for the same reason `parse_details` does: a record full of Nones
+    would enter pre-registration as "nobody has an estimate for this company".
+    """
+    if not isinstance(payload, dict):
+        raise WhispersUnavailable(
+            f"expected a JSON object from the earnings feed, got "
+            f"{type(payload).__name__}")
+    return WhispersForecast(
+        ticker=str(payload.get("ticker") or "").strip().upper(),
+        # Sentinel-stripped on the same rule as the after-the-print endpoint,
+        # where 999 is how that half of the feed spells "no value". This half
+        # was measured spelling it `null` (2026-08-09, ONON/NVDA/HD/LCUT/AATC);
+        # the strip is here so a change of habit cannot turn "no bar" into a
+        # $999 consensus nobody would ever beat.
+        eps_estimate=_sentinel_free(payload.get("consensusEst"), _NO_VALUE),
+        # ALREADY IN DOLLARS. The after-the-print endpoint's `revenueEstimate`
+        # is in millions and is converted; applying that conversion here turns
+        # NVDA's $90.72bn quarter into $90.72 quadrillion.
+        revenue_estimate=_number(payload.get("revenueEst")),
+        whisper=_sentinel_free(payload.get("whisper"), _NO_VALUE),
+        next_report_date=_day(payload.get("nextEPSDate")),
+        confirmed_at=_announced_at(payload.get("confirmDate")),
+        quarter_end=_day(payload.get("quarterDate")))
+
+
 def _percent(ratio: Any) -> Optional[float]:
     """The feed's surprise ratio (0.0503) as a percentage (5.03)."""
     number = _number(ratio)
@@ -643,7 +715,8 @@ class WhispersSource:
     def available(self) -> bool:
         return True
 
-    def _fetch(self, symbol: str) -> httpx.Response:
+    def _fetch(self, symbol: str, path: str = "epsdetails",
+               referer: str = "epsdetails") -> httpx.Response:
         """One GET, retried while reading again could plausibly help.
 
         Only 5xx and connection errors are retried. A 4xx is the site telling
@@ -658,9 +731,9 @@ class WhispersSource:
         holding for — nothing came back at all, so nothing was learned about
         the company.
         """
-        url = f"{_BASE}/api/epsdetails/{symbol}"
+        url = f"{_BASE}/api/{path}/{symbol}"
         headers = {"User-Agent": _BROWSER_UA,
-                   "Referer": f"{_BASE}/epsdetails/{symbol}",
+                   "Referer": f"{_BASE}/{referer}/{symbol}",
                    "Accept": "application/json"}
         attempts = max(self._server_error_retries,
                        self._connection_retries) + 1
@@ -682,15 +755,14 @@ class WhispersSource:
             f"{symbol}: the earnings feed {last} on {attempt + 1} attempts",
             transient=transient)
 
-    def details(self, ticker: str) -> Optional[WhispersRecord]:
-        """This company's most recent print, or None when it has no record.
+    def _body(self, symbol: str, path: str, referer: str) -> Optional[Any]:
+        """The decoded JSON, or None for the feed's own "nothing here" (204).
 
-        None is reserved for the feed's own "nothing here" (204). Every other
-        way this can go wrong raises, because downstream a None is read as a
-        fact about the company rather than about the connection.
+        None is reserved for that one answer. Every other way this can go
+        wrong raises, because downstream a None is read as a fact about the
+        company rather than about the connection.
         """
-        symbol = ticker.strip().upper()
-        resp = self._fetch(symbol)
+        resp = self._fetch(symbol, path, referer)
         if resp.status_code == httpx.codes.NO_CONTENT or not resp.content:
             return None
         if resp.status_code >= 400:
@@ -698,10 +770,24 @@ class WhispersSource:
                 f"{symbol}: the earnings feed answered "
                 f"{resp.status_code}")
         try:
-            body = resp.json()
+            return resp.json()
         except ValueError as exc:
             raise WhispersUnavailable(
                 f"{symbol}: the earnings feed answered "
                 f"{resp.headers.get('content-type', 'an unknown type')} "
                 f"instead of JSON") from exc
+
+    def forecast(self, ticker: str) -> Optional[WhispersForecast]:
+        """What analysts expect of this company's NEXT print, or None when the
+        feed has no row for it. This is the pre-registration source."""
+        symbol = ticker.strip().upper()
+        body = self._body(symbol, "getstocksdata", "stocks")
+        return None if body is None else parse_stocksdata(body)
+
+    def details(self, ticker: str) -> Optional[WhispersRecord]:
+        """This company's most recent print, or None when it has no record."""
+        symbol = ticker.strip().upper()
+        body = self._body(symbol, "epsdetails", "epsdetails")
+        if body is None:
+            return None
         return parse_details(body)

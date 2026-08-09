@@ -1,10 +1,15 @@
 """Pre-registering the consensus before the print (§5.3 決定4 / §6.1(D)).
 
 The point of capturing early is that after the release there is no second
-source for consensus anywhere — Yahoo's earnings history carries no revenue
-line and EDGAR holds no estimates — so a snapshot not taken before the print
-can never be reconstructed with the same standing. Everything here is
-offline: the calendar rows and the Yahoo frames are injected.
+source for consensus anywhere — the earnings feed's after-the-print endpoint
+states what was expected of the quarter that just reported only while it is
+the latest one, and EDGAR holds no estimates at all — so a snapshot not taken
+before the print can never be reconstructed with the same standing.
+
+The source is the earnings feed's forward endpoint (`WhispersSource.forecast`,
+see test_whispers_forward). It replaced Yahoo on 2026-08-09 so that a print's
+consensus and its actual come from one vendor. Everything here is offline: the
+calendar rows and the feed's answers are injected.
 """
 from __future__ import annotations
 
@@ -12,8 +17,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from hawkeye.contracts.stocks import SnapshotKind, Stock
 from hawkeye.ledger.stocks import StockStore
-from hawkeye.marketdata.consensus import ConsensusReading, YahooConsensusSource
 from hawkeye.marketdata.edgar import EdgarDirectory
+from hawkeye.marketdata.whispers import WhispersForecast, WhispersUnavailable
 from hawkeye.scout.prereg import (
     UpcomingPrint,
     capture_consensus,
@@ -45,25 +50,28 @@ def calendar_rows() -> list[dict]:
 
 
 class StubConsensus:
-    """A consensus source that answers from a dict, and fails for others the
-    way yfinance does — by returning nothing at all."""
+    """The forward endpoint, answering from a dict. A ticker it has no entry
+    for comes back as None, which is the feed's own "no row for this
+    company"; a stored exception is raised, which is how the live reader
+    reports that it could not read the feed at all."""
 
-    def __init__(self, readings: dict[str, ConsensusReading]):
+    def __init__(self, readings: dict):
         self.readings = readings
         self.asked: list[str] = []
 
-    def consensus(self, ticker: str):
+    def forecast(self, ticker: str):
         self.asked.append(ticker)
-        return self.readings.get(ticker)
+        answer = self.readings.get(ticker)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
 
-def reading(**overrides) -> ConsensusReading:
-    base = dict(eps_avg=1.83, eps_low=1.55, eps_high=2.10, eps_analysts=42,
-                revenue_avg=1.62e11, revenue_low=1.55e11, revenue_high=1.7e11,
-                revenue_analysts=38, next_quarter_eps_avg=2.05,
-                next_quarter_revenue_avg=1.7e11)
+def reading(**overrides) -> WhispersForecast:
+    base = dict(ticker="AMZN", eps_estimate=1.83, revenue_estimate=1.62e11,
+                whisper=1.95, next_report_date=date(2026, 8, 3))
     base.update(overrides)
-    return ConsensusReading(**base)
+    return WhispersForecast(**base)
 
 
 # --- which names are in the window ----------------------------------------
@@ -207,7 +215,8 @@ def test_capture_records_both_sources_and_marks_them_pre_registered(tmp_path):
     store = make_store(tmp_path)
     prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),
                              business_days=2)
-    source = StubConsensus({"AMZN": reading(), "BIIB": reading(eps_avg=3.98)})
+    source = StubConsensus({"AMZN": reading(),
+                            "BIIB": reading(eps_estimate=3.98)})
 
     report = capture_consensus(store, prints, source,
                                captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
@@ -216,11 +225,46 @@ def test_capture_records_both_sources_and_marks_them_pre_registered(tmp_path):
     stock_id = store.stock_by_ticker("AMZN").id
     snapshot = store.consensus_in_force(stock_id, "2026-Q2")
     assert snapshot.kind is SnapshotKind.PRE_REGISTERED
-    assert snapshot.eps_avg == 1.83 and snapshot.eps_analysts == 42
+    assert snapshot.eps_avg == 1.83 and snapshot.revenue_avg == 1.62e11
     assert snapshot.eps_calendar == 1.83          # the calendar's point estimate
     assert snapshot.revenue_calendar == 1.62e11
-    assert snapshot.next_quarter_eps_avg == 2.05  # the guidance yardstick
+    assert snapshot.source_note == "whispers+finnhub"
     assert snapshot.expected_report_date == date(2026, 8, 3)
+
+
+def test_a_pre_registered_row_carries_no_guidance_yardstick(tmp_path):
+    """It cannot. The forward endpoint states the consensus for the print
+    about to happen and nothing beyond it, so the bar for the guidance that
+    print will GIVE does not exist yet. It is read afterwards, out of the
+    summary the print itself carries (see test_scout_quality_wiring)."""
+    store = make_store(tmp_path)
+    prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),
+                             business_days=2)
+
+    capture_consensus(store, prints, StubConsensus({"AMZN": reading()}),
+                      captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
+
+    stock_id = store.stock_by_ticker("AMZN").id
+    snapshot = store.consensus_in_force(stock_id, "2026-Q2")
+    assert snapshot.next_quarter_eps_avg is None
+    assert snapshot.full_year_eps_avg is None
+
+
+def test_the_analyst_count_and_range_are_gone_and_the_row_says_so(tmp_path):
+    """The forward endpoint publishes neither. Both were already decided not
+    to be used, and leaving the columns blank is what keeps "we have no
+    distribution" from reading as "the estimate was a point" (invariant 6)."""
+    store = make_store(tmp_path)
+    prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),
+                             business_days=2)
+
+    capture_consensus(store, prints, StubConsensus({"AMZN": reading()}),
+                      captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
+
+    snapshot = store.consensus_in_force(
+        store.stock_by_ticker("AMZN").id, "2026-Q2")
+    assert snapshot.eps_analysts is None and snapshot.revenue_analysts is None
+    assert snapshot.eps_low is None and snapshot.eps_high is None
 
 
 def test_running_the_job_twice_the_same_day_writes_no_second_row(tmp_path):
@@ -243,9 +287,11 @@ def test_a_moved_estimate_is_captured_as_a_second_row(tmp_path):
     store = make_store(tmp_path)
     prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),
                              business_days=2)
-    capture_consensus(store, prints, StubConsensus({"BIIB": reading(eps_avg=3.98)}),
+    capture_consensus(store, prints,
+                      StubConsensus({"BIIB": reading(eps_estimate=3.98)}),
                       captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
-    capture_consensus(store, prints, StubConsensus({"BIIB": reading(eps_avg=2.15)}),
+    capture_consensus(store, prints,
+                      StubConsensus({"BIIB": reading(eps_estimate=2.15)}),
                       captured_at=datetime(2026, 8, 3, 9, tzinfo=JST))
 
     stock_id = store.stock_by_ticker("BIIB").id
@@ -253,11 +299,11 @@ def test_a_moved_estimate_is_captured_as_a_second_row(tmp_path):
         == [3.98, 2.15]
 
 
-def test_a_yahoo_failure_still_pre_registers_the_calendar_estimate(tmp_path):
+def test_a_feed_miss_still_pre_registers_the_calendar_estimate(tmp_path):
     """Degrading to one source is not the same as capturing nothing: the
     Finnhub point estimate is still a pre-registered number, and the absent
-    distribution is what makes the pair unverifiable later — so it has to be
-    visible in the row rather than inferred from silence."""
+    second reading is what makes the pair unverifiable later — so it has to
+    be visible in the row rather than inferred from silence."""
     store = make_store(tmp_path)
     prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),
                              business_days=2)
@@ -267,14 +313,39 @@ def test_a_yahoo_failure_still_pre_registers_the_calendar_estimate(tmp_path):
 
     stock_id = store.stock_by_ticker("AMZN").id
     snapshot = store.consensus_in_force(stock_id, "2026-Q2")
-    assert report.captured == 2 and report.yahoo_missing == 2
+    assert report.captured == 2 and report.consensus_missing == 2
     assert snapshot.eps_calendar == 1.83
-    assert snapshot.eps_avg is None and snapshot.eps_analysts is None
+    assert snapshot.eps_avg is None and snapshot.source_note == "finnhub_only"
+
+
+def test_a_feed_that_cannot_be_READ_is_counted_apart_from_a_missing_row(
+        tmp_path):
+    """Two different facts. "This company has no row" is about the company,
+    and the calendar's estimate stands in for it; "the feed could not be
+    reached" is about the connection, and a run where every name failed that
+    way has to look different from a quiet day (invariant 6). Yahoo could not
+    tell them apart — every failure came back as None."""
+    store = make_store(tmp_path)
+    prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),
+                             business_days=2)
+    source = StubConsensus({"AMZN": WhispersUnavailable("connection reset"),
+                            "BIIB": reading(eps_estimate=3.98)})
+
+    report = capture_consensus(store, prints, source,
+                               captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
+
+    assert report.consensus_unreachable == 1
+    assert report.consensus_missing == 0
+    # ...and the name it could not read still keeps its calendar estimate
+    snapshot = store.consensus_in_force(
+        store.stock_by_ticker("AMZN").id, "2026-Q2")
+    assert snapshot.eps_calendar == 1.83 and snapshot.eps_avg is None
 
 
 def test_a_capture_with_no_numbers_at_all_writes_nothing(tmp_path):
     """A live run covers ~560 names over two business days, and plenty of
-    them have neither a calendar estimate nor a Yahoo reading. An empty row
+    them have neither a calendar estimate nor a reading from the feed. An
+    empty row
     is not "the estimate did not move" — it is nothing at all, and writing
     one would make the master look covered where it is blank."""
     store = make_store(tmp_path)
@@ -303,7 +374,8 @@ def test_capture_stops_once_that_quarters_print_is_recorded(tmp_path):
         stock_id=stock_id, fiscal_quarter="2026-Q2",
         report_date=date(2026, 8, 3), source=PrintSource.WHISPERS))
 
-    report = capture_consensus(store, prints, StubConsensus({"AMZN": reading()}),
+    report = capture_consensus(store, prints,
+                               StubConsensus({"AMZN": reading()}),
                                captured_at=datetime(2026, 8, 3, 22, tzinfo=JST))
 
     assert report.skipped_already_reported == 1
@@ -326,70 +398,6 @@ def test_a_known_cik_keys_the_row_and_an_unknown_one_stays_provisional(tmp_path)
 
 
 # --- the adapters ---------------------------------------------------------
-
-class StubTicker:
-    """Shaped like yfinance's Ticker: frames keyed by period label."""
-
-    def __init__(self, symbol: str):
-        self.symbol = symbol
-
-    @property
-    def earnings_estimate(self):
-        return {"0q": {"avg": 1.83, "low": 1.55, "high": 2.10,
-                       "numberOfAnalysts": 42},
-                "+1q": {"avg": 2.05, "low": 1.9, "high": 2.3,
-                        "numberOfAnalysts": 40}}
-
-    @property
-    def revenue_estimate(self):
-        return {"0q": {"avg": 1.62e11, "low": 1.55e11, "high": 1.7e11,
-                       "numberOfAnalysts": 38},
-                "+1q": {"avg": 1.7e11, "low": 1.6e11, "high": 1.8e11,
-                        "numberOfAnalysts": 36}}
-
-
-def test_the_yahoo_source_reads_this_quarter_and_the_next():
-    got = YahooConsensusSource(ticker_factory=StubTicker).consensus("AMZN")
-
-    assert got.eps_avg == 1.83 and got.eps_analysts == 42
-    assert got.revenue_avg == 1.62e11 and got.revenue_analysts == 38
-    assert got.next_quarter_eps_avg == 2.05
-    assert got.next_quarter_revenue_avg == 1.7e11
-
-
-def test_a_reading_taken_after_the_print_is_one_quarter_out():
-    """Measured on AMZN, 2026-08-02, three days after its Q2 release: the
-    `0q` row read 1.956 while the Q2 consensus the print was judged against
-    was 1.83, and its YoY growth field said +0.3% where Q2 grew 242%. The
-    labels are relative to TODAY, not to the last print — so once a quarter
-    has reported, `0q` is the quarter now in progress.
-
-    Using it as "what was expected of the quarter just reported" silently
-    compares a result against the WRONG quarter's consensus. What it IS good
-    for is the guidance yardstick: the quarter now in progress is exactly the
-    one guidance covers."""
-    from hawkeye.marketdata.consensus import shift_after_print
-
-    shifted = shift_after_print(reading(eps_avg=1.956, revenue_avg=2.022e11,
-                                        next_quarter_eps_avg=2.435))
-
-    assert shifted.next_quarter_eps_avg == 1.956
-    assert shifted.next_quarter_revenue_avg == 2.022e11
-    # the reported quarter's own consensus is NOT in this response at all
-    assert shifted.eps_avg is None and shifted.revenue_avg is None
-    assert shifted.eps_analysts is None
-
-
-def test_the_yahoo_source_returns_nothing_when_the_scrape_breaks():
-    """yfinance scrapes a site that changes without notice. Every failure
-    degrades to None so the caller keeps one source and says so — missing
-    data is never a silent pass (invariant 6)."""
-    class Broken:
-        def __init__(self, symbol):
-            raise RuntimeError("scrape failed")
-
-    assert YahooConsensusSource(ticker_factory=Broken).consensus("AMZN") is None
-
 
 def test_the_edgar_directory_normalises_the_cik_and_is_fetched_once():
     calls = []

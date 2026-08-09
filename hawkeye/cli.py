@@ -470,12 +470,10 @@ def cmd_consensus_capture(args: argparse.Namespace) -> int:
         print("(--dry-run のため記録していません)")
         return 0
 
-    source = YahooConsensusSource()
-    if not source.available:
-        print("yfinance が無いため、アナリスト人数と予想レンジは取得できません"
-              "(Finnhubの点推定のみ事前登録します)", file=sys.stderr)
-    report = capture_consensus(store, targets,
-                               source if source.available else None,
+    # The same vendor that will later supply the actual. That is the point of
+    # it: a surprise ratio whose consensus and actual come from different
+    # vendors is arithmetic without a referent.
+    report = capture_consensus(store, targets, WhispersSource(),
                                directory=EdgarDirectory(),
                                today=today, config=config)
     print(report_line(report))

@@ -140,7 +140,7 @@ class FakeConsensus:
     def __init__(self):
         self.asked: list[str] = []
 
-    def consensus(self, ticker):
+    def forecast(self, ticker):
         self.asked.append(ticker)
         return None
 
