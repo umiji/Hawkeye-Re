@@ -38,6 +38,7 @@ from hawkeye.ledger.scoring import (
     classify_outcome,
     thesis_accuracy,
 )
+from hawkeye.ledger import purge
 from hawkeye.ledger.store import Ledger
 from hawkeye.marketdata.base import CalendarUnavailable
 from hawkeye.marketdata.finnhub import CompositeProvider, FinnhubProvider
@@ -583,6 +584,56 @@ def cmd_screened_list(args: argparse.Namespace) -> int:
         price = f"${r.price:.2f} ({r.price_asof})" if r.price is not None else "-"
         print(f"| {r.scan_id} | {r.ticker} | {stage_label.get(r.stage.value, r.stage.value)} "
               f"| {r.score} | {price} | {r.reject_reason} |")
+    return 0
+
+
+_PURGE_REASON_JA = {
+    purge.STILL_WAITING:
+        "まだ実績が届くのを待っている（決着していないので消せない）",
+    purge.TIMEOUT_IS_A_MEASUREMENT:
+        "実績が来なかったという実測そのもの（落選候補レビューの入力）",
+    purge.REFERENCED_BY_DROP_REVIEW:
+        "落選候補レビューがこの行を参照している（消すと判定の根拠が消える）",
+}
+
+
+def cmd_screened_purge(args: argparse.Namespace) -> int:
+    """Delete settled hold rows (task 6.5).
+
+    Previews by default. `--apply` is the only thing that deletes, and the
+    deletion is written into the hash-chained journal so the ledger can still
+    prove nothing was removed behind its back.
+    """
+    ledger = _ledger()
+    plan = purge.plan_purge(ledger.screened_candidates(),
+                            ledger.drop_reviews(),
+                            before=args.before, ticker=args.ticker)
+    print(f"# 保留レコードの削除 (対象 {len(plan.removable)}件 / "
+          f"残す {len(plan.protected)}件)\n")
+    if plan.removable:
+        print("## 削除できる行（決着済みの保留）\n")
+        print("| scan_id | 銘柄 | 決算日 | 記録日時 |")
+        print("|---|---|---|---|")
+        for c in plan.removable:
+            print(f"| {c.scan_id} | {c.ticker} | {c.event_date} "
+                  f"| {fmt_jst(c.recorded_at)} |")
+        print()
+    if plan.protected:
+        print("## 残す行と、その理由\n")
+        for candidate, reason in plan.protected:
+            print(f"- {candidate.ticker} ({candidate.event_date}): "
+                  f"{_PURGE_REASON_JA.get(reason, reason)}")
+        print()
+    if not args.apply:
+        print("※ これは下見です。実際には削除していません。"
+              "削除するには --apply を付けて再実行してください。")
+        return 0
+    if not plan.removable:
+        print("削除対象がないので、何もしませんでした。")
+        return 0
+    removed = ledger.purge_screened_candidates([c.id for c in plan.removable])
+    print(f"{removed}件を削除し、削除した事実を台帳の履歴に記録しました。")
+    print(f"改ざん検知の検証: {'OK' if ledger.verify_chain() else '失敗'}")
     return 0
 
 
@@ -1293,6 +1344,19 @@ def build_parser() -> argparse.ArgumentParser:
                      choices=[s.value for s in ScreenedCandidateStage],
                      default=None, help="restrict to one funnel stage")
     sdl.set_defaults(func=cmd_screened_list)
+    sdp = sd_sub.add_parser(
+        "purge",
+        help="delete SETTLED hold rows — the one-per-scan trail a print "
+             "leaves while its own figures have not arrived yet. Previews "
+             "unless --apply is given. Rows still waiting, rows that timed "
+             "out, and rows a drop review cites are never deleted.")
+    sdp.add_argument("--before", type=date.fromisoformat, default=None,
+                     help="only rows RECORDED before this date (YYYY-MM-DD)")
+    sdp.add_argument("--ticker", default=None,
+                     help="only this company")
+    sdp.add_argument("--apply", action="store_true",
+                     help="actually delete (default is a preview)")
+    sdp.set_defaults(func=cmd_screened_purge)
 
     dr = sub.add_parser("drops",
                         help="score the candidates the funnel dropped "

@@ -231,6 +231,18 @@ class Ledger:
         would pass unnoticed, since that column isn't chained to anything;
         only the journal event's `payload_hash` is protected by the chain.
         """
+        # A recorded purge restates what a scan's rows should now hash to, so
+        # the anchor event for that scan is checked against the LATEST such
+        # restatement rather than against the batch as first written. Read
+        # ahead in one pass: the purge event is chained like any other, so it
+        # cannot be forged, and a deletion with no purge event still fails.
+        purged: dict[Any, dict] = {}
+        for (payload,) in self._conn.execute(
+                "SELECT payload FROM journal WHERE kind ="
+                " 'screened_candidates_purged' ORDER BY seq"):
+            body = json.loads(payload)
+            purged[body.get("scan_id")] = body
+
         prev_hash = _GENESIS
         for seq, rec_id, ts, kind, payload, stored_prev, stored_hash in self._conn.execute(
                 "SELECT seq, rec_id, ts, kind, payload, prev_hash, hash"
@@ -249,6 +261,7 @@ class Ledger:
                     return False
             if kind == "screened_candidates_recorded":
                 body = json.loads(payload)
+                body = purged.get(body.get("scan_id"), body)
                 rows = self._conn.execute(
                     "SELECT payload FROM screened_candidates WHERE scan_id = ?",
                     (body.get("scan_id"),)).fetchall()
@@ -426,6 +439,66 @@ class Ledger:
         self.append_event(str(scan_id), "screened_candidates_recorded",
                           {"scan_id": scan_id, "count": len(candidates),
                            "batch_hash": _sha(batch_repr)})
+
+    def purge_screened_candidates(self, ids: list[str]) -> int:
+        """Delete held rows by id, recording the deletion in the journal.
+
+        `record_screened_candidates` anchors each scan's rows as one journal
+        event carrying a count and a hash of the payloads, so a row removed
+        behind the chain's back makes `verify_chain()` report tampering
+        forever. Journalling the removal is what keeps that check meaningful:
+        afterwards the chain no longer asserts "nothing was ever deleted" — it
+        asserts the stronger and still-true "nothing was deleted without this
+        ledger saying so, by whom, and which rows".
+
+        Refuses any row a drop-candidate review points at. The planner in
+        `hawkeye/ledger/purge.py` reports the same rule as advice; this is the
+        wall behind it, because a caller that skipped the planner would
+        otherwise leave a review pointing at nothing.
+        """
+        if not ids:
+            return 0
+        wanted = list(dict.fromkeys(ids))
+        placeholders = ",".join("?" * len(wanted))
+        referenced = [r[0] for r in self._conn.execute(
+            "SELECT DISTINCT screened_candidate_id FROM drop_reviews"
+            f" WHERE screened_candidate_id IN ({placeholders})",
+            wanted).fetchall()]
+        if referenced:
+            raise ValueError(
+                f"{len(referenced)} of these rows are cited by a drop review "
+                f"({', '.join(sorted(referenced)[:5])}) — deleting them would "
+                f"leave the review's verdict pointing at nothing")
+
+        rows = self._conn.execute(
+            f"SELECT id, scan_id FROM screened_candidates"
+            f" WHERE id IN ({placeholders})", wanted).fetchall()
+        by_scan: dict[int, list[str]] = {}
+        for row_id, scan_id in rows:
+            by_scan.setdefault(scan_id, []).append(row_id)
+        if not by_scan:
+            return 0
+
+        removed = 0
+        for scan_id, scan_ids in sorted(by_scan.items()):
+            marks = ",".join("?" * len(scan_ids))
+            self._conn.execute(
+                f"DELETE FROM screened_candidates WHERE id IN ({marks})",
+                scan_ids)
+            removed += len(scan_ids)
+            remaining = [r[0] for r in self._conn.execute(
+                "SELECT payload FROM screened_candidates WHERE scan_id = ?",
+                (scan_id,)).fetchall()]
+            self._conn.commit()
+            # The event carries the state the scan's rows are in AFTER the
+            # deletion, because that is what a later verification can actually
+            # recompute — the removed payloads are gone by then.
+            self.append_event(
+                str(scan_id), "screened_candidates_purged",
+                {"scan_id": scan_id, "removed_ids": sorted(scan_ids),
+                 "count": len(remaining),
+                 "batch_hash": _sha("\n".join(sorted(remaining)))})
+        return removed
 
     def screened_candidates(self, scan_id: Optional[int] = None,
                             stage: Optional[str] = None
