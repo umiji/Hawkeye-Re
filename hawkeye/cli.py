@@ -81,6 +81,11 @@ from hawkeye.reports.quality_ja import (
     render_stock_history_ja,
 )
 from hawkeye.scout.single import judge_ticker
+from hawkeye.scout.drift import (
+    DriftStatus,
+    measure_consensus_drift,
+)
+from hawkeye.scout.drift import report_line as report_drift_line
 from hawkeye.scout.prereg import (
     capture_consensus,
     capture_window,
@@ -478,6 +483,43 @@ def cmd_consensus_capture(args: argparse.Namespace) -> int:
                                today=today, config=config)
     print(report_line(report))
     warn_if_nothing_captured(report)
+    return 0
+
+
+def cmd_consensus_drift(args: argparse.Namespace) -> int:
+    """Compare each pre-registered consensus against what the feed says now.
+
+    A measurement, not a capture: nothing is written. It answers one question
+    — whether pre-registration still buys anything now that the feed states
+    the reported quarter's own consensus after the print — and the answer
+    decides whether ~600 requests a run keep being spent on it.
+
+    Run it AFTER the prints it covers have landed. Run it soon, too: the feed
+    keeps only a company's latest print, so a row becomes unmeasurable the
+    moment that company reports again.
+    """
+    store = _stock_store()
+    report = measure_consensus_drift(store, WhispersSource(),
+                                     today=date.today(), limit=args.limit)
+    for reading in report.readings:
+        if args.only_moved and reading.status is not DriftStatus.MOVED:
+            continue
+        gap = (f" ({reading.days_apart}日前に記録)"
+               if reading.days_apart is not None else "")
+        print(f"- {reading.ticker} {reading.fiscal_quarter} "
+              f"{reading.status.value}{gap}")
+        if reading.status in (DriftStatus.MOVED, DriftStatus.UNCHANGED):
+            print(f"    EPS 決算前 {reading.eps_before} → 決算後 "
+                  f"{reading.eps_after} "
+                  f"({_rounded(reading.eps_drift_pct)}%)")
+            print(f"    売上 決算前 {reading.revenue_before} → 決算後 "
+                  f"{reading.revenue_after} "
+                  f"({_rounded(reading.revenue_drift_pct)}%)")
+    print(report_drift_line(report))
+    if report.compared == 0:
+        print("(事前登録を一度も走らせていないか、対象の決算がまだ出ていません。"
+              "hawkeye consensus capture を決算の前日に走らせ、決算が出た"
+              "翌日にこのコマンドを実行してください)", file=sys.stderr)
     return 0
 
 
@@ -1217,6 +1259,16 @@ def build_parser() -> argparse.ArgumentParser:
     cnc.add_argument("--dry-run", action="store_true",
                      help="list the names without recording anything")
     cnc.set_defaults(func=cmd_consensus_capture)
+
+    cnd = cn_sub.add_parser(
+        "drift",
+        help="did the pre-registered consensus match what the feed says after "
+             "the print? (a measurement; writes nothing)")
+    cnd.add_argument("--limit", type=int, default=None,
+                     help="cap the number of names (each costs one request)")
+    cnd.add_argument("--only-moved", action="store_true",
+                     help="print only the names whose consensus changed")
+    cnd.set_defaults(func=cmd_consensus_drift)
 
     stk = sub.add_parser("stocks", help="the stock master (CIK-keyed)")
     stk_sub = stk.add_subparsers(dest="stocks_cmd", required=True)

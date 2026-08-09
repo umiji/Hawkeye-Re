@@ -342,6 +342,20 @@ class StockStore:
         instants = [_instant(r[0]) for r in rows]
         return max(instants) if instants else None
 
+    def pre_registered_snapshots(self) -> list[ConsensusSnapshot]:
+        """Every row captured BEFORE a print, oldest first.
+
+        Reconstructions are excluded here rather than by the caller: they were
+        written after a print, from the same response any after-the-fact check
+        would compare them against, so a check that included them would report
+        a perfect match that means nothing.
+        """
+        rows = [ConsensusSnapshot.model_validate_json(r[0])
+                for r in self._conn.execute(
+                    "SELECT payload FROM consensus_snapshots WHERE kind = ?",
+                    (SnapshotKind.PRE_REGISTERED.value,)).fetchall()]
+        return sorted(rows, key=lambda s: _instant(s.captured_at))
+
     def consensus(self, snapshot_id: str) -> Optional[ConsensusSnapshot]:
         row = self._conn.execute(
             "SELECT payload FROM consensus_snapshots WHERE id = ?",
