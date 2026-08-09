@@ -121,12 +121,40 @@ def test_sql_update_of_a_captured_consensus_is_refused(tmp_path):
         st._conn.execute("DELETE FROM consensus_snapshots")
 
 
+# Exactly one mutation verb is allowed on this store, and it is named here so
+# that adding a second is a deliberate edit to this list rather than a passing
+# test. `delete_superseded_prints` removes rows that have ALREADY been retired
+# by a revision — it cannot reach a row that stands, and the trigger it lifts
+# is restored in the same transaction. Task 8.5 asks for it because a quarter
+# that was corrected several times accumulates rows nobody can act on, and the
+# alternative — never offering the delete — was rejected on the grounds that
+# operators then reach for raw SQL, which no trigger survives.
+ALLOWED_MUTATION_VERBS = {"delete_superseded_prints"}
+
+
 def test_the_store_exposes_no_mutation_verb(tmp_path):
     forbidden = [name for name in dir(StockStore)
                  if not name.startswith("_")
+                 and name not in ALLOWED_MUTATION_VERBS
                  and any(verb in name for verb in
                          ("update", "delete", "overwrite", "set_"))]
     assert forbidden == []
+
+
+def test_the_one_allowed_delete_cannot_reach_a_row_that_stands(tmp_path):
+    """The carve-out above is only defensible if it is genuinely narrow: an
+    active row must survive the delete, and the append-only trigger must be
+    back in force the moment the call returns."""
+    st = store(tmp_path)
+    st.put_stock(make_stock())
+    st.record_print(EarningsPrint(
+        stock_id="cik:0001018724", ticker="AMZN", fiscal_quarter="2026-Q2",
+        report_date=date(2026, 7, 31), eps_actual=1.20))
+
+    assert st.delete_superseded_prints("cik:0001018724") == 0
+    assert len(st.prints("cik:0001018724")) == 1
+    with pytest.raises(sqlite3.DatabaseError):
+        st._conn.execute("DELETE FROM earnings_prints")
 
 
 # --- identity: CIK, never the ticker --------------------------------------

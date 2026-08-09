@@ -38,6 +38,7 @@ from hawkeye.ledger.scoring import (
     classify_outcome,
     thesis_accuracy,
 )
+from hawkeye.contracts.stocks import RowStatus
 from hawkeye.ledger import purge
 from hawkeye.ledger.store import Ledger
 from hawkeye.marketdata.base import CalendarUnavailable
@@ -566,6 +567,43 @@ def cmd_stocks_rebuild(args: argparse.Namespace) -> int:
     # the funnel happens to run.
     triaged = rebuild_triage(store)
     print(f"入口ゲートの記録から {triaged} 銘柄の調査対象判定を作り直しました")
+    return 0
+
+
+def cmd_stocks_prune_revisions(args: argparse.Namespace) -> int:
+    """Physically remove retired print rows (task 8.5, step 5).
+
+    Retiring is what a revision does on its own; this is the separate,
+    explicit step the design asks for, because the retired row is the only
+    record of the figure a past ranking was actually made on. Previews unless
+    `--apply` is given.
+    """
+    store = _stock_store()
+    retired = [(s, p) for s in store.stocks()
+               for p in store.prints(s.id)
+               if p.status is RowStatus.SUPERSEDED
+               and (args.ticker is None or s.ticker == args.ticker)]
+    if not retired:
+        print("訂正で古くなった決算行はありません。")
+        return 0
+    print(f"# 訂正で古くなった決算行 ({len(retired)}件)\n")
+    print("| 銘柄 | 四半期 | 決算日 | EPS実績 | 売上実績 |")
+    print("|---|---|---|---|---|")
+    for stock, row in retired:
+        eps = row.eps_actual if row.eps_actual is not None else \
+            row.eps_actual_rows_usable
+        print(f"| {stock.ticker} | {row.fiscal_quarter} | {row.report_date} "
+              f"| {'-' if eps is None else f'{eps:g}'} "
+              f"| {'-' if row.revenue_actual is None else f'{row.revenue_actual:,.0f}'} |")
+    print()
+    if not args.apply:
+        print("※ これは下見です。実際には削除していません。"
+              "これらを消すと「その時どの数値で順位を付けたか」が"
+              "たどれなくなります。削除するには --apply を付けてください。")
+        return 0
+    removed = sum(store.delete_superseded_prints(s.id)
+                  for s in {stock.id: stock for stock, _ in retired}.values())
+    print(f"{removed}件を削除しました。現行の行には触れていません。")
     return 0
 
 
@@ -1332,6 +1370,16 @@ def build_parser() -> argparse.ArgumentParser:
     stkr = stk_sub.add_parser(
         "rebuild", help="rebuild the review projection from the ledger")
     stkr.set_defaults(func=cmd_stocks_rebuild)
+    stkp = stk_sub.add_parser(
+        "prune-revisions",
+        help="delete print rows RETIRED by a correction. Previews unless "
+             "--apply. The row that stands is never touched — but the "
+             "retired one is the only record of the figure a past ranking "
+             "was made on, so this is deliberately a separate step.")
+    stkp.add_argument("--ticker", default=None, help="only this company")
+    stkp.add_argument("--apply", action="store_true",
+                      help="actually delete (default is a preview)")
+    stkp.set_defaults(func=cmd_stocks_prune_revisions)
 
     sd = sub.add_parser("screened",
                         help="review candidates the scout funnel dropped "

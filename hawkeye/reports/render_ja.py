@@ -245,6 +245,31 @@ def render_scout_ja(result) -> str:
                      f" {result.scan_start} より前の決算はスキャンしていません"
                      "(取りこぼしの可能性あり)。必要なら "
                      "`hawkeye scout --days N` で遡って実行してください。")
+    # 発表済みの決算の数値が、あとから提供元に書き換えられることがある。
+    # ADEA は 2026-08-05 発表の四半期で、EPSの実績値だけが翌日 $0.34 → $0.42
+    # (+24%)に変わった。順位表より前に出すのは、先にショートリストを読んで
+    # しまった読み手はもう訂正に反応しないため。台帳では古い行を残したまま
+    # 新しい行を足しており、順位はすでに訂正後の数値で付けてある。
+    revisions = getattr(result, "revisions", [])
+    if revisions:
+        lines.append("")
+        lines.append(f"## ⚠️ 実績値が訂正されました ({len(revisions)}件)")
+        lines.append("")
+        lines.append("| 銘柄 | 四半期 | 項目 | 更新前 | 更新後 | 変化 |")
+        lines.append("|---|---|---|---|---|---|")
+        label = {"eps_actual": "EPS実績", "revenue_actual": "売上実績"}
+        for r in revisions:
+            pct = (f"{r.change_pct:+.1f}%" if r.change_pct is not None
+                   else "-")
+            before = "-" if r.before is None else f"{r.before:g}"
+            after = "(取り下げ)" if r.after is None else f"{r.after:g}"
+            lines.append(f"| {r.ticker} | {r.fiscal_quarter} "
+                         f"| {label.get(r.field, r.field)} | {before} "
+                         f"| {after} | {pct} |")
+        lines.append("")
+        lines.append("下の順位は訂正後の数値で付けています。訂正前の行も台帳に"
+                     "残っているので、前回どの数値で順位を付けたかは後から"
+                     "確認できます。")
     lines.append("")
     if result.passed:
         lines.append("## 候補ショートリスト(スコア順)")

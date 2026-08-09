@@ -39,8 +39,17 @@ def test_earnings_calendar_raises_when_the_feed_times_out():
         p.earnings_calendar(date(2026, 7, 31), date(2026, 7, 31))
 
 
-def test_earnings_calendar_raises_without_an_api_key():
-    """No key is another way of not having looked."""
+def test_earnings_calendar_raises_without_an_api_key(monkeypatch):
+    """No key is another way of not having looked.
+
+    The environment is cleared explicitly: an empty `api_key` falls back to
+    `FINNHUB_API_KEY`, so this test used to assert "no key" only as long as
+    nothing earlier in the run had put one there. Any test that goes through
+    the CLI does — `main()` loads `.env.local` — so the assertion silently
+    depended on alphabetical test ordering, and broke the moment a CLI test
+    was added under a name sorting before this file (2026-08-09).
+    """
+    monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
     with pytest.raises(CalendarUnavailable):
         FinnhubProvider(api_key="").earnings_calendar(
             date(2026, 7, 31), date(2026, 7, 31))

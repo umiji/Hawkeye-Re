@@ -462,6 +462,46 @@ class StockStore:
             raise
         return new_id
 
+    def delete_superseded_prints(self, stock_id: str,
+                                 fiscal_quarter: Optional[str] = None) -> int:
+        """Physically remove RETIRED rows. Returns how many were removed.
+
+        Retiring is the default and this is the explicit extra step, because
+        the retired row is the only record of what a ranking was actually made
+        on: ADEA entered the shortlist on $0.34, and a table holding only the
+        corrected $0.42 reads as though that had been known all along.
+
+        The active row is never touched, at any level — the table's delete
+        trigger refuses every row, and it is lifted here only for the duration
+        of a statement whose WHERE clause names `superseded` explicitly. A
+        caller cannot widen that.
+        """
+        q = ("SELECT id FROM earnings_prints WHERE stock_id = ?"
+             " AND status = 'superseded'")
+        args: list[Any] = [stock_id]
+        if fiscal_quarter is not None:
+            q += " AND fiscal_quarter = ?"
+            args.append(fiscal_quarter)
+        ids = [r[0] for r in self._conn.execute(q, args).fetchall()]
+        if not ids:
+            return 0
+        marks = ",".join("?" * len(ids))
+        try:
+            self._conn.execute("DROP TRIGGER earnings_prints_no_delete")
+            self._conn.execute(
+                f"DELETE FROM earnings_prints WHERE status = 'superseded'"
+                f" AND id IN ({marks})", ids)
+        finally:
+            # Restored in the same transaction, so a failure mid-way cannot
+            # leave the table deletable.
+            self._conn.execute(
+                "CREATE TRIGGER IF NOT EXISTS earnings_prints_no_delete"
+                " BEFORE DELETE ON earnings_prints BEGIN"
+                " SELECT RAISE(ABORT, 'earnings_prints is append-only');"
+                " END")
+            self._conn.commit()
+        return len(ids)
+
     def print_row(self, print_id: str) -> Optional[EarningsPrint]:
         row = self._conn.execute(
             "SELECT payload FROM earnings_prints WHERE id = ?",

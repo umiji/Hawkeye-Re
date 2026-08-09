@@ -37,6 +37,7 @@ from hawkeye.scout.earnings import (
     screen_events,
 )
 from hawkeye.scout.prereg import resolve_stock
+from hawkeye.scout.revision import Revision, apply_revision, detect_revisions
 from hawkeye.scout.triage import is_investigation_target, triage_from_gates
 from hawkeye.scout.quality import (
     EarningsQuality,
@@ -114,6 +115,10 @@ class ScoutResult:
     # full. Means the shortlist is short because the budget ran out, not
     # because the calendar was quiet — the two must not read the same.
     enrichment_ceiling_hit: bool = False
+    # Figures a vendor restated after we had already recorded them (task 8.5).
+    # Reported ABOVE the shortlist, because a correction the reader meets after
+    # they have read the ranking is a correction they will not act on.
+    revisions: list[Revision] = field(default_factory=list)
 
     def funnel(self) -> dict:
         return {"scanned": self.scanned, "screened": self.screened,
@@ -278,7 +283,8 @@ def _quarter_context(store, directory, event) -> Optional[_QuarterContext]:
                            consensus_id=consensus.id, consensus=consensus)
 
 
-def _record_print(store, context: _QuarterContext) -> None:
+def _record_print(store, context: _QuarterContext, config=None,
+                  now=None) -> list[Revision]:
     """Record a quarter once, and never re-record it.
 
     Scan windows overlap by design, so the same print arrives again on the
@@ -286,10 +292,12 @@ def _record_print(store, context: _QuarterContext) -> None:
     repeat carries no new information anyway, so it is skipped here rather
     than allowed to raise.
 
-    A repeat with a DIFFERENT figure is a revision, not a repeat, and it does
-    not go through this path: the 48-hour re-fetch compares the two and asks
-    the user before anything is retired (task 8.5). Until that exists, a
-    corrected actual is simply not picked up by the scan.
+    A repeat with a DIFFERENT figure is a revision, not a repeat: the stored
+    row is retired, the corrected one appended, and what moved is returned so
+    the run can show the reader before they read the shortlist (task 8.5).
+    Only inside the watch window — see `hawkeye/scout/revision.py`.
+
+    Returns the revisions recorded, empty when nothing moved.
     """
     # An unlabelled print is not recorded at all. The active-row index is
     # (company, quarter), so a row with an empty quarter makes "" that
@@ -298,13 +306,20 @@ def _record_print(store, context: _QuarterContext) -> None:
     # Nothing can join an unlabelled row to its consensus anyway, which is
     # why pre-registration already refuses one (EW移行 §2).
     if not context.print_row.fiscal_quarter:
-        return
+        return []
+    row = context.print_row.model_copy(
+        update={"consensus_snapshot_id": context.consensus_id})
     existing = store.active_print(context.stock_id,
                                   context.print_row.fiscal_quarter)
-    if existing is not None:
-        return
-    store.record_print(context.print_row.model_copy(
-        update={"consensus_snapshot_id": context.consensus_id}))
+    if existing is None:
+        store.record_print(row)
+        return []
+    if config is None:
+        return []
+    revisions = detect_revisions(existing, row, config, now=now)
+    if revisions:
+        apply_revision(store, row)
+    return revisions
 
 
 def _record_cheap_history(store, directory, events,
@@ -500,6 +515,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     # rank among, the ceiling says when to stop paying for a bad day.
     passed: list[ScoutCandidate] = []
     rejected: list[ScoutCandidate] = []
+    revisions: list[Revision] = []
     attempted = 0
     stopped_at = len(screened)
 
@@ -524,7 +540,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                          else _catalyst_description(s)),
             event_date=event.day, source="scout/finnhub-earnings-calendar")
         if context is not None:
-            _record_print(stock_store, context)
+            revisions.extend(_record_print(stock_store, context, config))
         try:
             # Only trusted figures become structured snapshot fields: the
             # tribunal prompts tell both roles to prefer these over prose, so
@@ -620,7 +636,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                        held=held, duplicates=duplicates,
                        window_truncated=window.truncated,
                        numbers=numbers,
-                       enrichment_ceiling_hit=ceiling_hit)
+                       enrichment_ceiling_hit=ceiling_hit,
+                       revisions=revisions)
 
 
 def _visible_at_drop(c: ScoutCandidate) -> dict:
