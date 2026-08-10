@@ -748,6 +748,12 @@ def _measured(c: ScoutCandidate) -> dict:
             "numbers_reason": c.numbers_reason,
             "calendar_eps_surprise_pct": c.calendar_eps_surprise_pct,
             "score": c.score, "score_version": c.score_version,
+            # What earned the score. None when the funnel ran without a stock
+            # store, i.e. when the three-leg reading never happened — the
+            # score still exists, but nothing computed a derivation for it,
+            # and the report must say that rather than print five zeros.
+            "score_breakdown": (c.quality.breakdown if c.quality is not None
+                                else None),
             "price": c.price, "price_asof": c.price_asof}
 
 

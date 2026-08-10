@@ -270,6 +270,32 @@ def revenue_points(surprise: Optional[float]) -> float:
                -_REVENUE_POINT_CAP)
 
 
+def score_parts(eps_surprise: Optional[float],
+                revenue_surprise: Optional[float],
+                gap_on_event_pct: Optional[float]
+                ) -> tuple[float, float, float]:
+    """The same score as `score_candidate`, kept as (EPS, revenue, gap).
+
+    Split out so the report handed to the user can say WHICH of the three
+    earned the points. It is the one arithmetic, not a second copy of it —
+    `score_candidate` below is now the sum of exactly these parts, so a weight
+    that changes here cannot leave the displayed breakdown behind.
+    """
+    eps = eps_points(eps_surprise)
+    revenue = (revenue_points(revenue_surprise)
+               if revenue_surprise is not None and revenue_surprise > 0
+               else 0.0)
+    gap = 0.0
+    if gap_on_event_pct is not None:
+        if 2.0 <= gap_on_event_pct <= 15.0:
+            gap = 15.0
+        elif 0.0 <= gap_on_event_pct < 2.0:
+            gap = 5.0
+        elif gap_on_event_pct < 0.0 or gap_on_event_pct > 25.0:
+            gap = -10.0
+    return eps, revenue, gap
+
+
 def score_candidate(eps_surprise: Optional[float],
                     revenue_surprise: Optional[float],
                     gap_on_event_pct: Optional[float]) -> float:
@@ -284,17 +310,8 @@ def score_candidate(eps_surprise: Optional[float],
     components are capped, so a number that is merely enormous cannot buy a
     ranking slot away from a genuine one.
     """
-    score = eps_points(eps_surprise)
-    if revenue_surprise is not None and revenue_surprise > 0:
-        score += revenue_points(revenue_surprise)
-    if gap_on_event_pct is not None:
-        if 2.0 <= gap_on_event_pct <= 15.0:
-            score += 15.0
-        elif 0.0 <= gap_on_event_pct < 2.0:
-            score += 5.0
-        elif gap_on_event_pct < 0.0 or gap_on_event_pct > 25.0:
-            score -= 10.0
-    return round(score, 2)
+    return round(sum(score_parts(eps_surprise, revenue_surprise,
+                                 gap_on_event_pct)), 2)
 
 
 def _eps_trusted(event: EarningsEvent, min_abs_estimate: float) -> bool:

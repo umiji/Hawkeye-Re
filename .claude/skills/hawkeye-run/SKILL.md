@@ -105,21 +105,47 @@ extracting. `hawkeye guidance queue` already withholds it; do not add it.
 A refused reading is a normal outcome and is recorded by name. Do not
 retry it by rewording the request, and never write the JSON yourself.
 
-Only once the queue is empty:
+If scout passes zero candidates, report the funnel numbers honestly and
+stop: **no catalyst means no trade — do not go hunting for one.**
+
+### 2c. Show the user the scan report, and WAIT
+
+Only once the guidance queue is empty:
+
+```bash
+hawkeye report scan
+```
+
+It prints the report and always writes the full table to
+`var/reports/scan-<id>.csv` — tell the user that path, since the screen omits
+the names the earnings feed was never asked about and the file does not.
+
+**Paste its entire output into the conversation for the user to read**, then
+stop and ask whether to proceed. Do not summarise it, do not reorder it, and
+do not open a single case until the user has answered.
+
+This is the one point in the run where the user sees what the machine
+decided and can disagree before any argument is built on it: which names are
+about to be argued over, what earned each one its score, what else is being
+handed to the tribunal about them, and what could not be retrieved. The user
+runs `/hawkeye-run` and nothing else — a document they are not shown is a
+document that does not exist.
+
+If they say to continue, go to step 2d. If they name a different candidate or
+tell you to stop, do that instead.
+
+### 2d. Open one case per name the user approved
 
 ```bash
 hawkeye case open TICKER --from-earnings --nav <nav>
 ```
 for each of the top candidates the scan ranked.
-- If not set: tell the user scout needs a free Finnhub key, and ask them for
-  a ticker + catalyst instead, then:
+- If `FINNHUB_API_KEY` is not set: tell the user scout needs a free Finnhub
+  key, and ask them for a ticker + catalyst instead, then:
   ```bash
   hawkeye case open TICKER --catalyst <type> --description "<facts>" --event-date YYYY-MM-DD --nav <nav>
   ```
   (Manual candidates are recorded as a separate cohort — mention this.)
-
-If scout passes zero candidates, report the funnel numbers honestly and
-stop: **no catalyst means no trade — do not go hunting for one.**
 
 ### 3. Drive each case through the tribunal
 

@@ -389,6 +389,28 @@ class Ledger:
                     continue
         return out
 
+    def scan(self, scan_id: Optional[int] = None) -> Optional[dict]:
+        """One scan, newest by default, WITH its id.
+
+        `list_scans()` drops the id, which is the key every dropped candidate
+        of that run is filed under — so the scan report, which has to join the
+        two, cannot be built from it.
+        """
+        q = ("SELECT id, ts, params, scanned, screened, enriched, gate_passed,"
+             " tickers FROM scans")
+        args: list[Any] = []
+        if scan_id is None:
+            q += " ORDER BY id DESC LIMIT 1"
+        else:
+            q += " WHERE id = ?"
+            args.append(scan_id)
+        row = self._conn.execute(q, args).fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "ts": row[1], "params": json.loads(row[2]),
+                "scanned": row[3], "screened": row[4], "enriched": row[5],
+                "gate_passed": row[6], "tickers": json.loads(row[7])}
+
     def list_scans(self) -> list[dict]:
         return [
             {"ts": r[0], "params": json.loads(r[1]), "scanned": r[2],

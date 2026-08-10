@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from hawkeye.contracts.models import now
+from hawkeye.contracts.models import ScoreBreakdown, now
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     EarningsPrint,
@@ -49,7 +49,7 @@ from hawkeye.scout.earnings import (
     EarningsEvent,
     eps_points,
     revenue_points,
-    score_candidate,
+    score_parts,
 )
 
 
@@ -140,6 +140,11 @@ class EarningsQuality:
     guidance: LegVerdict
     verdict: QuarterVerdict
     score: float
+    # What earned `score`, part by part. Carried on the verdict because the
+    # scan report shows the ranking to the user and asks them to accept it,
+    # and a ranking term the reader cannot see is a ranking term they cannot
+    # argue with — the same reason `whisper_beat_pct` sits here.
+    breakdown: Optional[ScoreBreakdown] = None
     flags: tuple[str, ...] = field(default_factory=tuple)
     # The feed's unofficial expectation and how far the print cleared it, kept
     # on the verdict because they moved `score` above. A ranking term the
@@ -611,24 +616,35 @@ def assess_earnings(print_row: EarningsPrint,
 
     guidance = _guidance_leg(print_row, consensus)
 
-    score = score_candidate(eps.scored_pct, revenue.scored_pct,
-                            gap_on_event_pct)
+    eps_part, revenue_part, gap_part = score_parts(
+        eps.scored_pct, revenue.scored_pct, gap_on_event_pct)
+    score = round(eps_part + revenue_part + gap_part, 2)
     # A leg that MISSED subtracts. Only a miss does: unverified and absent
     # legs score zero, because "we could not check" must never read as "it
     # went badly" any more than it reads as "it went well" (invariant 6).
     if eps.status is LegStatus.MISS:
+        eps_part += eps_points(eps.surprise_pct)
         score += eps_points(eps.surprise_pct)
     if revenue.status is LegStatus.MISS:
+        revenue_part += revenue_points(revenue.surprise_pct)
         score += revenue_points(revenue.surprise_pct)
     # The share of the guided legs that beat, so a company guiding both EPS
     # and sales and beating on one earns half of what beating on both earns.
     # A leg that came in BELOW subtracts nothing, same as before: "no
     # guidance" and "weak guidance" must not collapse into one number
     # (§5.3 決定3).
-    score += config.guidance_beat_score * guidance.beat_fraction
+    guidance_part = config.guidance_beat_score * guidance.beat_fraction
+    score += guidance_part
     whisper_beat = whisper_beat_pct(print_row, consensus, eps)
-    score += whisper_points(whisper_beat, config)
+    whisper_part = whisper_points(whisper_beat, config)
+    score += whisper_part
     score = round(score, 2)
+    # Rounded to the same two places the score is, so the five parts a reader
+    # adds up on screen come to the total printed beside them.
+    breakdown = ScoreBreakdown(
+        eps=round(eps_part, 2), revenue=round(revenue_part, 2),
+        gap=round(gap_part, 2), guidance=round(guidance_part, 2),
+        whisper=round(whisper_part, 2))
 
     flags = list(dict.fromkeys(
         list(eps.flags) + [f"revenue_{f}" for f in revenue.flags]))
@@ -636,7 +652,7 @@ def assess_earnings(print_row: EarningsPrint,
         ticker=print_row.ticker, fiscal_quarter=print_row.fiscal_quarter,
         eps=eps, revenue=revenue, guidance=guidance,
         verdict=_verdict(eps, revenue, guidance), score=score,
-        flags=tuple(flags),
+        breakdown=breakdown, flags=tuple(flags),
         whisper=(consensus.eps_whisper if consensus and whisper_beat is not None
                  else None),
         whisper_beat_pct=(round(whisper_beat, 4)

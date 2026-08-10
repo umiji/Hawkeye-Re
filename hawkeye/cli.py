@@ -21,7 +21,7 @@ import sys
 from datetime import date
 
 from hawkeye.config import HawkeyeConfig
-from hawkeye.paths import db_path
+from hawkeye.paths import db_path, reports_dir
 from hawkeye.envfile import load_local_env
 from hawkeye.contracts.models import (
     Catalyst,
@@ -47,6 +47,10 @@ from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
 from hawkeye.marketdata.whispers import WhispersSource
 from hawkeye.reports.monitor_ja import inspection_csv
+from hawkeye.reports.scan_report_ja import (
+    render_scan_report_ja,
+    scan_report_csv,
+)
 from hawkeye.reports.render_ja import (
     fmt_jst,
     render_drop_cycle_ja,
@@ -738,6 +742,36 @@ def cmd_screened_list(args: argparse.Namespace) -> int:
         price = f"${r.price:.2f} ({r.price_asof})" if r.price is not None else "-"
         print(f"| {r.scan_id} | {r.ticker} | {stage_label.get(r.stage.value, r.stage.value)} "
               f"| {r.score} | {price} | {r.reject_reason} |")
+    return 0
+
+
+def cmd_report_scan(args: argparse.Namespace) -> int:
+    """The scan report the USER reads, before any case is opened (task 9).
+
+    Built from the ledger rather than printed by the scan itself, because the
+    moment it is needed is later: `/hawkeye-run` reads the company outlooks
+    after the scan, and the user is asked to approve the shortlist after that.
+    """
+    ledger = _ledger()
+    scan = ledger.scan(args.scan_id)
+    if scan is None:
+        print("走査の記録がありません" if args.scan_id is None else
+              f"走査番号 {args.scan_id} の記録がありません", file=sys.stderr)
+        return 1
+    rows = ledger.screened_candidates(scan_id=scan["id"])
+    print(render_scan_report_ja(scan, rows, top_n=args.top))
+    # Always written, not only on request: the screen omits the names nobody
+    # asked the feed about, so the file is the only complete record of a scan
+    # the user can open. A flag they have to remember is a file that is
+    # missing on the day it matters.
+    path = (pathlib.Path(args.csv) if args.csv
+            else reports_dir() / f"scan-{scan['id']}.csv")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A BOM, for the same reason the check sheet carries one: Excel on
+    # Japanese Windows reads a plain UTF-8 CSV as cp932 and turns every header
+    # into mojibake.
+    path.write_text(scan_report_csv(rows), encoding="utf-8-sig")
+    print(f"\n全銘柄の表をCSVに保存しました: {path} ({len(rows)}行)")
     return 0
 
 
@@ -1464,6 +1498,21 @@ def build_parser() -> argparse.ArgumentParser:
     gds.add_argument("--reader", default=None,
                      help="which model read it (recorded on the row)")
     gds.set_defaults(func=cmd_guidance_submit)
+
+    rep = sub.add_parser("report",
+                         help="reports written for the user to read")
+    rep_sub = rep.add_subparsers(dest="report_command", required=True)
+    rps = rep_sub.add_parser(
+        "scan", help="one scan, for the user: the shortlist, what earned each "
+                     "score, and what happened to every other name")
+    rps.add_argument("--scan-id", type=int, default=None,
+                     help="which scan (default: the most recent one)")
+    rps.add_argument("--top", type=int, default=3,
+                     help="how many names the tribunal will take (default 3)")
+    rps.add_argument("--csv", default=None,
+                     help="where to write the all-names CSV "
+                          "(default: var/reports/scan-<id>.csv)")
+    rps.set_defaults(func=cmd_report_scan)
 
     sd = sub.add_parser("screened",
                         help="review candidates the scout funnel dropped "

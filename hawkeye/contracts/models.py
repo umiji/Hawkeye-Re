@@ -211,6 +211,30 @@ class ScreenedCandidateStage(str, Enum):
     RANKING_CUTOFF = "ranking_cutoff"    # gate-passed, but outside this run's tribunal slot count
 
 
+class ScoreBreakdown(BaseModel):
+    """The ranking score split into the five things that can earn it.
+
+    Stored because the user is shown the ranking and asked to accept it: a
+    number with no derivation is a number they can only take on trust. The
+    parts are the arithmetic itself (hawkeye/scout/earnings.py `score_parts`
+    plus the guidance and whisper terms in `assess_earnings`), not a
+    reconstruction — a reconstruction would drift from the real formula the
+    first time a weight changed.
+
+    News, insider activity and analyst revisions are deliberately absent:
+    they are handed to the tribunal as material and score nothing.
+    """
+    eps: float = 0.0
+    revenue: float = 0.0
+    gap: float = 0.0        # the event-day price move
+    guidance: float = 0.0
+    whisper: float = 0.0
+
+    @property
+    def total(self) -> float:
+        return self.eps + self.revenue + self.gap + self.guidance + self.whisper
+
+
 class ScreenedCandidate(BaseModel):
     id: str = Field(default_factory=lambda: new_id("scr"))
     recorded_at: datetime = Field(default_factory=now)
@@ -245,6 +269,12 @@ class ScreenedCandidate(BaseModel):
     calendar_eps_surprise_pct: Optional[float] = None
     score: float
     score_version: str            # "full" (gap-aware) or "partial_no_gap"
+    # What earned `score`, when the three-leg reading produced it. None means
+    # the row predates this field or the funnel ran without a stock store —
+    # in both cases the score exists but its derivation was never written
+    # down, and the report says so rather than printing five zeros
+    # (invariant 1: old records must still load unchanged).
+    score_breakdown: Optional[ScoreBreakdown] = None
     price: Optional[float] = None
     price_asof: Optional[date] = None
     stage: ScreenedCandidateStage
