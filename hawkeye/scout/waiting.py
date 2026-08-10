@@ -57,7 +57,7 @@ _WORTH_WAITING_FOR = frozenset({
     # Nothing came back at all, so nothing was learned about the company.
     # NOT the same as a server error: `whispers_server_error` reproduces on
     # every attempt for the same ticker (INOD/UMAC/GAIN, measured 2026-08-08),
-    # so holding those buys the identical refusal every scan for 48 hours and
+    # so holding those buys the identical refusal on every scan until it
     # then times out anyway. They fall back to the calendar.
     "whispers_unreachable",
     # The feed answered without an announcement time, so whether it is even

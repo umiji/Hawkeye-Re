@@ -132,7 +132,7 @@ def _read_one(source: WhispersReader,
         # Two different facts wearing one exception. A connection that failed
         # says nothing about the company and is worth waiting on; a server
         # error the same ticker reproduces every time is the feed refusing
-        # this name, and waiting buys the same refusal for 48 hours.
+        # this name, and waiting buys the same refusal until the wait runs out.
         return None, ("whispers_unreachable" if getattr(exc, "transient", True)
                       else "whispers_server_error")
     if record is None:

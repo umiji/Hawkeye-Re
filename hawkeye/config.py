@@ -93,23 +93,38 @@ class HawkeyeConfig:
     # from. Measured at 184 req/min with no throttling, 50 costs ~16s.
     scout_max_whispers: int = 50
     # How long a print whose numbers have not arrived is held open before it
-    # is given up on, measured from the ANNOUNCEMENT (hawkeye/scout/
+    # is given up on, measured from the calendar's REPORT DATE (hawkeye/scout/
     # waiting.py). The feed publishes a company's new quarter roughly a day
     # late — 16 of 16 names that reported on the morning of 2026-08-05 still
     # answered with their May quarter — so a print read once and dropped would
-    # discard exactly what the funnel is looking for. Two days covers that lag
-    # twice over while still ending the wait for data that is never coming.
-    earnings_actual_wait_hours: int = 48
+    # discard exactly what the funnel is looking for.
+    #
+    # 96, not 48, since 2026-08-10. The wait is counted in CALENDAR hours and
+    # the market runs on TRADING days, and at a weekend the two disagree by
+    # enough to close the window before it opens: a print released after
+    # Friday's close is first scanned on Monday, already 72 hours old, and was
+    # given up on before the feed had one business day to answer. 48 hours was
+    # therefore not a two-day rule — it was a two-day rule from Tuesday to
+    # Friday and a zero-day rule on Monday. 96 covers Friday -> Tuesday, which
+    # is the widest real gap, while still ending the wait for data that is
+    # never coming.
+    earnings_actual_wait_hours: int = 96
     # How long after a print its figures are still watched for a CORRECTION
     # (task 8.5). A different rule from the wait above, which bounds how long
     # a print with no figures at all is held: this one bounds how long a print
     # that already reported can have its numbers restated under us. ADEA's
     # 2026-Q2 EPS moved $0.34 -> $0.42 the day after it announced, so the
-    # window has to cover at least the following session; beyond a couple of
-    # days a restatement is a different question, and reopening a quarter the
-    # ledger has finished with on a scan nobody ran for that purpose is the
-    # failure this bound exists to prevent.
-    actual_revision_watch_hours: int = 48
+    # window has to cover at least the following session; far beyond that a
+    # restatement is a different question, and reopening a quarter the ledger
+    # has finished with on a scan nobody ran for that purpose is the failure
+    # this bound exists to prevent.
+    #
+    # 96 for the same weekend reason as the wait above (2026-08-10): a Friday
+    # print corrected over the weekend was invisible to Monday's scan at 48.
+    # Kept as its own number rather than folded into that one — they bound
+    # different things, and a change to how long we WAIT for a missing figure
+    # should not silently change how long a PUBLISHED figure stays revisable.
+    actual_revision_watch_hours: int = 96
     # Guidance is a small bonus and never a penalty: absence is the normal
     # case, has no structured source, and must not become a hidden gate
     # (§5.3 決定3). Deliberately far below the EPS/revenue contributions.

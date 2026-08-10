@@ -44,7 +44,7 @@ _BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
 # The feed's timestamps are US Eastern wall-clock without an offset. Attaching
-# it here is what makes "48 hours since the announcement" a real duration
+# it here is what makes "N hours since the announcement" a real duration
 # rather than eight hours of guesswork between a pre-market and an after-close
 # print.
 EASTERN = ZoneInfo("America/New_York")
@@ -92,7 +92,7 @@ class WhispersUnavailable(RuntimeError):
     holding the print for; a server error the same ticker reproduces on every
     attempt is not — measured 2026-08-08, INOD/UMAC/GAIN return the same error
     page every time, so holding them means paying for the same refusal every
-    scan for 48 hours and then giving up anyway. Those fall back to the
+    scan for the whole wait and then giving up anyway. Those fall back to the
     calendar's figures, like any other decline the feed cannot recover from.
     """
 

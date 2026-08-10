@@ -205,7 +205,8 @@ def render_scout_ja(result) -> str:
                  f"ゲート通過 {f['gate_passed']}件")
     # 「見送った」と「まだ判定していない」を混同させない。保留は会社についての
     # 判断ではなく、こちらのデータがまだ揃っていないという事実で、次回の走査で
-    # 読み直す。48時間を過ぎた分は打ち切って落選記録に残す。
+    # 読み直す。待機期限を過ぎた分は打ち切って落選記録に残す。期限の時間数は
+    # 設定値なので、ここに数字を書くと設定を変えた日から嘘になる。
     held = getattr(result, "held", [])
     if held:
         timed_out = [c for c in held if c.held_expired]
@@ -213,7 +214,8 @@ def render_scout_ja(result) -> str:
                 f"(これは会社への判断ではなく、決算の数値がまだ届いていない"
                 f"という事実です)")
         if timed_out:
-            line += (f"。うち {len(timed_out)}件 は待機期限(48時間)を過ぎたため"
+            line += (f"。うち {len(timed_out)}件 は待機期限"
+                     f"(`earnings_actual_wait_hours`)を過ぎたため"
                      f"打ち切りました: "
                      f"{'、'.join(c.ticker for c in timed_out[:8])}")
         lines.append(line)

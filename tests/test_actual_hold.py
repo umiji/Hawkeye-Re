@@ -49,29 +49,6 @@ class FakeCalendar:
         return self.entries
 
 
-def a_run_day(today: date) -> date:
-    """A day to pretend the scan runs on, such that "one trading day ago" is
-    ALSO within the 48-hour hold window.
-
-    The two clocks in play disagree at a weekend and the tests sat on the
-    disagreement. The freshness gate counts TRADING days, so an event has to be
-    dated on a weekday; the hold counts CALENDAR hours from the report date.
-    Run on a Monday, one trading day back is Friday — 72 hours — and every
-    "still waiting" case times out instead. Found on Monday 2026-08-10, the day
-    after the weekend fix that introduced `a_business_day_ago`.
-
-    Stepping the pretend run day back to Friday makes both clocks agree on
-    every real weekday, so these tests no longer pass or fail by what day it
-    happens to be.
-
-    NOTE this is a test fixture, not a workaround for a production bug that has
-    been fixed: a print released after Friday's close and first scanned on
-    Monday really is 72 hours old, and really is given up on before the feed —
-    which publishes about a day late — has had a business day to answer.
-    """
-    return today - timedelta(days={0: 3, 5: 1, 6: 2}.get(today.weekday(), 0))
-
-
 def a_business_day_ago(days: int, today: date) -> date:
     """`days` trading days before `today`.
 
@@ -202,7 +179,7 @@ def _feed(day: date) -> FakeWhispers:
 def test_a_held_print_is_not_enriched_ranked_or_recorded(tmp_path):
     from hawkeye.ledger.stocks import StockStore
 
-    today = a_run_day(date.today())
+    today = date.today()
     day = a_business_day_ago(1, today)
     store = StockStore(str(tmp_path / "hawkeye.db"))
 
@@ -220,7 +197,7 @@ def test_a_held_print_is_not_enriched_ranked_or_recorded(tmp_path):
 
 
 def test_a_held_print_is_recorded_as_pending_not_as_a_rejection(tmp_path):
-    today = a_run_day(date.today())
+    today = date.today()
     day = a_business_day_ago(1, today)
 
     result = run_scout(FakeCalendar(_entries(day)), _provider(), CONFIG,
@@ -236,7 +213,7 @@ def test_a_held_print_is_recorded_as_pending_not_as_a_rejection(tmp_path):
 
 
 def test_a_held_print_past_the_window_is_given_up_on():
-    today = a_run_day(date.today())
+    today = date.today()
     day = a_business_day_ago(5, today)          # well past 48 hours
 
     result = run_scout(FakeCalendar(_entries(day)), _provider(), CONFIG,
@@ -248,7 +225,7 @@ def test_a_held_print_past_the_window_is_given_up_on():
 
 
 def test_an_unreachable_feed_holds_the_print_rather_than_ranking_it():
-    today = a_run_day(date.today())
+    today = date.today()
     day = a_business_day_ago(1, today)
     feed = FakeWhispers({"HELD": WhispersUnavailable("boom"),
                          "READY": make_whispers("READY", announced=day)})
@@ -266,7 +243,7 @@ def test_a_pending_print_is_read_again_on_the_next_scan(tmp_path):
     counted as "already seen" would close the door the hold exists to keep
     open — and the print would never be read again."""
     ledger = Ledger(str(tmp_path / "hawkeye.db"))
-    today = a_run_day(date.today())
+    today = date.today()
     day = a_business_day_ago(1, today)
 
     scan_id = ledger.record_scan(params={}, scanned=2, screened=2, enriched=1,
@@ -285,7 +262,7 @@ def test_a_pending_print_is_read_again_on_the_next_scan(tmp_path):
 
 def test_a_print_given_up_on_is_never_read_again(tmp_path):
     ledger = Ledger(str(tmp_path / "hawkeye.db"))
-    today = a_run_day(date.today())
+    today = date.today()
     day = a_business_day_ago(5, today)
 
     scan_id = ledger.record_scan(params={}, scanned=2, screened=2, enriched=1,
@@ -302,7 +279,7 @@ def test_the_hold_survives_being_switched_off_by_config():
     """A doctrine change is a config diff (invariant 7). At zero hours every
     held print is given up on immediately, which is the behaviour before this
     feature existed — minus the silent ranking on the calendar's numbers."""
-    today = a_run_day(date.today())
+    today = date.today()
     day = a_business_day_ago(1, today)
     off = dc_replace(CONFIG, earnings_actual_wait_hours=0)
 
