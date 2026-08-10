@@ -259,6 +259,13 @@ class GuidanceReading(BaseModel):
     revenue_low: Optional[float] = None
     revenue_high: Optional[float] = None
     source_excerpt: str = ""              # the sentence it was read from
+    # A condition the company attached to the range, in its own words —
+    # "excluding its barge business", "assuming no further acquisitions". It
+    # is quoted rather than interpreted, because interpreting it would mean
+    # deciding what a barge business is worth, and nothing here can. Its only
+    # effect is downstream: a conditioned range is not compared with a
+    # consensus set on different terms (§5.3, layer 3).
+    qualifier: str = ""
 
     @property
     def eps_midpoint(self) -> Optional[float]:

@@ -224,6 +224,16 @@ _OPEN_ENDED = re.compile(
     r"\b(more than|at least|in excess of|no less than|approximately \$[\d.]+ "
     r"to)\b", re.I)
 _NON_NUMERIC = re.compile(r"\b(breakeven|break-even|range from a loss)\b", re.I)
+# A condition the company attached to the range it just gave. Detected, quoted,
+# and never interpreted: what it does downstream is stop the comparison, not
+# adjust it (§5.3, layer 3). The list is deliberately of PHRASES the company
+# writes about its own scope, not of every hedging word in English — "expects"
+# and "approximately" qualify confidence, which is normal for guidance and
+# nothing to refuse over.
+_QUALIFIER = re.compile(
+    r"\b(?:excluding|excludes|exclusive of|before the impact of|net of|"
+    r"assuming|assumes|does not (?:include|assume)|"
+    r"(?:on a |in )?constant[- ]currency|adjusted to exclude)\b[^,.;]*", re.I)
 _ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4}
 _SCALE = {"million": 1_000_000.0, "billion": 1_000_000_000.0}
 
@@ -350,8 +360,11 @@ def read_guidance(record: "WhispersRecord") -> GuidanceReadout:
         if not numbers:
             reasons.append(why)
             continue
-        reading = GuidanceReading(period=period, source_excerpt=clause,
-                                  **numbers)
+        condition = _QUALIFIER.search(segment)
+        reading = GuidanceReading(
+            period=period, source_excerpt=clause,
+            qualifier=condition.group(0).strip() if condition else "",
+            **numbers)
         if period.startswith("FY"):
             annual = annual or reading
         else:

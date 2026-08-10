@@ -104,6 +104,12 @@ class LegVerdict:
     # `surprise_pct` above stays the primary reading so the existing display
     # and the existing scoring of the other two legs are unchanged.
     parts: tuple[tuple[str, float], ...] = ()
+    # Source text this verdict rests on or refuses on, quoted verbatim. NOT a
+    # sentence of ours — `flags` carries our reasoning and stays machine
+    # readable. Today only the guidance leg fills it, with the condition the
+    # company attached to a range (§5.3, layer 3): a refusal the reader cannot
+    # see the words behind is a refusal they cannot check.
+    excerpt: str = ""
 
     @property
     def scored_pct(self) -> Optional[float]:
@@ -285,6 +291,22 @@ def _guidance_leg(print_row: EarningsPrint,
     if guidance is None:
         return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
                           flags=("guidance_not_published",))
+    # A range the company fenced with a condition is not measured against a
+    # consensus set without one. ACA guided "2026 revenue of $2.60 to $2.70
+    # billion, EXCLUDING its barge business" while the analysts' figure for
+    # the same year was "$3.02 billion, WHICH INCLUDES its barge business" —
+    # the two describe different companies, and the -12% that falls out of
+    # dividing them is a miss ACA never guided.
+    #
+    # Fails CLOSED because the alternative needs a judgment nothing here can
+    # make: sizing the excluded business is exactly the estimate this system
+    # exists to avoid inventing. The condition is quoted so the reader can see
+    # what was declined, and it costs nothing either way (see below: an absent
+    # guidance leg is neither scored nor penalised).
+    if guidance.qualifier:
+        return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
+                          flags=("guidance_scope_qualified",),
+                          excerpt=guidance.qualifier)
     eps_bar, revenue_bar, refusal = _yardsticks(guidance.period, print_row,
                                                 consensus)
     if refusal:
@@ -377,6 +399,11 @@ def _leg_line_en(leg: LegVerdict) -> str:
         head += f", {leg.analysts} analysts"
     if leg.flags:
         head += f" [{', '.join(leg.flags)}]"
+    # The source's own words behind a refusal. The Adversary can only attack
+    # "guided above consensus on terms nobody reconciled" if it is told what
+    # those terms were.
+    if leg.excerpt:
+        head += f' — the company\'s own condition: "{leg.excerpt}"'
     return head
 
 

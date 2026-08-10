@@ -90,3 +90,36 @@ def test_the_headline_number_is_shown_next_to_the_analyst_count():
 
     assert "+194" in text or "+193" in text
     assert "アナリスト44人" in text
+
+
+def aca_like():
+    """ACA's real shape: guidance fenced with a condition the analysts' figure
+    for the same year does not share."""
+    from hawkeye.contracts.stocks import GuidanceReading
+    return assess_earnings(
+        EarningsPrint(stock_id="cik:0001739445", ticker="ACA",
+                      fiscal_quarter="2026-Q1",
+                      report_date=date(2026, 8, 1),
+                      source=PrintSource.WHISPERS, eps_actual=1.20,
+                      eps_actual_rows=[1.20], revenue_actual=6.5e8,
+                      guidance=GuidanceReading(
+                          period="FY2026", revenue_low=2.60e9,
+                          revenue_high=2.70e9,
+                          qualifier="excluding its barge business")),
+        ConsensusSnapshot(stock_id="cik:0001739445", ticker="ACA",
+                          fiscal_quarter="2026-Q1", eps_avg=1.00,
+                          eps_calendar=1.00, eps_analysts=9,
+                          revenue_avg=6.0e8, revenue_analysts=9,
+                          full_year_revenue_avg=3.02e9,
+                          full_year_period="FY2026"),
+        CONFIG)
+
+
+def test_a_refused_guidance_says_so_in_words_and_quotes_the_condition():
+    """The count of refused comparisons is what tells us whether this rule is
+    too blunt. A reader who cannot see the phrase cannot judge that."""
+    text = render_quality_ja(aca_like())
+
+    assert "条件" in text
+    assert "excluding its barge business" in text
+    assert "guidance_scope_qualified" not in text     # never a bare identifier

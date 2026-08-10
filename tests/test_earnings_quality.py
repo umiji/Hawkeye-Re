@@ -368,6 +368,88 @@ def test_an_unlabelled_full_year_yardstick_is_not_trusted():
     assert "no_full_year_consensus_to_compare" in quality.guidance.flags
 
 
+# --- guidance whose scope is not the consensus's scope ---------------------
+#
+# ACA is the measured case and the vendor spells the mismatch out in one
+# sentence: the company guided "2026 revenue of $2.60 billion to $2.70
+# billion, EXCLUDING its barge business", and the analysts' figure is "$3.02
+# billion ... WHICH INCLUDES its barge business". Nothing in this system can
+# add a barge business back, so the only honest reading is to refuse.
+
+def test_guidance_carrying_a_condition_is_not_compared_at_all():
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(
+                    period="FY2026", revenue_low=2.60e9, revenue_high=2.70e9,
+                    qualifier="excluding its barge business")),
+        a_consensus(full_year_revenue_avg=3.02e9, full_year_period="FY2026"),
+        CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "guidance_scope_qualified" in quality.guidance.flags
+    assert quality.guidance.surprise_pct is None
+
+
+def test_a_refused_guidance_quotes_the_condition_that_refused_it():
+    """A count of dropped comparisons nobody can read the reason for is a
+    count nobody can act on. The condition travels in the company's own
+    words."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(
+                    period="FY2026", revenue_low=2.60e9, revenue_high=2.70e9,
+                    qualifier="excluding its barge business")),
+        a_consensus(full_year_revenue_avg=3.02e9, full_year_period="FY2026"),
+        CONFIG)
+
+    assert quality.guidance.excerpt == "excluding its barge business"
+
+
+def test_a_refused_guidance_costs_no_points_and_no_penalty():
+    """Same rule as every other absence: a comparison we declined to make is
+    not the company having guided badly (§5.3 決定3)."""
+    plain = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                    revenue_actual=1.05e9)
+    consensus = a_consensus(full_year_revenue_avg=3.02e9,
+                            full_year_period="FY2026")
+    refused = plain.model_copy(update={"guidance": GuidanceReading(
+        period="FY2026", revenue_low=2.60e9, revenue_high=2.70e9,
+        qualifier="excluding its barge business")})
+
+    assert (assess_earnings(refused, consensus, CONFIG).score
+            == assess_earnings(plain, consensus, CONFIG).score)
+
+
+def test_an_unconditioned_guidance_is_still_compared():
+    """The refusal has to be narrow. Without the condition ACA's own numbers
+    are compared exactly as before."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="FY2026", revenue_low=2.60e9,
+                                         revenue_high=2.70e9)),
+        a_consensus(full_year_revenue_avg=3.02e9, full_year_period="FY2026"),
+        CONFIG)
+
+    assert quality.guidance.status is LegStatus.MISS
+    assert quality.guidance.surprise_pct is not None
+
+
+def test_the_tribunal_is_told_the_guidance_was_refused_and_why():
+    """The Adversary's job is to attack the case, and "the company guided
+    above consensus on terms nobody reconciled" is an attack. It cannot be
+    made from a leg that merely reads 'not disclosed'."""
+    from hawkeye.scout.quality import describe_quality_en
+    text = describe_quality_en(assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(
+                    period="FY2026", revenue_low=2.60e9, revenue_high=2.70e9,
+                    qualifier="excluding its barge business")),
+        a_consensus(full_year_revenue_avg=3.02e9, full_year_period="FY2026"),
+        CONFIG))
+
+    assert "excluding its barge business" in text
+
+
 def test_guidance_on_both_eps_and_revenue_uses_BOTH():
     """A company that guided EPS and sales published two statements about the
     future, and scoring only the first throws one of them away. Both are

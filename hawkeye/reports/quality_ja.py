@@ -53,6 +53,12 @@ _FLAG = {
     "full_year_consensus_is_another_year": "取得できている通期コンセンサスが、"
                                            "会社の見通しとは別の年度のもの"
                                            "なので比較していない",
+    "guidance_scope_qualified": "会社が示した見通しに条件が付いており、"
+                                "比較対象のコンセンサスは同じ条件で作られて"
+                                "いないため比較していない(例: 会社は特定の"
+                                "事業を除いた数字を出し、アナリスト予想は"
+                                "その事業を含んでいる。除いた分を当てずっぽうで"
+                                "足し戻すことはしません)",
     "on_eps": "EPSレンジの中央値で比較",
     "on_revenue": "売上レンジの中央値で比較(EPSレンジの開示が無いため)",
 }
@@ -95,6 +101,12 @@ def render_leg_ja(leg: LegVerdict) -> str:
         lines.append(f"    実績値: 判定に使用 {leg.actual:g} / "
                      f"決算カレンダー {leg.other_actual:g}")
     lines += [f"    - {_flag_ja(f)}" for f in leg.flags]
+    # 比較を見送ったときは、その根拠になった会社自身の文言をそのまま出す。
+    # 「条件が付いていたので比較しませんでした」だけでは、その判断が妥当
+    # だったのか読み手に検算しようがない(原文は英語のまま。要約サイトの
+    # 文章そのものであって、こちらの言い換えではないことが分かるように)。
+    if leg.excerpt:
+        lines.append(f'      原文: "{leg.excerpt}"')
     return "\n".join(lines)
 
 

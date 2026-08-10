@@ -308,6 +308,33 @@ def test_a_clause_interrupted_before_the_verb_is_still_read():
     assert "previous guidance" not in out.excerpt
 
 
+# -- conditions attached to the guidance (layer 3) --------------------------
+#
+# ACA guided "2026 revenue of $2.60 billion to $2.70 billion, excluding its
+# barge business", and the analysts' figure in the same summary is "$3.02
+# billion, WHICH INCLUDES its barge business". The two numbers describe
+# different companies. The condition is quoted here so the comparison can
+# refuse downstream; nothing here decides anything.
+
+def test_a_condition_attached_to_the_guidance_is_quoted():
+    out = read_guidance(record("ACA"))
+    assert out.full_year is not None
+    assert out.full_year.qualifier == "excluding its barge business"
+
+
+def test_guidance_with_no_condition_carries_none():
+    out = read_guidance(record("AME"))
+    assert out.reading.qualifier == ""
+    assert out.full_year.qualifier == ""
+
+
+def test_a_quoted_condition_is_the_companys_own_words():
+    # Not our paraphrase: the reader has to be able to find the phrase in the
+    # summary to check that the refusal was warranted.
+    out = read_guidance(record("ACA"))
+    assert out.full_year.qualifier in out.excerpt
+
+
 def test_an_inverted_range_is_refused_rather_than_averaged():
     # ADV states "2026 revenue of $3.54 billion to $2.67 billion" — a top
     # below its own floor, i.e. the vendor mistyped one of the two. Averaging
