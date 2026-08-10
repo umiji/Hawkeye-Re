@@ -22,6 +22,11 @@ investment case yourself**. All user-facing conversation is in Japanese.
    argue strictly from the provided dossier, same as API mode.
 4. Never bypass `hawkeye case submit` — it is where validation, judge-rule
    enforcement, the risk-officer veto, and ledger recording happen.
+5. **The same two rules bind the guidance extraction** (step 2b), which is
+   an agent step OUTSIDE the tribunal. You never write its JSON, and it
+   never sees the consensus its reading will be measured against. Its reply
+   goes through `hawkeye guidance submit`, which is where the quote is
+   checked against the source text — the only hallucination check there is.
 
 ## Procedure
 
@@ -49,10 +54,63 @@ them instead of opening new ones.
 
 - If `FINNHUB_API_KEY` is set:
   ```bash
-  hawkeye scout --open-cases 3
+  hawkeye scout
   ```
-  This scans recent earnings surprises, applies gates, and opens session
-  cases for the top candidates (funnel counts are recorded automatically).
+  This scans recent earnings surprises, applies gates and ranks the
+  survivors (funnel counts are recorded automatically).
+
+  **Do NOT pass `--open-cases` yet.** One of the three legs a quarter is
+  judged on — the company's own outlook, i.e. its guidance — is written in
+  prose and is read by an agent, which is step 2b below. A case opened
+  before that runs carries a brief saying the outlook is unread, and the
+  Bull argues from the brief.
+
+### 2b. Read the guidance the scan could not
+
+The scan writes down each company's forward statement and stops; nothing
+inside it can call you. Work the queue until it is empty:
+
+```bash
+hawkeye guidance queue                       # what is waiting
+hawkeye guidance queue --case-id <id>        # ONE package
+```
+
+For each case, **spawn a fresh subagent** and give it the package text
+verbatim. Its whole job is to copy one range out of one sentence. It must
+answer with JSON in exactly this shape, and **you must not edit its
+answer** — the CLI is what validates it:
+
+```json
+{"guided": true, "period": "FY2026",
+ "eps_low": null, "eps_high": null,
+ "revenue_low": 2.60, "revenue_high": 2.70, "revenue_unit": "billion",
+ "open_ended": false, "qualifier": "excluding its barge business",
+ "quote": "2026 revenue of $2.60 billion to $2.70 billion"}
+```
+
+Write the reply to a file and submit it:
+
+```bash
+hawkeye guidance submit <case_id> --file <reply.json> --reader <model>
+```
+
+The submit prints the quarter's three legs again, because the guidance leg
+is the only one that can still move at this point.
+
+**One subagent per case, and it sees only the package.** It must never be
+shown the consensus figure its reading will be measured against — an
+extractor that can see the bar it is about to clear has stopped
+extracting. `hawkeye guidance queue` already withholds it; do not add it.
+
+A refused reading is a normal outcome and is recorded by name. Do not
+retry it by rewording the request, and never write the JSON yourself.
+
+Only once the queue is empty:
+
+```bash
+hawkeye case open TICKER --from-earnings --nav <nav>
+```
+for each of the top candidates the scan ranked.
 - If not set: tell the user scout needs a free Finnhub key, and ask them for
   a ticker + catalyst instead, then:
   ```bash
