@@ -13,6 +13,7 @@ from hawkeye.contracts.models import (
     Recommendation,
     to_jst,
 )
+from hawkeye.reports.monitor_ja import render_inspection_ja
 from hawkeye.reports.quality_ja import _flag_ja
 from hawkeye.sentinel.monitor import Signal
 
@@ -274,6 +275,14 @@ def render_scout_ja(result) -> str:
                      f" {result.scan_start} より前の決算はスキャンしていません"
                      "(取りこぼしの可能性あり)。必要なら "
                      "`hawkeye scout --days N` で遡って実行してください。")
+    # 取得データの点検表(§10)。順位表より前に置く理由は、下の訂正セクションと
+    # 同じ — 先にショートリストを読んでしまった読み手は、もうデータの検算をしない。
+    # 「判断材料ではなく点検表」であることは表側の見出しで宣言している。
+    inspection = getattr(result, "inspection", None)
+    if inspection is not None and (inspection.rows or inspection.counts.asked
+                                   or inspection.counts.calendar_only_not_asked):
+        lines.append("")
+        lines.append(render_inspection_ja(inspection))
     # 発表済みの決算の数値が、あとから提供元に書き換えられることがある。
     # ADEA は 2026-08-05 発表の四半期で、EPSの実績値だけが翌日 $0.34 → $0.42
     # (+24%)に変わった。順位表より前に出すのは、先にショートリストを読んで

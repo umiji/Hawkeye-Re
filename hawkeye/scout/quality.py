@@ -146,6 +146,13 @@ class EarningsQuality:
     # reader cannot see is a ranking term they cannot argue with.
     whisper: Optional[float] = None
     whisper_beat_pct: Optional[float] = None
+    # WHO read the guidance sentence and with which model. Carried on the
+    # verdict, not only on the stored row, because the inspection table is
+    # built from verdicts and this is the one column that says whether two
+    # runs' guidance readings are even comparable (EW移行 Ver2 §13.3). Empty
+    # when the print carries no guidance reading at all.
+    guidance_extractor: str = ""
+    guidance_extractor_model: str = ""
 
     @property
     def legs(self) -> tuple[LegVerdict, LegVerdict, LegVerdict]:
@@ -633,4 +640,8 @@ def assess_earnings(print_row: EarningsPrint,
         whisper=(consensus.eps_whisper if consensus and whisper_beat is not None
                  else None),
         whisper_beat_pct=(round(whisper_beat, 4)
-                          if whisper_beat is not None else None))
+                          if whisper_beat is not None else None),
+        guidance_extractor=(print_row.guidance.extractor
+                            if print_row.guidance else ""),
+        guidance_extractor_model=(print_row.guidance.extractor_model
+                                  if print_row.guidance else ""))

@@ -42,6 +42,7 @@ from hawkeye.scout.earnings import (
 )
 from hawkeye.scout import guidance_case
 from hawkeye.scout.guidance_agent import GuidanceRequest, GuidanceStats
+from hawkeye.scout.inspection import Inspection, build_inspection
 from hawkeye.scout.prereg import resolve_stock
 from hawkeye.scout.revision import Revision, apply_revision, detect_revisions
 from hawkeye.scout.triage import is_investigation_target, triage_from_gates
@@ -129,6 +130,10 @@ class ScoutResult:
     # everywhere when no reader was supplied — which is a different fact from
     # "it ran and found nothing", and the two must not print the same.
     guidance: GuidanceStats = field(default_factory=GuidanceStats)
+    # The check sheet: one row per name the earnings feed was asked about
+    # (hawkeye/scout/inspection.py). Not a judgment — it exists so the reader
+    # can verify the data behind the ranking before reading the ranking.
+    inspection: Inspection = field(default_factory=Inspection)
 
     def funnel(self) -> dict:
         return {"scanned": self.scanned, "screened": self.screened,
@@ -697,16 +702,23 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     _record_cheap_history(stock_store, directory, events, screened_tickers,
                           skip=held_keys)
 
-    return ScoutResult(scan_start=window.start, scan_end=window.end,
-                       scanned=len(raw), screened=screened_total,
-                       enriched=attempted,
-                       passed=passed, rejected=rejected, capped=capped,
-                       held=held, duplicates=duplicates,
-                       window_truncated=window.truncated,
-                       numbers=numbers,
-                       enrichment_ceiling_hit=ceiling_hit,
-                       revisions=revisions,
-                       guidance=guidance_stats)
+    result = ScoutResult(scan_start=window.start, scan_end=window.end,
+                         scanned=len(raw), screened=screened_total,
+                         enriched=attempted,
+                         passed=passed, rejected=rejected, capped=capped,
+                         held=held, duplicates=duplicates,
+                         window_truncated=window.truncated,
+                         numbers=numbers,
+                         enrichment_ceiling_hit=ceiling_hit,
+                         revisions=revisions,
+                         guidance=guidance_stats)
+    # The check sheet (§10), built here because this is the only place that
+    # still holds both halves: the events carry what each vendor said, and the
+    # candidate lists carry how far the walk took each name. Assembled after
+    # the result so the stage of every name is already decided.
+    result.inspection = build_inspection(events, result,
+                                         revisions_seen=len(revisions))
+    return result
 
 
 def _visible_at_drop(c: ScoutCandidate) -> dict:

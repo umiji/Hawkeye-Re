@@ -16,6 +16,7 @@ Daily rhythm (docs/design/USER_GUIDE.ja.md):
 from __future__ import annotations
 
 import argparse
+import pathlib
 import sys
 from datetime import date
 
@@ -45,6 +46,7 @@ from hawkeye.marketdata.finnhub import CompositeProvider, FinnhubProvider
 from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
 from hawkeye.marketdata.whispers import WhispersSource
+from hawkeye.reports.monitor_ja import inspection_csv
 from hawkeye.reports.render_ja import (
     fmt_jst,
     render_drop_cycle_ja,
@@ -430,6 +432,14 @@ def cmd_scout(args: argparse.Namespace) -> int:
         quarters=config.scout_backfill_quarters)
 
     print(render_scout_ja(result))
+    if args.monitor_csv:
+        # Written with a BOM: Excel on Japanese Windows reads a plain UTF-8 CSV
+        # as cp932 and turns every header into mojibake, which makes the check
+        # sheet unusable for the one person it is written for.
+        path = pathlib.Path(args.monitor_csv)
+        path.write_text(inspection_csv(result.inspection), encoding="utf-8-sig")
+        print(f"\n点検表をCSVに保存しました: {path} "
+              f"({len(result.inspection.rows)}行)")
     summary = render_backfill_ja(backfill)
     if summary:
         print()
@@ -1389,6 +1399,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="open session-mode cases for the top N candidates "
                          "(no API key; driven by /hawkeye-run)")
     sc.add_argument("--nav", type=float, default=100_000.0)
+    sc.add_argument("--monitor-csv", default=None, metavar="PATH",
+                    help="save the inspection table (取得データ点検表) as CSV")
     sc.set_defaults(func=cmd_scout)
 
     cn = sub.add_parser("consensus",
