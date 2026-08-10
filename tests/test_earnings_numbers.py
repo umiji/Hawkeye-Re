@@ -220,6 +220,24 @@ def test_the_full_year_yardstick_survives_a_fallback_on_the_numbers():
     assert out[0].full_year_eps_estimate == 4.76
 
 
+_QUALIFIED_SUMMARY = (
+    "The company said it expects 2026 revenue of $2.60 billion to $2.70 "
+    "billion, excluding its barge business. The current consensus revenue "
+    "estimate, which includes its barge business, is $3.02 billion for the "
+    "year ending December 31, 2026.")
+
+
+def test_the_condition_on_a_guidance_travels_with_it_to_the_print():
+    """The refusal happens two modules downstream, in `_guidance_leg`, and it
+    can only happen if the condition survives the walk from the summary to
+    the print row. ACA's shape."""
+    event = _event()
+    feed = _Feed({"AAA": _record(summary=_QUALIFIED_SUMMARY)})
+    out, _ = read_numbers([event], _screened([event]), feed, limit=5)
+
+    assert out[0].guidance.qualifier == "excluding its barge business"
+
+
 _NEXT_QUARTER_SUMMARY = (
     "The company said it expects third quarter earnings of $1.30 to $1.40 "
     "per share. The current consensus earnings estimate is $1.20 per share "
