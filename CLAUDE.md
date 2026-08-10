@@ -83,6 +83,50 @@ explanations, and it makes the answer useless no matter how correct it is.
    should have been said when it was built, not extracted. If a mechanism has
    a condition that makes it rarely fire, that condition IS the headline.
 
+3.9. **A symptom is not an explanation. Report the SCENE, the user's
+   mistake, and the effect on investment performance — in that order.**
+   Added 2026-08-10 after set E was reported as two paragraphs of "the display
+   was broken like this", which told the user nothing about whether it
+   mattered. Naming what was wrong on screen is the setup, not the answer.
+
+   Every bug report, behavior change and review finding answers these four,
+   explicitly, even when the answer is "none":
+
+   1. **場面** — which command, which screen, at what moment in the daily
+      cycle. "走査レポートの点検表" is a place; "the renderer" is not.
+   2. **Userが見て、何を誤るか** — quote the actual line they saw, then say
+      what they would conclude from it and why that conclusion is wrong.
+   3. **その結果どう行動が変わるか** — the action not taken (a re-run not
+      done, a queue not processed), or the action taken on a false belief.
+   4. **投資成績への影響** — split into three parts and never collapse them:
+      - **the path** (fallback numbers → surprise % → rank → top-15 → top-3 →
+        a BUY that does or does not happen). If there is no path, say so.
+      - **the frequency of the trigger**, measured, with the sample and date.
+      - **the size of the effect** — and if it has not been measured, write
+        「未測定」. Never let a real mechanism imply a known magnitude.
+
+   **If scores and rankings did not change, say that FIRST**, before
+   describing the defect. Most reporting/rendering bugs are in this class, and
+   the user needs to know immediately whether they are reading about lost
+   money or about lost visibility. "Lost visibility" is still worth fixing —
+   it is usually the mechanism by which the NEXT defect goes unnoticed — but
+   it is a different severity and must not be dressed as the first.
+
+   - 悪い例: 「21行の表に注記が26行付き、うち19行が『ガイダンス未読』でした。
+     日常的な状態は件数に移し、注記は異常だけに絞りました」
+     → 現象と対処だけ。読み手には、これが金の話なのか見え方の話なのかも、
+     気にすべきことなのかも分からない。
+   - 良い例: 「点数も順位も動いていません。壊れていたのは『順位を信用して
+     よいか』をUserが判断する手段です。毎朝の走査で、順位表の前の点検表を
+     眺める場面。26行のうち19行が同じ文なので人間は塊ごと読み飛ばし、その中に
+     『この8銘柄はカレンダーの数字で順位が付いている』という3行が埋もれて
+     いました。うち3銘柄は再実行1回で本来の数字に戻せたが、Userには分から
+     なかった。経路は、カレンダーの数字→サプライズ率→順位→上位15枠→
+     上位3枠→出るはずのBUYが出ない。引き金の頻度は21銘柄中8銘柄（2026-08-07
+     の1日）。提供元の食い違いで足切りが反転する率は19%（50銘柄・2026-08-02）。
+     ただし**上位3枠の顔ぶれが実際に何回変わったかは未測定**で、成績への影響が
+     何%かは言えません」
+
 4. **Domain/strategy terms are the highest-risk case of rule 0.** This
    project has its own vocabulary (Bull / Adversary / Judge roles, gates,
    EV hurdle, thesis-accuracy, pre-registration, 審理 vs 審査, etc. — see
