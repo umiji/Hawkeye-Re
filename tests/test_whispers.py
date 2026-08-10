@@ -278,6 +278,46 @@ def test_a_company_that_published_no_guidance_says_so_explicitly():
     assert out.excerpt == ""
 
 
+# -- the forms of "we expect" ----------------------------------------------
+#
+# The clause matcher used to accept exactly one wording, "the company said it
+# expects", and four of the 47 recorded names (ADEA ADV AHCO ALB) were
+# therefore recorded as having guided NOTHING while stating a full-year
+# revenue range in plain numbers. Nothing about them is hard to read — the
+# sentence just starts differently (measured 2026-08-10).
+
+def test_a_company_that_continues_to_expect_is_still_guiding():
+    # ADEA: "The company said it continues to expect 2026 revenue of $395.0
+    # million to $435.0 million."
+    out = read_guidance(record("ADEA"))
+    assert out.full_year is not None
+    assert out.full_year.period == "FY2026"
+    assert out.full_year.revenue_low == pytest.approx(395_000_000.0)
+    assert out.full_year.revenue_high == pytest.approx(435_000_000.0)
+
+
+def test_a_clause_interrupted_before_the_verb_is_still_read():
+    # AHCO: "The company said, with the divestiture in its Diabetes Health
+    # business, it now expects 2026 revenue of $2.85 billion to $2.89
+    # billion." The previous guidance ($3.45-$3.52 billion) sits in the very
+    # next sentence and must not be the range that gets read.
+    out = read_guidance(record("AHCO"))
+    assert out.full_year is not None
+    assert out.full_year.revenue_low == pytest.approx(2_850_000_000.0)
+    assert out.full_year.revenue_high == pytest.approx(2_890_000_000.0)
+    assert "previous guidance" not in out.excerpt
+
+
+def test_an_inverted_range_is_refused_rather_than_averaged():
+    # ADV states "2026 revenue of $3.54 billion to $2.67 billion" — a top
+    # below its own floor, i.e. the vendor mistyped one of the two. Averaging
+    # them yields $3.10 billion, a figure nobody published, and it would be
+    # compared against a real consensus as if the company had said it.
+    out = read_guidance(record("ADV"))
+    assert out.full_year is None
+    assert "range_inverted" in out.reason
+
+
 def test_the_excerpt_is_the_sentence_the_numbers_were_read_from():
     out = read_guidance(record("ALSN"))
     assert out.excerpt.startswith("The company")
@@ -431,7 +471,8 @@ _LEGS = (("eps_actual", "eps_actual_missing"),
 # growing new spellings nobody reviews.
 _KNOWN_REASONS = {"", "no_guidance_clause", "full_year_only",
                   "non_numeric_range", "open_ended_range", "quarter_mismatch",
-                  "period_unstated", "quarter_reference_missing"}
+                  "period_unstated", "quarter_reference_missing",
+                  "range_inverted"}
 
 
 def test_the_corpus_is_large_enough_to_mean_something():

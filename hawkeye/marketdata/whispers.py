@@ -196,7 +196,18 @@ def _announced_at(value: Any) -> Optional[datetime]:
 # expect. Only the first is guidance, and the other two are the same shape —
 # so the clause is cut at their first word rather than pattern-matched around.
 
-_CLAUSE = re.compile(r"The\s+compan\w+\s+said\s+it\s+expects\s+", re.I)
+# "The company said it expects" is only the commonest of several wordings, and
+# for as long as it was the only one accepted, four of the 47 recorded names
+# (ADEA ADV AHCO ALB) published a full-year revenue range in plain numbers and
+# were recorded as having guided NOTHING. Two things vary: the verb ("expects",
+# "continues to expect", "now expects") and an aside the vendor drops between
+# "said" and the verb ("said, with the divestiture in its Diabetes Health
+# business, it now expects"). The aside is bounded and must not cross a
+# sentence end, so the next sentence's PREVIOUS guidance can never be reached
+# through it.
+_CLAUSE = re.compile(
+    r"The\s+compan\w+\s+said[^.]{0,120}?\bit\s+"
+    r"(?:now\s+|still\s+)?(?:continues\s+to\s+expect|expects)\s+", re.I)
 _DECOYS = ("The company's previous guidance", "The companys previous guidance",
            "The current consensus", "<br")
 _NUM = r"([\d,]+(?:\.\d+)?)"
@@ -298,6 +309,15 @@ def _segment_numbers(segment: str) -> tuple[dict, str]:
         out["revenue_low"] = out["revenue_high"] = (
             _amount(one.group(1)) * _SCALE[one.group(2).lower()])
     if out:
+        # A top below its own floor is a typo at the vendor, not a range.
+        # ADV's summary says "2026 revenue of $3.54 billion to $2.67 billion";
+        # averaging those two gives $3.10 billion, a figure nobody published,
+        # and downstream it is indistinguishable from guidance the company
+        # actually gave. Refusing costs one reading and states why.
+        for low, high in (("eps_low", "eps_high"),
+                          ("revenue_low", "revenue_high")):
+            if low in out and out[low] > out[high]:
+                return {}, "range_inverted"
         return out, ""
     if _NON_NUMERIC.search(segment):
         return {}, "non_numeric_range"
