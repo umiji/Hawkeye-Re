@@ -54,6 +54,7 @@ from hawkeye.reports.render_ja import (
     render_signals_ja,
 )
 from hawkeye.scout import drop_case, drop_cycle, guidance_case
+from hawkeye.scout.guidance_agent import parse_reply, render_request
 from hawkeye.scout.drop_review import (
     CHECKPOINT_TRADING_DAYS,
     COHORTS,
@@ -629,7 +630,7 @@ def cmd_guidance_queue(args: argparse.Namespace) -> int:
     except FileNotFoundError:
         print(f"case not found: {args.case_id}", file=sys.stderr)
         return 1
-    print(guidance_case.render_input(case))
+    print(render_request(case.request()))
     print()
     print(f"submit_with: hawkeye guidance submit {case.id} "
           f"--file <読み取り結果.json>")
@@ -650,9 +651,8 @@ def cmd_guidance_submit(args: argparse.Namespace) -> int:
         print(f"case not found: {args.case_id}", file=sys.stderr)
         return 1
     try:
-        extraction = guidance_case.submit(
-            case, guidance_case.load_reply(args.file),
-            model=args.reader or "")
+        extraction = parse_reply(guidance_case.load_reply(args.file),
+                                 case.request(), model=args.reader or "")
     except (ValueError, OSError) as exc:
         print(f"読み取り結果を受け付けられません: {exc}", file=sys.stderr)
         return 1

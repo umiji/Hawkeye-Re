@@ -24,10 +24,11 @@ from `detect_revisions`, which compares reported figures only, so a guidance
 that arrived late is never described to the reader as the vendor changing its
 mind about a number.
 
-Nothing in this file decides anything about the reading. The gate is
-`guidance_agent.parse_reply`, one module over, and it is the same gate the API
-path runs — the two modes must not be able to accept different answers
-(the same reason the tribunal's prompts are one constant read by both).
+Nothing in this file decides anything about the reading, and it deliberately
+does not wrap the thing that does: callers reach for `guidance_agent`'s own
+`render_request` and `parse_reply`, so there is no second place where the two
+modes could drift into accepting different answers. What lives here is the
+queue on disk and the one write to the ledger.
 """
 from __future__ import annotations
 
@@ -39,12 +40,8 @@ from pydantic import BaseModel, Field
 
 from hawkeye import paths
 from hawkeye.contracts.models import new_id, now
-from hawkeye.scout.guidance_agent import (
-    GuidanceExtraction,
-    GuidanceRequest,
-    parse_reply,
-    render_request,
-)
+from hawkeye.contracts.stocks import next_fiscal_quarter
+from hawkeye.scout.guidance_agent import GuidanceExtraction, GuidanceRequest
 
 
 class GuidanceCase(BaseModel):
@@ -61,14 +58,16 @@ class GuidanceCase(BaseModel):
     print_id: str
     ticker: str
     fiscal_quarter: str
-    next_quarter: str
     summary: str
 
     def request(self) -> GuidanceRequest:
-        return GuidanceRequest(ticker=self.ticker,
-                               fiscal_quarter=self.fiscal_quarter,
-                               next_quarter=self.next_quarter,
-                               summary=self.summary)
+        """What the agent is shown. The quarter the guidance should be about
+        is DERIVED rather than stored: two fields holding the same fact are
+        two fields that can disagree, and this one is arithmetic."""
+        return GuidanceRequest(
+            ticker=self.ticker, fiscal_quarter=self.fiscal_quarter,
+            next_quarter=next_fiscal_quarter(self.fiscal_quarter),
+            summary=self.summary)
 
 
 # --- the file queue ---------------------------------------------------------
@@ -118,13 +117,6 @@ def discard(case_id: str) -> bool:
     return True
 
 
-def render_input(case: GuidanceCase) -> str:
-    """The package one subagent reads. Identical to what the API path sends,
-    because two modes reading different text would produce results nobody can
-    compare."""
-    return render_request(case.request())
-
-
 # --- submitting -------------------------------------------------------------
 
 def load_reply(path: str) -> dict:
@@ -132,12 +124,6 @@ def load_reply(path: str) -> dict:
     if not isinstance(raw, dict):
         raise ValueError("guidance reply must be a JSON object")
     return raw
-
-
-def submit(case: GuidanceCase, reply: dict,
-           model: str = "") -> GuidanceExtraction:
-    """Run the reply through the same gate the API path runs. Nothing else."""
-    return parse_reply(reply, case.request(), model=model)
 
 
 def attach(store, case: GuidanceCase,

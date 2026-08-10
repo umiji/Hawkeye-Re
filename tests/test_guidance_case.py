@@ -27,6 +27,7 @@ from hawkeye.contracts.stocks import (
 from hawkeye.ledger.stocks import StockStore
 from hawkeye.marketdata.base import StaticProvider
 from hawkeye.scout import guidance_case
+from hawkeye.scout.guidance_agent import parse_reply
 from hawkeye.scout.scout import run_scout
 from tests.conftest import FakeWhispers, make_bars, make_whispers
 from tests.test_scout_quality_wiring import FakeCalendar, _entries
@@ -71,7 +72,7 @@ def test_a_scan_with_no_reader_writes_the_sentence_down(tmp_path):
     cases = guidance_case.list_cases()
     assert [c.ticker for c in cases] == ["AMZN"]
     assert cases[0].summary == SUMMARY
-    assert cases[0].next_quarter == "2026-Q3"
+    assert cases[0].request().next_quarter == "2026-Q3"
 
 
 def test_the_case_points_at_the_row_the_scan_actually_wrote(tmp_path):
@@ -91,7 +92,7 @@ def test_the_reading_lands_on_the_print_and_retires_the_row_it_replaces(
     store = _scan(tmp_path)
     case = guidance_case.list_cases()[0]
 
-    extraction = guidance_case.submit(case, GOOD_REPLY, model="test-model")
+    extraction = parse_reply(GOOD_REPLY, case.request(), model="test-model")
     guidance_case.attach(store, case, extraction)
 
     active = store.active_print(case.stock_id, "2026-Q2")
@@ -112,7 +113,7 @@ def test_the_row_ranked_on_is_still_readable_afterwards(tmp_path):
     case = guidance_case.list_cases()[0]
 
     guidance_case.attach(store, case,
-                         guidance_case.submit(case, GOOD_REPLY))
+                         parse_reply(GOOD_REPLY, case.request()))
 
     retired = [r for r in store.prints(case.stock_id)
                if r.status is RowStatus.SUPERSEDED]
@@ -126,9 +127,10 @@ def test_a_refusal_is_attached_too_so_the_row_says_why(tmp_path):
     store = _scan(tmp_path)
     case = guidance_case.list_cases()[0]
 
-    extraction = guidance_case.submit(case, {
+    extraction = parse_reply({
         "guided": True, "period": "2026-Q3", "eps_low": 5.0, "eps_high": 6.0,
-        "quote": "third quarter earnings of $5.00 to $6.00 per share"})
+        "quote": "third quarter earnings of $5.00 to $6.00 per share"},
+        case.request())
     guidance_case.attach(store, case, extraction)
 
     active = store.active_print(case.stock_id, "2026-Q2")
@@ -147,33 +149,19 @@ def test_a_restatement_landing_in_between_blocks_the_attachment(tmp_path):
     store.revise_print(superseding)
 
     assert guidance_case.attach(
-        store, case, guidance_case.submit(case, GOOD_REPLY)) is None
+        store, case, parse_reply(GOOD_REPLY, case.request())) is None
 
 
-# --- the gate is the same one the API path runs -----------------------------
+# --- what the case stores, and what it works out -----------------------------
 
-def test_submit_runs_the_same_gate_as_the_api_path():
-    """Two modes that could accept different answers would produce results
-    nobody can compare — the same reason the tribunal's prompts are one
-    constant read by both."""
-    from hawkeye.scout.guidance_agent import parse_reply
-
+def test_the_quarter_the_agent_is_told_about_is_derived_not_stored():
+    """Two fields holding the same fact are two fields that can disagree, and
+    this one is arithmetic on the other."""
     case = guidance_case.GuidanceCase(
-        stock_id="s", print_id="p", ticker="ALGT", fiscal_quarter="2026-Q2",
-        next_quarter="2026-Q3", summary=SUMMARY)
+        stock_id="s", print_id="p", ticker="ALGT", fiscal_quarter="2026-Q4",
+        summary=SUMMARY)
 
-    assert (guidance_case.submit(case, GOOD_REPLY).reading
-            == parse_reply(GOOD_REPLY, case.request()).reading)
-
-
-def test_the_package_is_the_same_text_the_api_path_sends():
-    from hawkeye.scout.guidance_agent import render_request
-
-    case = guidance_case.GuidanceCase(
-        stock_id="s", print_id="p", ticker="ALGT", fiscal_quarter="2026-Q2",
-        next_quarter="2026-Q3", summary=SUMMARY)
-
-    assert guidance_case.render_input(case) == render_request(case.request())
+    assert case.request().next_quarter == "2027-Q1"
 
 
 # --- the queue --------------------------------------------------------------
@@ -182,7 +170,7 @@ def test_a_submitted_case_leaves_the_queue(tmp_path):
     store = _scan(tmp_path)
     case = guidance_case.list_cases()[0]
 
-    guidance_case.attach(store, case, guidance_case.submit(case, GOOD_REPLY))
+    guidance_case.attach(store, case, parse_reply(GOOD_REPLY, case.request()))
     guidance_case.discard(case.id)
 
     assert guidance_case.list_cases() == []

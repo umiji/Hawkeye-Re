@@ -40,10 +40,8 @@ from hawkeye.scout.earnings import (
     score_candidate,      # re-exported: the ranking score lives with the screen
     screen_events,
 )
-from hawkeye.scout.guidance_agent import (
-    GuidanceRequest,
-    GuidanceStats,
-)
+from hawkeye.scout import guidance_case
+from hawkeye.scout.guidance_agent import GuidanceRequest, GuidanceStats
 from hawkeye.scout.prereg import resolve_stock
 from hawkeye.scout.revision import Revision, apply_revision, detect_revisions
 from hawkeye.scout.triage import is_investigation_target, triage_from_gates
@@ -295,28 +293,44 @@ def _quarter_context(store, directory, event) -> Optional[_QuarterContext]:
                            consensus_id=consensus.id, consensus=consensus)
 
 
-def _read_guidance(context: _QuarterContext, event, reader,
+def _read_guidance(store, context: _QuarterContext, event, reader,
                    stats: GuidanceStats) -> _QuarterContext:
-    """Replace the print row's guidance with the agent's reading of it.
+    """Put the company's own outlook on the print row, or say why it is not
+    there yet.
 
     Runs BEFORE the row is recorded and before the quarter is judged, so the
     row is written once, complete, and carrying who read it. Attaching it
     afterwards would mean retiring a row and appending a corrected one — the
     mechanism task 8.5 built for a VENDOR restating a figure — and a scan
-    would then report its own extraction step as if the source had changed
-    its mind.
+    would then report its own extraction step as the source changing its mind.
 
-    A print with no summary is skipped rather than counted: the feed declined
-    that name entirely, so there was no sentence for anyone to read and the
-    extraction step never had a turn.
+    Two ways in, and only the first can happen inside this process:
+
+    - **an agent is available** (API mode): one call, and its answer goes
+      through the gate in `guidance_agent.parse_reply` before it lands;
+    - **no agent** (session mode): nothing here can reach the Claude Code
+      session driving the scan, so the sentence is written to `var/guidance/`
+      and two CLI commands close the loop afterwards. The row says the
+      reading is OUTSTANDING rather than saying the company guided nothing —
+      the two render identically and mean opposite things.
+
+    A print with no summary is skipped either way: the feed declined that name
+    entirely, so no sentence exists and the extraction step never had a turn.
     """
-    if not getattr(event, "summary", ""):
+    if not event.summary:
         return context
     if reader is None:
-        # Session mode. The row is recorded saying the reading is outstanding
-        # rather than saying the company guided nothing — the two look
-        # identical on the page and mean opposite things, and only one of them
-        # is still worth doing something about.
+        # Nothing is staged for a quarter already on record: `_record_print`
+        # will skip it as a repeat, so the case would point at a row this scan
+        # never wrote.
+        if store.active_print(context.stock_id,
+                              context.print_row.fiscal_quarter) is None:
+            guidance_case.save_case(guidance_case.GuidanceCase(
+                stock_id=context.stock_id, print_id=context.print_row.id,
+                ticker=event.ticker,
+                fiscal_quarter=context.print_row.fiscal_quarter,
+                summary=event.summary))
+            stats.staged += 1
         return replace(context, print_row=context.print_row.model_copy(
             update={"guidance_reason": "pending_extraction"}))
     out = reader.read(GuidanceRequest(
@@ -327,33 +341,6 @@ def _read_guidance(context: _QuarterContext, event, reader,
     stats.record(out.reason)
     return replace(context, print_row=context.print_row.model_copy(
         update={"guidance": out.reading, "guidance_reason": out.reason}))
-
-
-def _stage_guidance(store, context: _QuarterContext, event) -> bool:
-    """Write the sentence down for an agent that cannot be called from here.
-
-    Session mode only: nothing inside a scan subprocess can reach the Claude
-    Code session driving it, so the loop goes out through the CLI and comes
-    back through it (hawkeye/scout/guidance_case.py).
-
-    Staged AFTER the row is recorded and only when the row this scan wrote is
-    the one now active. A scan that met the print as a duplicate did not write
-    a row, and a case pointing at a row nobody wrote would attach its reading
-    to nothing.
-    """
-    from hawkeye.scout.guidance_case import GuidanceCase, save_case
-    if not getattr(event, "summary", ""):
-        return False
-    active = store.active_print(context.stock_id,
-                                context.print_row.fiscal_quarter)
-    if active is None or active.id != context.print_row.id:
-        return False
-    save_case(GuidanceCase(
-        stock_id=context.stock_id, print_id=active.id, ticker=event.ticker,
-        fiscal_quarter=context.print_row.fiscal_quarter,
-        next_quarter=next_fiscal_quarter(context.print_row.fiscal_quarter),
-        summary=event.summary))
-    return True
 
 
 def _record_print(store, context: _QuarterContext, config=None,
@@ -611,8 +598,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
         # the numbers (task 8.7 layer 2). Before the judgment, because it IS
         # one of the three things being judged.
         if context is not None:
-            context = _read_guidance(context, event, guidance_reader,
-                                     guidance_stats)
+            context = _read_guidance(stock_store, context, event,
+                                     guidance_reader, guidance_stats)
         quality = (assess_earnings(context.print_row, context.consensus, config)
                    if context is not None else None)
         catalyst = Catalyst(
@@ -622,13 +609,6 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
             event_date=event.day, source="scout/finnhub-earnings-calendar")
         if context is not None:
             revisions.extend(_record_print(stock_store, context, config))
-            # With no reader in this process the extraction still has to
-            # happen, just not here. Counted as attempted so a scan that
-            # staged 12 sentences and had none read is visibly different from
-            # one where nobody guided.
-            if guidance_reader is None and _stage_guidance(stock_store,
-                                                           context, event):
-                guidance_stats.staged += 1
         try:
             # Only trusted figures become structured snapshot fields: the
             # tribunal prompts tell both roles to prefer these over prose, so
