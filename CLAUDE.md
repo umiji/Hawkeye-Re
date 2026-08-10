@@ -83,49 +83,39 @@ explanations, and it makes the answer useless no matter how correct it is.
    should have been said when it was built, not extracted. If a mechanism has
    a condition that makes it rarely fire, that condition IS the headline.
 
-3.9. **A symptom is not an explanation. Report the SCENE, the user's
-   mistake, and the effect on investment performance — in that order.**
-   Added 2026-08-10 after set E was reported as two paragraphs of "the display
-   was broken like this", which told the user nothing about whether it
-   mattered. Naming what was wrong on screen is the setup, not the answer.
+3.9. **不具合・挙動の報告は散文で書くな。下の6行を穴埋めして書く。**
+   2026-08-10 に規則として散文で書いたが、その散文自体が守られなかった。散文の
+   心得は破れる。埋めていない欄がある形式は破れない。**この6行は、どれ1つ空欄に
+   してはいけない。**
 
-   Every bug report, behavior change and review finding answers these four,
-   explicitly, even when the answer is "none":
+   ```
+   見出し: <誰が> <何を> <どうした>
+   1. 読み手: <コマンド> の <出力> を読むのは <人間 / 統括セッション / 審理の役>
+   2. 実物:   "<その画面に出ていた文字を、要約せずそのまま1行>"
+   3. 誤動作: <どの処理> が <何> を <間違ってやる / やらない>
+   4. 点数と順位: 動いた（どこが） / 動かない
+   5. 経路:   <A → B → C → BUYが出る/出ない>   経路が無ければ「無い」
+   6. 頻度と大きさ: 引き金 <実測値・標本・日付> / 大きさ <実測値 or 未測定>
+   ```
 
-   1. **場面** — which command, which screen, at what moment in the daily
-      cycle. "走査レポートの点検表" is a place; "the renderer" is not.
-   2. **Userが見て、何を誤るか** — quote the actual line they saw, then say
-      what they would conclude from it and why that conclusion is wrong.
-   3. **その結果どう行動が変わるか** — the action not taken (a re-run not
-      done, a queue not processed), or the action taken on a false belief.
-   4. **投資成績への影響** — split into three parts and never collapse them:
-      - **the path** (fallback numbers → surprise % → rank → top-15 → top-3 →
-        a BUY that does or does not happen). If there is no path, say so.
-      - **the frequency of the trigger**, measured, with the sample and date.
-      - **the size of the effect** — and if it has not been measured, write
-        「未測定」. Never let a real mechanism imply a known magnitude.
+   守り方:
 
-   **If scores and rankings did not change, say that FIRST**, before
-   describing the defect. Most reporting/rendering bugs are in this class, and
-   the user needs to know immediately whether they are reading about lost
-   money or about lost visibility. "Lost visibility" is still worth fixing —
-   it is usually the mechanism by which the NEXT defect goes unnoticed — but
-   it is a different severity and must not be dressed as the first.
+   - **見出しに主語が無ければ書き直す。** 「断られた理由が識別子のままだった」は
+     誰が誰に断られたのかが無く、初見では読めない。「決算専門サイトが数字の提供を
+     断った理由を、日本語に訳さず英語の記号のまま画面に出していた」と書く。
+   - **格好をつけた言い回しを使うな。** 「識別子」「フェイルクローズ」「埋もれる」
+     のような語は、書き手が要点を掴んだ気分になるだけで、読み手には何も渡らない。
+   - **2 は引用。** 要約した瞬間に、読み手はそれが本当に読めない文なのか検証できない。
+   - **1 を間違えると 3〜6 が全部無意味になる。** 2026-08-10、点検表の読み手を
+     「User」と書いて影響を論じたが、`hawkeye scout` の出力を読むのは統括セッション
+     であり、Userはそれを渡されない限り見ない（`.claude/skills/hawkeye-run/SKILL.md`
+     には渡す手順が無い）。読み手を間違えた報告は、直すべき場所も間違える。
+   - **3 は「順位が付いた」では埋まっていない。** それは正常動作の説明である。
+     どの処理が何を間違ってやるのか、または本来やるべきことをやらないのかを書く。
+   - **4 が「動かない」なら、それを見出しの直後に書く。** 金の話か見え方の話かを、
+     読み手が最初に知る必要がある。
 
-   - 悪い例: 「21行の表に注記が26行付き、うち19行が『ガイダンス未読』でした。
-     日常的な状態は件数に移し、注記は異常だけに絞りました」
-     → 現象と対処だけ。読み手には、これが金の話なのか見え方の話なのかも、
-     気にすべきことなのかも分からない。
-   - 良い例: 「点数も順位も動いていません。壊れていたのは『順位を信用して
-     よいか』をUserが判断する手段です。毎朝の走査で、順位表の前の点検表を
-     眺める場面。26行のうち19行が同じ文なので人間は塊ごと読み飛ばし、その中に
-     『この8銘柄はカレンダーの数字で順位が付いている』という3行が埋もれて
-     いました。うち3銘柄は再実行1回で本来の数字に戻せたが、Userには分から
-     なかった。経路は、カレンダーの数字→サプライズ率→順位→上位15枠→
-     上位3枠→出るはずのBUYが出ない。引き金の頻度は21銘柄中8銘柄（2026-08-07
-     の1日）。提供元の食い違いで足切りが反転する率は19%（50銘柄・2026-08-02）。
-     ただし**上位3枠の顔ぶれが実際に何回変わったかは未測定**で、成績への影響が
-     何%かは言えません」
+4. **Domain/strategy terms are the highest-risk case of rule 0.** This
 
 4. **Domain/strategy terms are the highest-risk case of rule 0.** This
    project has its own vocabulary (Bull / Adversary / Judge roles, gates,
