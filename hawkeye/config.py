@@ -92,6 +92,19 @@ class HawkeyeConfig:
     # just a confirmation, so this is the size of the pool the top 15 are drawn
     # from. Measured at 184 req/min with no throttling, 50 costs ~16s.
     scout_max_whispers: int = 50
+    # How many past quarters the shortlist's history is filled in with, and
+    # for how many names (hawkeye/scout/backfill.py).
+    #
+    # 4 is not a doctrine choice — it is the ceiling the data source has.
+    # Probed live on 2026-08-10 (AAPL, MSFT): the per-symbol history endpoint
+    # returns four rows whether `limit` asks for 4, 8, or 20. The backlog
+    # asked for 4-8 quarters; 8 is unavailable, so the run-of-eight reading it
+    # was meant to support cannot be produced and the report says so rather
+    # than implying the check was made.
+    scout_backfill_quarters: int = 4
+    # One request per name, so this is a rate-limit number. 3 because that is
+    # the shortlist actually argued; a scan asked to argue more backfills more.
+    scout_backfill_top_n: int = 3
     # How long a print whose numbers have not arrived is held open before it
     # is given up on, measured from the calendar's REPORT DATE (hawkeye/scout/
     # waiting.py). The feed publishes a company's new quarter roughly a day

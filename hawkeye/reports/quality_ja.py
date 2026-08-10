@@ -89,6 +89,21 @@ _FLAG = {
                                 "事業を除いた数字を出し、アナリスト予想は"
                                 "その事業を含んでいる。除いた分を当てずっぽうで"
                                 "足し戻すことはしません)",
+    # 遡り取得（タスク10）で入れた行の但し書き。この経路は決算カレンダー側の
+    # 銘柄別履歴で、EPSしか返らず、4四半期しか返りません（2026-08-10実測）。
+    # 読み手が「なぜこの行には売上が無いのか」「なぜ日付が発表日でないのか」を
+    # 追えないと、欠けているのが会社の事情なのか取得経路の限界なのか分かりません。
+    "report_date_is_period_end": "この行は遡って取得したものです。日付は決算の"
+                                 "発表日ではなく、対象四半期の末日です"
+                                 "(取得経路が発表日を返さないため)",
+    "repeated_actual": "取得元が、別々の四半期に同じEPS実績を返しました。"
+                       "どちらかが前の四半期の使い回しですが、どちらが古いのかを"
+                       "示す情報が応答に無いため、両方に印を付けています"
+                       "(実測: AAPLの4行中2行)",
+    "no_fiscal_quarter": "取得元が年度・四半期を返さなかったため、どの四半期の"
+                         "実績か決められず記録していません",
+    "no_period_date": "取得元が対象期間の末日を返さなかったため記録していません",
+    "no_actual": "取得元が実績値を返さなかったため記録していません",
     "on_eps": "EPSレンジの中央値で比較",
     "on_revenue": "売上レンジの中央値で比較(EPSレンジの開示が無いため)",
 }
@@ -206,7 +221,7 @@ def render_stock_history_ja(history: StockHistory) -> str:
             f" / EPS実績={_num(row.eps_actual)}"
             f" / カレンダーのEPS実績={_list(row.eps_actual_rows)}"
             f" / 確定コンセンサス="
-            + (f"{_num(consensus.eps_avg)}({consensus.kind.value})"
+            + (f"{_consensus_eps_ja(consensus)}({consensus.kind.value})"
                if consensus else "なし"))
         if row.contamination_flags:
             lines.append("    - 注意: "
@@ -226,6 +241,23 @@ def render_stock_history_ja(history: StockHistory) -> str:
             lines.append(f"- {str(row['recorded_at'])[:10]} {row['stage']} "
                          f"(EPS {row.get('eps_surprise_pct')}%)")
     return "\n".join(lines)
+
+
+def _consensus_eps_ja(consensus) -> str:
+    """The EPS expectation on record, whichever kind of figure it is.
+
+    A distribution (`eps_avg`) and the earnings calendar's single point
+    estimate (`eps_calendar`) are deliberately stored apart, and a backfilled
+    quarter only ever has the point. Printing `eps_avg` alone rendered those
+    rows as 「コンセンサス -」 — an expectation we DID retrieve, shown to the
+    reader as one we never had, which is exactly the check they are reading
+    this page to perform.
+    """
+    if consensus.eps_avg is not None:
+        return _num(consensus.eps_avg)
+    if consensus.eps_calendar is not None:
+        return f"{_num(consensus.eps_calendar)}(カレンダーの単一予想)"
+    return "-"
 
 
 def _num(value: Optional[float]) -> str:

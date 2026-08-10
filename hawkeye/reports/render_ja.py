@@ -13,6 +13,7 @@ from hawkeye.contracts.models import (
     Recommendation,
     to_jst,
 )
+from hawkeye.reports.quality_ja import _flag_ja
 from hawkeye.sentinel.monitor import Signal
 
 _CATALYST_JA = {
@@ -191,6 +192,32 @@ def render_recommendation_ja(rec: Recommendation) -> str:
     lines.append("---")
     lines.append("実行(Yes)/見送り(No)の最終判断と発注はユーザー自身が行ってください。"
                  "本レポートは投資助言ではなく、システムの検証記録です。")
+    return "\n".join(lines)
+
+
+def render_backfill_ja(stats) -> str:
+    """What the backfill of past quarters managed, and what it cannot do.
+
+    The ceiling is stated every time rather than only when it bites. A reader
+    who sees 「過去4四半期を取得」 and assumes the run of eight was checked
+    would credit a name with a consistency nobody measured — and the numbers
+    on the page look identical either way.
+    """
+    if not stats.tickers_attempted:
+        return ""
+    lines = [f"過去の決算の遡り取得: 上位 {stats.tickers_attempted}銘柄に"
+             f"問い合わせ → 新たに記録 {stats.quarters_written}四半期 / "
+             f"既に記録済みで手を付けなかった {stats.quarters_already_known}四半期"]
+    if stats.tickers_unreachable:
+        lines.append(f"  - {stats.tickers_unreachable}銘柄は問い合わせが"
+                     "完了しませんでした(会社の事情ではなく通信の失敗です。"
+                     "次回の走査で再試行します)")
+    for reason, count in sorted(stats.skipped.items()):
+        lines.append(f"  - {count}四半期: {_flag_ja(reason)}")
+    lines.append("  ※ この経路で取れるのは**EPSだけ**で、売上は取得できません。"
+                 "また**4四半期が上限**です(2026-08-10実測)。"
+                 "「8四半期ぶりに1回だけ上振れ」という形は、"
+                 "この記録では判別できません。")
     return "\n".join(lines)
 
 

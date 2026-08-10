@@ -124,6 +124,33 @@ class FinnhubProvider:
                 f"決算カレンダーの応答が想定の形式ではありません ({start} 〜 {end})")
         return cal.get("earningsCalendar") or []
 
+    def earnings_history(self, ticker: str,
+                         limit: int = 4) -> Optional[list[dict]]:
+        """Past quarters' EPS actual and the calendar's point estimate.
+
+        None when the call did not complete, `[]` when it answered with
+        nothing. The two must not collapse: an unreachable ticker is worth
+        retrying and a company with no history is not (invariant 6).
+
+        Two limits of this endpoint, probed live on 2026-08-10 against AAPL
+        and MSFT rather than taken from the vendor's docs:
+
+        - It returns FOUR rows whatever `limit` says (tried 8, 20, and
+          omitted). `limit` is still sent, so a smaller ask stays honest if
+          the tier ever changes.
+        - The rows carry `actual` and `estimate` only — no revenue. The
+          earnings-calendar endpoint does carry revenue but answers a PAST
+          window with zero rows on this key, so there is no second call that
+          would complete the picture.
+        """
+        if not self.available:
+            return None
+        try:
+            rows = self._get("stock/earnings", symbol=ticker, limit=limit)
+        except httpx.HTTPError:
+            return None
+        return rows if isinstance(rows, list) else None
+
     def insider_activity(self, ticker: str,
                          window_days: int = 90) -> Optional[InsiderActivity]:
         """Net open-market insider buying/selling over the trailing window.

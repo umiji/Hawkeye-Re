@@ -50,6 +50,7 @@ from hawkeye.reports.render_ja import (
     render_drop_cycle_ja,
     render_drop_review_ja,
     render_recommendation_ja,
+    render_backfill_ja,
     render_scout_ja,
     render_signals_ja,
 )
@@ -87,6 +88,7 @@ from hawkeye.scout.drift import (
     DriftStatus,
     measure_consensus_drift,
 )
+from hawkeye.scout.backfill import backfill_history
 from hawkeye.scout.drift import report_line as report_drift_line
 from hawkeye.scout.prereg import (
     capture_consensus,
@@ -336,6 +338,23 @@ def cmd_case_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _backfill_targets(store, passed: list, top_n: int) -> list[tuple[str, str]]:
+    """(ticker, stock_id) for the names whose history is worth filling in.
+
+    A candidate carries no stock id — the master is keyed by CIK, and the
+    lookup is by ticker. A name with no master row is skipped rather than
+    created here: the master is written by the scan itself, and inventing a
+    row from a backfill would put a company on record that nothing has
+    verified is the company we think it is.
+    """
+    targets = []
+    for candidate in passed[:top_n]:
+        stock = store.stock_by_ticker(candidate.ticker)
+        if stock is not None:
+            targets.append((candidate.ticker, stock.id))
+    return targets
+
+
 def cmd_scout(args: argparse.Namespace) -> int:
     config = HawkeyeConfig.from_env()
     finnhub = FinnhubProvider()
@@ -365,12 +384,13 @@ def cmd_scout(args: argparse.Namespace) -> int:
     # one for a window nobody managed to read would put those days out of
     # reach permanently — and the funnel would have printed them as a quiet
     # market (found live 2026-08-03).
+    store = _stock_store()
     try:
         result = run_scout(finnhub, provider, config, days_back=args.days,
                            window=window, already_seen=ledger.seen_events(),
                            today=today,
                            numbers_source=numbers,
-                           stock_store=_stock_store(),
+                           stock_store=store,
                            directory=EdgarDirectory())
     except CalendarUnavailable as exc:
         print(f"決算カレンダーを読めなかったため、走査を中止しました: {exc}",
@@ -398,7 +418,22 @@ def cmd_scout(args: argparse.Namespace) -> int:
         tickers=[c.ticker for c in result.passed])
     ledger.record_screened_candidates(
         scan_id, build_screened_candidates(result, scan_id, sent_to_tribunal_n))
+
+    # The quarters before this one, for the shortlist only (task 10). One
+    # request per name, so this runs AFTER the ranking rather than over every
+    # screened name: filling in history for companies no argument will be made
+    # about would cost hundreds of requests for nothing.
+    backfill = backfill_history(
+        store, finnhub,
+        _backfill_targets(store, result.passed,
+                          max(sent_to_tribunal_n, config.scout_backfill_top_n)),
+        quarters=config.scout_backfill_quarters)
+
     print(render_scout_ja(result))
+    summary = render_backfill_ja(backfill)
+    if summary:
+        print()
+        print(summary)
 
     judged = [c for c in result.passed if c.quality is not None]
     if judged:
