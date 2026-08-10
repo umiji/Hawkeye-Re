@@ -26,7 +26,8 @@ def test_db_env_override_wins(monkeypatch):
 
 def test_runtime_dirs_default_under_var(monkeypatch):
     monkeypatch.delenv("HAWKEYE_VAR", raising=False)
-    for name in ("HAWKEYE_CASES", "HAWKEYE_DROPS", "HAWKEYE_REPORTS"):
+    for name in ("HAWKEYE_CASES", "HAWKEYE_DROPS", "HAWKEYE_GUIDANCE",
+                 "HAWKEYE_REPORTS"):
         monkeypatch.delenv(name, raising=False)
     assert paths.cases_dir() == Path("var/cases")
     assert paths.drops_dir() == Path("var/drops")
@@ -36,7 +37,8 @@ def test_runtime_dirs_default_under_var(monkeypatch):
 def test_var_root_env_relocates_everything(monkeypatch, tmp_path):
     """One switch moves the whole runtime tree — used by the test suite."""
     monkeypatch.setenv("HAWKEYE_VAR", str(tmp_path))
-    for name in ("HAWKEYE_DB", "HAWKEYE_CASES", "HAWKEYE_DROPS", "HAWKEYE_REPORTS"):
+    for name in ("HAWKEYE_DB", "HAWKEYE_CASES", "HAWKEYE_DROPS",
+                 "HAWKEYE_GUIDANCE", "HAWKEYE_REPORTS"):
         monkeypatch.delenv(name, raising=False)
     assert Path(paths.db_path()) == tmp_path / "hawkeye.db"
     assert paths.cases_dir() == tmp_path / "cases"

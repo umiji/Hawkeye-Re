@@ -407,7 +407,10 @@ class _Reader:
         return parse_reply(self.reply, request, model="test-model")
 
 
-def _scan(reader, tmp_path, summary=_SUMMARY):
+def _scan(reader, tmp_path, monkeypatch, summary=_SUMMARY):
+    # Session mode stages files under var/guidance when no reader is supplied;
+    # without this a test would write into the developer's own queue.
+    monkeypatch.setenv("HAWKEYE_GUIDANCE", str(tmp_path / "guidance"))
     today = date.today()
     event_day = today - timedelta(days=3)
     store = StockStore(str(tmp_path / "hawkeye.db"))
@@ -418,17 +421,17 @@ def _scan(reader, tmp_path, summary=_SUMMARY):
     return result, store
 
 
-def test_the_agent_is_given_the_sentence_and_the_quarter_that_follows(tmp_path):
+def test_the_agent_is_given_the_sentence_and_the_quarter_that_follows(tmp_path, monkeypatch):
     reader = _Reader({"guided": False})
 
-    _scan(reader, tmp_path)
+    _scan(reader, tmp_path, monkeypatch)
 
     assert len(reader.requests) == 1
     assert reader.requests[0].summary == _SUMMARY
     assert reader.requests[0].next_quarter == "2026-Q3"
 
 
-def test_a_reading_no_pattern_could_produce_reaches_the_print_row(tmp_path):
+def test_a_reading_no_pattern_could_produce_reaches_the_print_row(tmp_path, monkeypatch):
     """"a loss of $1.00 per share to breakeven" is -1.00 to 0.00. The
     regular expression that used to read this leg refused it, and refusing
     it is what layer 2 exists to stop."""
@@ -437,7 +440,7 @@ def test_a_reading_no_pattern_could_produce_reaches_the_print_row(tmp_path):
         "quote": ("third quarter results to range from a loss of $1.00 per "
                   "share to breakeven")})
 
-    _, store = _scan(reader, tmp_path)
+    _, store = _scan(reader, tmp_path, monkeypatch)
 
     row = store.active_print(store.stock_by_ticker("AMZN").id, "2026-Q2")
     assert row.guidance is not None
@@ -446,7 +449,7 @@ def test_a_reading_no_pattern_could_produce_reaches_the_print_row(tmp_path):
     assert row.guidance.extractor_model == "test-model"
 
 
-def test_the_row_is_written_ONCE_carrying_the_reading(tmp_path):
+def test_the_row_is_written_ONCE_carrying_the_reading(tmp_path, monkeypatch):
     """Attaching the guidance after the row was recorded would mean retiring
     it and appending a corrected one — the mechanism built for a VENDOR
     restating a figure. A scan would then report its own extraction step as
@@ -456,21 +459,21 @@ def test_the_row_is_written_ONCE_carrying_the_reading(tmp_path):
         "quote": ("third quarter results to range from a loss of $1.00 per "
                   "share to breakeven")})
 
-    result, store = _scan(reader, tmp_path)
+    result, store = _scan(reader, tmp_path, monkeypatch)
 
     stock_id = store.stock_by_ticker("AMZN").id
     assert result.revisions == []
     assert len(store.prints(stock_id)) == 1
 
 
-def test_a_refusal_is_recorded_by_name_on_the_row(tmp_path):
+def test_a_refusal_is_recorded_by_name_on_the_row(tmp_path, monkeypatch):
     """An empty guidance leg has three causes and only one of them is ours. A
     row that stores the blank alone cannot tell them apart afterwards."""
     reader = _Reader({
         "guided": True, "period": "2026-Q3", "eps_low": 5.0, "eps_high": 6.0,
         "quote": "third quarter earnings of $5.00 to $6.00 per share"})
 
-    result, store = _scan(reader, tmp_path)
+    result, store = _scan(reader, tmp_path, monkeypatch)
 
     row = store.active_print(store.stock_by_ticker("AMZN").id, "2026-Q2")
     assert row.guidance is None
@@ -479,19 +482,21 @@ def test_a_refusal_is_recorded_by_name_on_the_row(tmp_path):
     assert result.guidance.read == 0
 
 
-def test_the_reason_reaches_the_reading_of_the_quarter(tmp_path):
+def test_the_reason_reaches_the_reading_of_the_quarter(tmp_path, monkeypatch):
     reader = _Reader({"guided": False})
 
-    result, _ = _scan(reader, tmp_path)
+    result, _ = _scan(reader, tmp_path, monkeypatch)
 
     guidance = result.passed[0].quality.guidance
     assert guidance.status is LegStatus.ABSENT
     assert "no_guidance_in_source" in guidance.flags
 
 
-def test_no_reader_is_not_the_same_as_a_reader_that_found_nothing(tmp_path):
+def test_no_reader_is_not_the_same_as_a_reader_that_found_nothing(
+        tmp_path, monkeypatch):
     """Zero attempts and zero readings must not print like "it ran and the
     companies had guided nothing"."""
+    monkeypatch.setenv("HAWKEYE_GUIDANCE", str(tmp_path / "guidance"))
     today = date.today()
     event_day = today - timedelta(days=3)
     store = StockStore(str(tmp_path / "hawkeye.db"))
@@ -500,3 +505,5 @@ def test_no_reader_is_not_the_same_as_a_reader_that_found_nothing(tmp_path):
                        numbers_source=_feed(event_day, _SUMMARY))
 
     assert result.guidance.attempted == 0
+    # Staged instead: the sentence still has to be read, just not here.
+    assert result.guidance.staged == 1

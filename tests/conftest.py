@@ -15,6 +15,19 @@ from hawkeye.marketdata.base import Bar
 from hawkeye.marketdata.whispers import EASTERN, WhispersRecord
 
 
+@pytest.fixture(autouse=True)
+def _isolate_the_guidance_queue(tmp_path_factory, monkeypatch):
+    """No test may write into the developer's own extraction queue.
+
+    A scan with no guidance reader stages one file per print for the session
+    to read later (hawkeye/scout/guidance_case.py). Several suites run a whole
+    scan, so without this the queue fills with fixture companies and the next
+    real run asks a subagent to read AMZN's invented summary.
+    """
+    monkeypatch.setenv("HAWKEYE_GUIDANCE",
+                       str(tmp_path_factory.mktemp("guidance")))
+
+
 @pytest.fixture
 def config() -> HawkeyeConfig:
     return HawkeyeConfig()

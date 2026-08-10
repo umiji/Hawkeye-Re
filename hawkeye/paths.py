@@ -57,6 +57,17 @@ def drops_dir() -> Path:
     return _dir("HAWKEYE_DROPS", "drops")
 
 
+def guidance_dir() -> Path:
+    """Forward statements a scan read but has not had extracted yet.
+
+    Only session mode fills this: with an API key the extraction happens
+    inside the scan and nothing is ever staged. The files are what let an
+    interrupted round resume instead of re-running the scan, exactly as
+    `drops/` does for the drop reviews.
+    """
+    return _dir("HAWKEYE_GUIDANCE", "guidance")
+
+
 def reports_dir() -> Path:
     """Rendered run reports."""
     return _dir("HAWKEYE_REPORTS", "reports")

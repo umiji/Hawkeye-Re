@@ -378,4 +378,71 @@ def test_the_three_kinds_are_counted_apart():
     assert stats.as_dict() == {"guidance_attempted": 4, "guidance_read": 1,
                                "guidance_absent_in_source": 1,
                                "guidance_reader_failed": 1,
-                               "guidance_call_failed": 1}
+                               "guidance_call_failed": 1,
+                               "guidance_staged": 0}
+
+
+# --- the real ALGT response, which broke both checks at once ---------------
+#
+# Found by running the session-mode loop against the recorded response on
+# 2026-08-10, after the tests above all passed on a hand-written summary. Two
+# defects, and the hand-written summary could not have shown either:
+#
+# - the vendor separates paragraphs with `<br /><br />` and NO space after the
+#   preceding period, so a splitter that breaks on ". " glued the results
+#   paragraph onto the guidance paragraph;
+# - the results paragraph says the company "beat consensus estimates by
+#   72.44%", which is about the quarter just reported. Treating the substring
+#   "consensus estimate" as the analysts' forward sentence made that a decoy,
+#   and the glued paragraph then failed the wrong-sentence check.
+#
+# Together they refused a reading that was correct, and named the failure
+# `quoted_the_wrong_sentence` — a refusal blaming the agent for our own bug.
+
+ALGT_REAL = (
+    "Allegiant Travel (ALGT) reported earnings of $2.19 per share on revenue "
+    "of $943.49 million for the  second quarter ended June 2026.  The "
+    "consensus earnings estimate was $1.27 per share on  revenue of $1.03 "
+    "billion. The company beat consensus estimates by 72.44% while revenue "
+    "grew 36.86% on a year-over-year basis.<br /><br />The company  said it "
+    "expects  third quarter  results to range from a loss of $1.00 per share "
+    "to  breakeven and 2026 earnings of more than $6.00 per share. The "
+    "current consensus estimate is earnings of $0.08 per share for the "
+    "quarter ending September 30, 2026 and earnings of $7.50 per share for "
+    "the year ending December 31, 2026.")
+
+
+def test_the_vendors_paragraph_break_ends_a_sentence():
+    out = parse_reply({
+        "guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
+        "quote": ("third quarter  results to range from a loss of $1.00 per "
+                  "share to  breakeven"),
+    }, a_request(ticker="ALGT", fiscal_quarter="2026-Q2",
+                 next_quarter="2026-Q3", summary=ALGT_REAL), model="m")
+
+    assert out.reason == ""
+    assert out.reading.eps_low == pytest.approx(-1.00)
+
+
+def test_the_quarter_just_reported_is_not_the_analysts_forward_sentence():
+    """"beat consensus estimates by 72.44%" describes what already happened.
+    Only "the current consensus ... is" is the bar this reading would be
+    measured against."""
+    out = parse_reply({
+        "guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
+        "quote": "a loss of $1.00 per share to  breakeven",
+    }, a_request(ticker="ALGT", fiscal_quarter="2026-Q2",
+                 next_quarter="2026-Q3", summary=ALGT_REAL), model="m")
+
+    assert out.reason == ""
+
+
+def test_the_forward_consensus_sentence_is_still_a_decoy():
+    out = parse_reply({
+        "guided": True, "period": "2026-Q3", "eps_low": 0.08, "eps_high": 0.08,
+        "quote": ("The current consensus estimate is earnings of $0.08 per "
+                  "share for the quarter ending September 30, 2026"),
+    }, a_request(ticker="ALGT", fiscal_quarter="2026-Q2",
+                 next_quarter="2026-Q3", summary=ALGT_REAL), model="m")
+
+    assert out.reason == "quoted_the_wrong_sentence"

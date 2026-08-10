@@ -168,9 +168,18 @@ def render_request(request: GuidanceRequest) -> str:
 _SCALE = {"million": 1_000_000.0, "billion": 1_000_000_000.0,
           "dollars": 1.0}
 _PERIOD = re.compile(r"^(?:FY\d{4}|\d{4}-Q[1-4])$")
-# The two sentences that are shaped like guidance and are not it.
-_WRONG_SENTENCE = ("previous guidance", "current consensus",
-                   "consensus estimate")
+# The two sentences that are shaped like guidance and are not it. Both are
+# matched on the words that make them what they are and nothing wider: the
+# results paragraph says the company "beat consensus estimates by 72.44%",
+# which is about the quarter just reported, and a marker of "consensus
+# estimate" made THAT a decoy and refused a correct reading (found on ALGT's
+# real response, 2026-08-10).
+_WRONG_SENTENCE = ("previous guidance", "current consensus")
+# The vendor separates paragraphs with `<br />` and puts NO space after the
+# preceding full stop, so a splitter that breaks on ". " glues the results
+# paragraph onto the guidance paragraph — and then judges the second by what
+# is written in the first.
+_SENTENCE_END = re.compile(r"(?<=\.)\s+|<br\s*/?>")
 
 
 def _flat(text: str) -> str:
@@ -188,7 +197,7 @@ def _sentence_holding(quote: str, summary: str) -> Optional[str]:
     flat_quote = _flat(quote)
     if not flat_quote:
         return None
-    for sentence in re.split(r"(?<=\.)\s+", re.sub(r"\s+", " ", summary or "")):
+    for sentence in _SENTENCE_END.split(re.sub(r"\s+", " ", summary or "")):
         if flat_quote in _flat(sentence):
             return sentence
     # A quote spanning a sentence boundary still has to exist somewhere; it
@@ -311,6 +320,9 @@ class GuidanceStats:
     absent_in_source: int = 0
     reader_failed: int = 0
     call_failed: int = 0
+    # Sentences written down for an agent this process could not call
+    # (session mode). Not a failure and not a reading — work outstanding.
+    staged: int = 0
 
     def record(self, reason: str) -> None:
         self.attempted += 1
@@ -325,7 +337,8 @@ class GuidanceStats:
                 "guidance_read": self.read,
                 "guidance_absent_in_source": self.absent_in_source,
                 "guidance_reader_failed": self.reader_failed,
-                "guidance_call_failed": self.call_failed}
+                "guidance_call_failed": self.call_failed,
+                "guidance_staged": self.staged}
 
 
 class LLMGuidanceReader:

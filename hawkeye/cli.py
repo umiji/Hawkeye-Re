@@ -53,7 +53,7 @@ from hawkeye.reports.render_ja import (
     render_scout_ja,
     render_signals_ja,
 )
-from hawkeye.scout import drop_case, drop_cycle
+from hawkeye.scout import drop_case, drop_cycle, guidance_case
 from hawkeye.scout.drop_review import (
     CHECKPOINT_TRADING_DAYS,
     COHORTS,
@@ -99,6 +99,7 @@ from hawkeye.scout.scout import (
     run_scout,
     scan_window,
 )
+from hawkeye.scout.quality import assess_earnings
 from hawkeye.scout.triage import rebuild_triage
 from hawkeye.sentinel.monitor import check_position
 from hawkeye.tribunal import casefile
@@ -603,6 +604,77 @@ def cmd_stocks_prune_revisions(args: argparse.Namespace) -> int:
     removed = sum(store.delete_superseded_prints(s.id)
                   for s in {stock.id: stock for stock, _ in retired}.values())
     print(f"{removed}件を削除しました。現行の行には触れていません。")
+    return 0
+
+
+def cmd_guidance_queue(args: argparse.Namespace) -> int:
+    """List the forward statements waiting to be read, or emit one package.
+
+    One at a time, like the drop reviews: the caller spawns a fresh subagent
+    per print, so nothing it read about the previous company can colour the
+    next one's numbers.
+    """
+    cases = guidance_case.list_cases()
+    if not cases:
+        print("ガイダンスの読み取り待ちはありません。")
+        return 0
+    if args.case_id is None:
+        print(f"読み取り待ち {len(cases)}件:")
+        for c in cases:
+            print(f"  {c.id}  {c.ticker:6s} {c.fiscal_quarter}")
+        print(f"\n次: hawkeye guidance queue --case-id {cases[0].id}")
+        return 0
+    try:
+        case = guidance_case.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    print(guidance_case.render_input(case))
+    print()
+    print(f"submit_with: hawkeye guidance submit {case.id} "
+          f"--file <読み取り結果.json>")
+    return 0
+
+
+def cmd_guidance_submit(args: argparse.Namespace) -> int:
+    """Validate one reading and attach it to the print row it belongs to.
+
+    Prints the quarter's three-leg reading again afterwards, because the
+    guidance leg is the only one that can still move at this point and a
+    number that changed without being shown is a number the reader will act
+    on the old value of.
+    """
+    try:
+        case = guidance_case.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    try:
+        extraction = guidance_case.submit(
+            case, guidance_case.load_reply(args.file),
+            model=args.reader or "")
+    except (ValueError, OSError) as exc:
+        print(f"読み取り結果を受け付けられません: {exc}", file=sys.stderr)
+        return 1
+
+    store = _stock_store()
+    if guidance_case.attach(store, case, extraction) is None:
+        print(f"{case.ticker}: 読み取り対象の決算行が入れ替わっているため"
+              "反映しませんでした(実績値の訂正が間に入った可能性があります)。"
+              "この銘柄はもう一度走査してください。", file=sys.stderr)
+        return 1
+    # Only now — the staged file is what makes a failed write retryable, the
+    # same ordering the tribunal's case workspaces and the drop reviews use.
+    guidance_case.discard(case.id)
+
+    row = store.active_print(case.stock_id, case.fiscal_quarter)
+    consensus = (store.consensus(row.consensus_snapshot_id)
+                 if row.consensus_snapshot_id else None)
+    print(render_quality_ja(assess_earnings(row, consensus,
+                                            HawkeyeConfig.from_env())))
+    remaining = len(guidance_case.list_cases())
+    print("\n次: " + (f"hawkeye guidance queue (残り {remaining}件)"
+                      if remaining else "hawkeye case open ..."))
     return 0
 
 
@@ -1329,6 +1401,22 @@ def build_parser() -> argparse.ArgumentParser:
     stkp.add_argument("--apply", action="store_true",
                       help="actually delete (default is a preview)")
     stkp.set_defaults(func=cmd_stocks_prune_revisions)
+
+    gd = sub.add_parser("guidance",
+                        help="read the company's own outlook out of the "
+                             "print's prose (task 8.7 layer 2)")
+    gd_sub = gd.add_subparsers(dest="guidance_command", required=True)
+    gdq = gd_sub.add_parser("queue",
+                            help="list what is waiting, or emit one package")
+    gdq.add_argument("--case-id", default=None,
+                     help="emit this case's package instead of the list")
+    gdq.set_defaults(func=cmd_guidance_queue)
+    gds = gd_sub.add_parser("submit", help="attach one reading to its print")
+    gds.add_argument("case_id")
+    gds.add_argument("--file", required=True, help="the agent's JSON reply")
+    gds.add_argument("--reader", default=None,
+                     help="which model read it (recorded on the row)")
+    gds.set_defaults(func=cmd_guidance_submit)
 
     sd = sub.add_parser("screened",
                         help="review candidates the scout funnel dropped "

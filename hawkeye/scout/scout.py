@@ -322,6 +322,33 @@ def _read_guidance(context: _QuarterContext, event, reader,
         update={"guidance": out.reading, "guidance_reason": out.reason}))
 
 
+def _stage_guidance(store, context: _QuarterContext, event) -> bool:
+    """Write the sentence down for an agent that cannot be called from here.
+
+    Session mode only: nothing inside a scan subprocess can reach the Claude
+    Code session driving it, so the loop goes out through the CLI and comes
+    back through it (hawkeye/scout/guidance_case.py).
+
+    Staged AFTER the row is recorded and only when the row this scan wrote is
+    the one now active. A scan that met the print as a duplicate did not write
+    a row, and a case pointing at a row nobody wrote would attach its reading
+    to nothing.
+    """
+    from hawkeye.scout.guidance_case import GuidanceCase, save_case
+    if not getattr(event, "summary", ""):
+        return False
+    active = store.active_print(context.stock_id,
+                                context.print_row.fiscal_quarter)
+    if active is None or active.id != context.print_row.id:
+        return False
+    save_case(GuidanceCase(
+        stock_id=context.stock_id, print_id=active.id, ticker=event.ticker,
+        fiscal_quarter=context.print_row.fiscal_quarter,
+        next_quarter=next_fiscal_quarter(context.print_row.fiscal_quarter),
+        summary=event.summary))
+    return True
+
+
 def _record_print(store, context: _QuarterContext, config=None,
                   now=None) -> list[Revision]:
     """Record a quarter once, and never re-record it.
@@ -588,6 +615,13 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
             event_date=event.day, source="scout/finnhub-earnings-calendar")
         if context is not None:
             revisions.extend(_record_print(stock_store, context, config))
+            # With no reader in this process the extraction still has to
+            # happen, just not here. Counted as attempted so a scan that
+            # staged 12 sentences and had none read is visibly different from
+            # one where nobody guided.
+            if guidance_reader is None and _stage_guidance(stock_store,
+                                                           context, event):
+                guidance_stats.staged += 1
         try:
             # Only trusted figures become structured snapshot fields: the
             # tribunal prompts tell both roles to prefer these over prose, so
