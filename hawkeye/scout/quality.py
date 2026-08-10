@@ -43,6 +43,7 @@ from hawkeye.contracts.stocks import (
     EarningsPrint,
     PrintSource,
     SnapshotKind,
+    next_fiscal_quarter,
 )
 from hawkeye.scout.earnings import (
     EarningsEvent,
@@ -235,17 +236,7 @@ def _leg_status(pct: Optional[float], estimate: Optional[float],
     return LegStatus.INLINE
 
 
-def _next_quarter(fiscal_quarter: str) -> str:
-    """`2026-Q2` -> `2026-Q3`; the quarter guidance is supposed to be about.
-
-    Empty when the label is not one this system produced, which makes the
-    comparison below refuse rather than guess.
-    """
-    year, _, quarter = (fiscal_quarter or "").partition("-Q")
-    if not quarter.isdigit() or not year.isdigit():
-        return ""
-    number = int(quarter)
-    return f"{int(year) + 1}-Q1" if number == 4 else f"{year}-Q{number + 1}"
+_next_quarter = next_fiscal_quarter    # the shared label arithmetic
 
 
 def _yardsticks(period: str, print_row: EarningsPrint,
@@ -289,8 +280,14 @@ def _guidance_leg(print_row: EarningsPrint,
     """
     guidance = print_row.guidance
     if guidance is None:
-        return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
-                          flags=("guidance_not_published",))
+        # WHY there is none, when the row knows. "The company published no
+        # outlook", "the reader could not read the one it published" and "the
+        # extraction call failed" are three different facts, and a leg that
+        # renders all three as 開示なし makes the second and third invisible
+        # exactly where they would be noticed.
+        return LegVerdict(
+            leg="guidance", status=LegStatus.ABSENT,
+            flags=(print_row.guidance_reason or "guidance_not_published",))
     # A range the company fenced with a condition is not measured against a
     # consensus set without one. ACA guided "2026 revenue of $2.60 to $2.70
     # billion, EXCLUDING its barge business" while the analysts' figure for

@@ -12,7 +12,7 @@ is a first-class metric of the system, same as P&L.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
@@ -26,7 +26,11 @@ from hawkeye.contracts.models import (
     ScreenedCandidateStage,
     utc_date,
 )
-from hawkeye.contracts.stocks import ConsensusSnapshot, EarningsPrint
+from hawkeye.contracts.stocks import (
+    ConsensusSnapshot,
+    EarningsPrint,
+    next_fiscal_quarter,
+)
 from hawkeye.gates.entry_gates import run_entry_gates
 from hawkeye.marketdata.base import MarketDataProvider
 from hawkeye.marketdata.snapshot import build_brief
@@ -35,6 +39,10 @@ from hawkeye.scout.earnings import (
     parse_calendar,
     score_candidate,      # re-exported: the ranking score lives with the screen
     screen_events,
+)
+from hawkeye.scout.guidance_agent import (
+    GuidanceRequest,
+    GuidanceStats,
 )
 from hawkeye.scout.prereg import resolve_stock
 from hawkeye.scout.revision import Revision, apply_revision, detect_revisions
@@ -119,6 +127,10 @@ class ScoutResult:
     # Reported ABOVE the shortlist, because a correction the reader meets after
     # they have read the ranking is a correction they will not act on.
     revisions: list[Revision] = field(default_factory=list)
+    # What the guidance extraction step did (task 8.7 layer 2). Zero
+    # everywhere when no reader was supplied — which is a different fact from
+    # "it ran and found nothing", and the two must not print the same.
+    guidance: GuidanceStats = field(default_factory=GuidanceStats)
 
     def funnel(self) -> dict:
         return {"scanned": self.scanned, "screened": self.screened,
@@ -283,6 +295,33 @@ def _quarter_context(store, directory, event) -> Optional[_QuarterContext]:
                            consensus_id=consensus.id, consensus=consensus)
 
 
+def _read_guidance(context: _QuarterContext, event, reader,
+                   stats: GuidanceStats) -> _QuarterContext:
+    """Replace the print row's guidance with the agent's reading of it.
+
+    Runs BEFORE the row is recorded and before the quarter is judged, so the
+    row is written once, complete, and carrying who read it. Attaching it
+    afterwards would mean retiring a row and appending a corrected one — the
+    mechanism task 8.5 built for a VENDOR restating a figure — and a scan
+    would then report its own extraction step as if the source had changed
+    its mind.
+
+    A print with no summary is skipped rather than counted: the feed declined
+    that name entirely, so there was no sentence for anyone to read and the
+    extraction step never had a turn.
+    """
+    if reader is None or not getattr(event, "summary", ""):
+        return context
+    out = reader.read(GuidanceRequest(
+        ticker=event.ticker,
+        fiscal_quarter=context.print_row.fiscal_quarter,
+        next_quarter=next_fiscal_quarter(context.print_row.fiscal_quarter),
+        summary=event.summary))
+    stats.record(out.reason)
+    return replace(context, print_row=context.print_row.model_copy(
+        update={"guidance": out.reading, "guidance_reason": out.reason}))
+
+
 def _record_print(store, context: _QuarterContext, config=None,
                   now=None) -> list[Revision]:
     """Record a quarter once, and never re-record it.
@@ -397,7 +436,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
               already_seen: Optional[set[tuple[str, date]]] = None,
               numbers_source: Optional[WhispersReader] = None,
               stock_store=None,
-              directory=None) -> ScoutResult:
+              directory=None,
+              guidance_reader=None) -> ScoutResult:
     """calendar_source: object with earnings_calendar(start, end) -> list[dict]
     provider: MarketDataProvider for enrichment (prices/profile/news).
     window: the earnings days to cover — normally built by scan_window()
@@ -516,6 +556,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     passed: list[ScoutCandidate] = []
     rejected: list[ScoutCandidate] = []
     revisions: list[Revision] = []
+    guidance_stats = GuidanceStats()
     attempted = 0
     stopped_at = len(screened)
 
@@ -532,6 +573,12 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
         # numbers are allowed to become structured facts; the event-day
         # reaction only refines the score afterwards.
         context = _quarter_context(stock_store, directory, event)
+        # The third leg, read by an agent out of the same prose that carried
+        # the numbers (task 8.7 layer 2). Before the judgment, because it IS
+        # one of the three things being judged.
+        if context is not None:
+            context = _read_guidance(context, event, guidance_reader,
+                                     guidance_stats)
         quality = (assess_earnings(context.print_row, context.consensus, config)
                    if context is not None else None)
         catalyst = Catalyst(
@@ -637,7 +684,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
                        window_truncated=window.truncated,
                        numbers=numbers,
                        enrichment_ceiling_hit=ceiling_hit,
-                       revisions=revisions)
+                       revisions=revisions,
+                       guidance=guidance_stats)
 
 
 def _visible_at_drop(c: ScoutCandidate) -> dict:

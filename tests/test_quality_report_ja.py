@@ -15,13 +15,17 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from hawkeye.config import HawkeyeConfig
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     EarningsPrint,
+    GuidanceReading,
     PrintSource,
 )
 from hawkeye.reports.quality_ja import render_quality_ja
+from hawkeye.scout.guidance_agent import _FAILURE_KIND
 from hawkeye.scout.quality import assess_earnings
 
 CONFIG = HawkeyeConfig()
@@ -95,7 +99,6 @@ def test_the_headline_number_is_shown_next_to_the_analyst_count():
 def aca_like():
     """ACA's real shape: guidance fenced with a condition the analysts' figure
     for the same year does not share."""
-    from hawkeye.contracts.stocks import GuidanceReading
     return assess_earnings(
         EarningsPrint(stock_id="cik:0001739445", ticker="ACA",
                       fiscal_quarter="2026-Q1",
@@ -123,3 +126,24 @@ def test_a_refused_guidance_says_so_in_words_and_quotes_the_condition():
     assert "条件" in text
     assert "excluding its barge business" in text
     assert "guidance_scope_qualified" not in text     # never a bare identifier
+
+
+# --- the agent's refusals, in words -----------------------------------------
+
+@pytest.mark.parametrize("reason", sorted(_FAILURE_KIND))
+def test_no_guidance_refusal_reaches_the_reader_as_a_bare_identifier(reason):
+    """Every reason the extraction step can give has to have Japanese words
+    for it. A reader shown `quote_not_in_source` learns nothing, and the
+    three kinds this splits into mean completely different things — one is
+    about the company, one is about our own extractor, one is about the
+    network."""
+    quality = assess_earnings(
+        EarningsPrint(stock_id="s", ticker="T", fiscal_quarter="2026-Q2",
+                      report_date=date(2026, 7, 31),
+                      source=PrintSource.WHISPERS, eps_actual=1.20,
+                      guidance=None, guidance_reason=reason),
+        ConsensusSnapshot(stock_id="s", ticker="T", fiscal_quarter="2026-Q2",
+                          eps_avg=1.00, eps_analysts=20),
+        CONFIG)
+
+    assert reason not in render_quality_ja(quality)

@@ -377,3 +377,126 @@ def test_the_screen_still_works_without_a_store():
                        _config(), today=today)
     assert [c.ticker for c in result.passed] == ["AMZN"]
     assert result.passed[0].quality is None
+
+
+# --- the guidance an agent read (task 8.7 layer 2) -------------------------
+#
+# The third leg is the only one that arrives as prose, and since 2026-08-10 an
+# agent reads it rather than a pattern. What these pin is the wiring: that the
+# scan hands the agent the sentence, that the row it writes carries the
+# reading AND who produced it, and that a refusal is recorded by name instead
+# of arriving as an ordinary blank.
+
+_SUMMARY = (
+    "Test Corp reported second quarter earnings of $1.20 per share. "
+    "The company said it expects third quarter results to range from a loss "
+    "of $1.00 per share to breakeven. The current consensus estimate is "
+    "earnings of $0.08 per share for the quarter ending September 30, 2026.")
+
+
+class _Reader:
+    """A stubbed extraction step. Records what it was asked."""
+
+    def __init__(self, reply):
+        self.reply = reply
+        self.requests = []
+
+    def read(self, request):
+        from hawkeye.scout.guidance_agent import parse_reply
+        self.requests.append(request)
+        return parse_reply(self.reply, request, model="test-model")
+
+
+def _scan(reader, tmp_path, summary=_SUMMARY):
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
+                       _config(), today=today, stock_store=store,
+                       numbers_source=_feed(event_day, summary),
+                       guidance_reader=reader)
+    return result, store
+
+
+def test_the_agent_is_given_the_sentence_and_the_quarter_that_follows(tmp_path):
+    reader = _Reader({"guided": False})
+
+    _scan(reader, tmp_path)
+
+    assert len(reader.requests) == 1
+    assert reader.requests[0].summary == _SUMMARY
+    assert reader.requests[0].next_quarter == "2026-Q3"
+
+
+def test_a_reading_no_pattern_could_produce_reaches_the_print_row(tmp_path):
+    """"a loss of $1.00 per share to breakeven" is -1.00 to 0.00. The
+    regular expression that used to read this leg refused it, and refusing
+    it is what layer 2 exists to stop."""
+    reader = _Reader({
+        "guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
+        "quote": ("third quarter results to range from a loss of $1.00 per "
+                  "share to breakeven")})
+
+    _, store = _scan(reader, tmp_path)
+
+    row = store.active_print(store.stock_by_ticker("AMZN").id, "2026-Q2")
+    assert row.guidance is not None
+    assert row.guidance.eps_low == -1.00 and row.guidance.eps_high == 0.0
+    assert row.guidance.extractor == "agent"
+    assert row.guidance.extractor_model == "test-model"
+
+
+def test_the_row_is_written_ONCE_carrying_the_reading(tmp_path):
+    """Attaching the guidance after the row was recorded would mean retiring
+    it and appending a corrected one — the mechanism built for a VENDOR
+    restating a figure. A scan would then report its own extraction step as
+    the source changing its mind."""
+    reader = _Reader({
+        "guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
+        "quote": ("third quarter results to range from a loss of $1.00 per "
+                  "share to breakeven")})
+
+    result, store = _scan(reader, tmp_path)
+
+    stock_id = store.stock_by_ticker("AMZN").id
+    assert result.revisions == []
+    assert len(store.prints(stock_id)) == 1
+
+
+def test_a_refusal_is_recorded_by_name_on_the_row(tmp_path):
+    """An empty guidance leg has three causes and only one of them is ours. A
+    row that stores the blank alone cannot tell them apart afterwards."""
+    reader = _Reader({
+        "guided": True, "period": "2026-Q3", "eps_low": 5.0, "eps_high": 6.0,
+        "quote": "third quarter earnings of $5.00 to $6.00 per share"})
+
+    result, store = _scan(reader, tmp_path)
+
+    row = store.active_print(store.stock_by_ticker("AMZN").id, "2026-Q2")
+    assert row.guidance is None
+    assert row.guidance_reason == "quote_not_in_source"
+    assert result.guidance.reader_failed == 1
+    assert result.guidance.read == 0
+
+
+def test_the_reason_reaches_the_reading_of_the_quarter(tmp_path):
+    reader = _Reader({"guided": False})
+
+    result, _ = _scan(reader, tmp_path)
+
+    guidance = result.passed[0].quality.guidance
+    assert guidance.status is LegStatus.ABSENT
+    assert "no_guidance_in_source" in guidance.flags
+
+
+def test_no_reader_is_not_the_same_as_a_reader_that_found_nothing(tmp_path):
+    """Zero attempts and zero readings must not print like "it ran and the
+    companies had guided nothing"."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    result = run_scout(FakeCalendar(_entries(event_day)),
+                       _provider(), _config(), today=today, stock_store=store,
+                       numbers_source=_feed(event_day, _SUMMARY))
+
+    assert result.guidance.attempted == 0

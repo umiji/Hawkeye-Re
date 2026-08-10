@@ -85,6 +85,13 @@ class EarningsEvent:
     # one that guided nothing (invariant 6).
     guidance: Optional[GuidanceReading] = None
     guidance_reason: str = ""
+    # The feed's summary prose, verbatim, carried because the guidance in it
+    # is read by an AGENT rather than by a pattern (task 8.7 layer 2) and the
+    # agent has to be given the sentence. Kept whole: cutting it down to "the
+    # guidance sentence" needs the reading the agent exists to produce, and a
+    # wrong cut is invisible — the agent would faithfully report a range out
+    # of whatever survived it.
+    summary: str = ""
     # The analysts' FULL-YEAR figures, read from the same sentence that named
     # the guidance above. They travel together because they only mean anything
     # together: a full-year range judged against next quarter's consensus is

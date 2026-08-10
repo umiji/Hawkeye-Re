@@ -163,6 +163,12 @@ def _forward_legs(record: WhispersRecord) -> dict:
     consensus = read_consensus(record)
     return {"guidance": guidance.reading or guidance.full_year,
             "guidance_reason": guidance.reason,
+            # The prose itself, for the agent that reads the guidance out of
+            # it (task 8.7 layer 2). Travels on BOTH branches for the same
+            # reason the pattern's reading does: the one-vendor rule binds the
+            # surprise ratio, and guidance is a third leg measured against a
+            # third figure.
+            "summary": record.summary or "",
             "full_year_eps_estimate": consensus.full_year_eps,
             "full_year_revenue_estimate": consensus.full_year_revenue,
             "full_year_period": consensus.full_year_period,

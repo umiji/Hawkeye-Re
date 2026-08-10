@@ -151,6 +151,21 @@ def _from_source_label(year, quarter) -> Optional[str]:
     return f"{fiscal_year}-Q{number}" if 1 <= number <= 4 else None
 
 
+def next_fiscal_quarter(label: str) -> str:
+    """`2026-Q2` -> `2026-Q3`; the quarter a print's guidance is about.
+
+    Empty when the label is not one this system produced, so every caller
+    refuses rather than guessing which quarter was meant. Lives here beside
+    `resolve_fiscal_quarter` because it is the same arithmetic on the same
+    label, and two copies of it in two modules is how they start disagreeing.
+    """
+    year, _, quarter = (label or "").partition("-Q")
+    if not quarter.isdigit() or not year.isdigit():
+        return ""
+    number = int(quarter)
+    return f"{int(year) + 1}-Q1" if number == 4 else f"{year}-Q{number + 1}"
+
+
 def resolve_fiscal_quarter(*,
                            quarter_end: Optional[date] = None,
                            year_end: Optional[date] = None,
@@ -266,6 +281,14 @@ class GuidanceReading(BaseModel):
     # effect is downstream: a conditioned range is not compared with a
     # consensus set on different terms (§5.3, layer 3).
     qualifier: str = ""
+    # Who read this sentence — "code" for the pattern matcher, "agent" for the
+    # extraction step — and which model, when it was an agent. The reading
+    # itself is the same shape and is scored the same either way (User
+    # decision, 2026-08-09): what changes is only that the record can say who
+    # produced it, the way `Recommendation.model` and
+    # `DropReview.reviewer_model` already do for the tribunal and the reviews.
+    extractor: str = "code"
+    extractor_model: str = ""
 
     @property
     def eps_midpoint(self) -> Optional[float]:
@@ -392,6 +415,12 @@ class EarningsPrint(BaseModel):
     revenue_actual: Optional[float] = None
 
     guidance: Optional[GuidanceReading] = None
+    # Why there is no guidance above, when there is none. Empty guidance has
+    # three completely different causes — the company published no outlook,
+    # the reader could not read the one it published, or the extraction call
+    # never completed — and a row that records only the blank cannot tell them
+    # apart afterwards (User decision, 2026-08-09).
+    guidance_reason: str = ""
     contamination_flags: list[str] = Field(default_factory=list)
     consensus_snapshot_id: str = ""
     notes: str = ""
