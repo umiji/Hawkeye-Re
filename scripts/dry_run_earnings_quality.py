@@ -59,7 +59,6 @@ from hawkeye.marketdata.whispers import (                     # noqa: E402
     WhispersSource,
     WhispersUnavailable,
     read_consensus,
-    read_guidance,
 )
 from hawkeye.reports.quality_ja import render_quality_ja      # noqa: E402
 from hawkeye.scout.earnings import parse_calendar             # noqa: E402
@@ -181,9 +180,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"    四半期 {record.fiscal_quarter or '—'}"
               f" / 発表 {record.announced_at}"
               f" / 取得できなかった項目: {', '.join(record.gaps) or 'なし'}")
-        readout = read_guidance(record)
-        print(f"    ガイダンス読み取り: "
-              f"{readout.reading or readout.reason or '—'}")
+        # ガイダンス（会社が自分で出す業績見通し）は2026-08-10からエージェント
+        # （AI）が読むので、ここでは読み取らず、AIに渡す文章そのものを出す。
+        # この下見スクリプトは走査の外で動くため、AIは呼ばない。
+        print(f"    ガイダンス読み取り: AIが読む対象の文章"
+              f"{'あり' if record.summary else 'なし'}"
+              f"（hawkeye guidance queue で処理）")
         # The full-year yardstick lives in the SAME summary string, and a
         # full-year guidance is unjudgeable without it. Printed beside the
         # guidance so the pair can be checked together.

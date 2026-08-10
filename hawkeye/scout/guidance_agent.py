@@ -293,6 +293,11 @@ _FAILURE_KIND = {
     "period_not_next_quarter": "reader_failed",
     # The call never completed.
     "extraction_call_failed": "call_failed",
+    # Not a failure at all: session mode wrote the sentence down and nobody
+    # has read it yet. It is in this table so that every reason a guidance leg
+    # can be empty has to be named and translated — a blank the reader cannot
+    # account for is the thing the table exists to prevent.
+    "pending_extraction": "not_yet_read",
 }
 
 

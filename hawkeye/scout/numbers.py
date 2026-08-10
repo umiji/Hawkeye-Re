@@ -48,7 +48,6 @@ from hawkeye.marketdata.whispers import (
     WhispersRecord,
     WhispersUnavailable,
     read_consensus,
-    read_guidance,
 )
 from hawkeye.scout.earnings import (
     EarningsEvent,
@@ -152,23 +151,22 @@ def _read_one(source: WhispersReader,
 
 
 def _forward_legs(record: WhispersRecord) -> dict:
-    """What the summary says about the FUTURE: the company's guidance and the
-    analysts' yardstick for it, read from one string in one pass.
+    """What the summary says about the FUTURE: the analysts' yardsticks, and
+    the prose the company's own guidance still has to be read out of.
 
-    They are kept together deliberately. A guidance without its yardstick is
-    scored against whatever else is lying around — which for a full-year range
-    used to be next quarter's consensus, and read as a four-fold beat.
+    The yardsticks are read here, by pattern, because the vendor generates
+    that sentence from its own numbers and it therefore has exactly one shape.
+    The company's guidance is not, and is no longer read here at all — an
+    agent reads it, all of it (hawkeye/scout/guidance_agent.py, User decision
+    2026-08-10). What travels from this module is the sentence itself.
+
+    They still travel together, which was the point of reading them in one
+    pass: a guidance without its yardstick is scored against whatever else is
+    lying around — which for a full-year range used to be next quarter's
+    consensus, and read as a four-fold beat.
     """
-    guidance = read_guidance(record)
     consensus = read_consensus(record)
-    return {"guidance": guidance.reading or guidance.full_year,
-            "guidance_reason": guidance.reason,
-            # The prose itself, for the agent that reads the guidance out of
-            # it (task 8.7 layer 2). Travels on BOTH branches for the same
-            # reason the pattern's reading does: the one-vendor rule binds the
-            # surprise ratio, and guidance is a third leg measured against a
-            # third figure.
-            "summary": record.summary or "",
+    return {"summary": record.summary or "",
             "full_year_eps_estimate": consensus.full_year_eps,
             "full_year_revenue_estimate": consensus.full_year_revenue,
             "full_year_period": consensus.full_year_period,

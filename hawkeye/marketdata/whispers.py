@@ -189,82 +189,23 @@ def _announced_at(value: Any) -> Optional[datetime]:
     return moment.replace(tzinfo=EASTERN) if moment.tzinfo is None else moment
 
 
-# -- guidance --------------------------------------------------------------
+# -- shared numeric helpers ------------------------------------------------
 #
-# The summary puts three sets of numbers in adjacent sentences: what the
-# company now expects, what it expected BEFORE this release, and what analysts
-# expect. Only the first is guidance, and the other two are the same shape —
-# so the clause is cut at their first word rather than pattern-matched around.
+# The guidance reader that used to live here is gone (2026-08-10). It read the
+# company's own forward sentence with regular expressions, and it read most of
+# them — but a pattern can only ever read sentences shaped like the ones it was
+# written against, and the ones it could not are ordinary English:
+# "a loss of $1.00 per share to breakeven" is -1.00 to 0.00, and a range whose
+# top is written first is still a range. Guidance is now read by an agent, all
+# of it (hawkeye/scout/guidance_agent.py, User decision 2026-08-10).
+#
+# What stays here is the ANALYST consensus below, and that is not an
+# inconsistency: the vendor generates that sentence from its own numbers, so it
+# has exactly one shape, and a machine-generated sentence is the case a pattern
+# is right for.
 
-# "The company said it expects" is only the commonest of several wordings, and
-# for as long as it was the only one accepted, four of the 47 recorded names
-# (ADEA ADV AHCO ALB) published a full-year revenue range in plain numbers and
-# were recorded as having guided NOTHING. Two things vary: the verb ("expects",
-# "continues to expect", "now expects") and an aside the vendor drops between
-# "said" and the verb ("said, with the divestiture in its Diabetes Health
-# business, it now expects"). The aside is bounded and must not cross a
-# sentence end, so the next sentence's PREVIOUS guidance can never be reached
-# through it.
-_CLAUSE = re.compile(
-    r"The\s+compan\w+\s+said[^.]{0,120}?\bit\s+"
-    r"(?:now\s+|still\s+)?(?:continues\s+to\s+expect|expects)\s+", re.I)
-_DECOYS = ("The company's previous guidance", "The companys previous guidance",
-           "The current consensus", "<br")
 _NUM = r"([\d,]+(?:\.\d+)?)"
-_EPS_RANGE = re.compile(rf"earnings of \${_NUM} to \${_NUM} per share", re.I)
-_EPS_ONE = re.compile(rf"earnings of approximately \${_NUM} per share", re.I)
-_REV_RANGE = re.compile(
-    rf"revenue of \${_NUM} (million|billion) to \${_NUM} (million|billion)",
-    re.I)
-_REV_ONE = re.compile(
-    rf"revenue of approximately \${_NUM} (million|billion)", re.I)
-_QUARTER_WORD = re.compile(r"\b(first|second|third|fourth) quarter\b", re.I)
-_YEAR = re.compile(r"\b(?:fiscal )?(20\d\d)\b")
-_OPEN_ENDED = re.compile(
-    r"\b(more than|at least|in excess of|no less than|approximately \$[\d.]+ "
-    r"to)\b", re.I)
-_NON_NUMERIC = re.compile(r"\b(breakeven|break-even|range from a loss)\b", re.I)
-# A condition the company attached to the range it just gave. Detected, quoted,
-# and never interpreted: what it does downstream is stop the comparison, not
-# adjust it (§5.3, layer 3). The list is deliberately of PHRASES the company
-# writes about its own scope, not of every hedging word in English — "expects"
-# and "approximately" qualify confidence, which is normal for guidance and
-# nothing to refuse over.
-_QUALIFIER = re.compile(
-    r"\b(?:excluding|excludes|exclusive of|before the impact of|net of|"
-    r"assuming|assumes|does not (?:include|assume)|"
-    r"(?:on a |in )?constant[- ]currency|adjusted to exclude)\b[^,.;]*", re.I)
-_ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4}
 _SCALE = {"million": 1_000_000.0, "billion": 1_000_000_000.0}
-
-
-@dataclass(frozen=True)
-class GuidanceReadout:
-    """What the company said about the future, and what could not be read.
-
-    `reading` is deliberately the NEXT-QUARTER guidance only. Full-year
-    guidance is kept apart in `full_year` because the only yardstick this
-    system captures is next quarter's consensus, and comparing a full-year
-    range against it reads as a four-fold beat.
-    """
-    reading: Optional[GuidanceReading]
-    full_year: Optional[GuidanceReading]
-    reason: str
-    excerpt: str
-
-
-def _clause_of(summary: str) -> str:
-    """The company's own forward sentence, cut before the two decoys."""
-    text = re.sub(r"\s+", " ", summary or "")
-    match = _CLAUSE.search(text)
-    if match is None:
-        return ""
-    clause = text[match.start():]
-    for decoy in _DECOYS:
-        cut = clause.find(decoy)
-        if cut > 0:
-            clause = clause[:cut]
-    return clause.strip().rstrip(".").strip()
 
 
 def _amount(text: str) -> float:
@@ -280,102 +221,6 @@ def _next_quarter_label(record: "WhispersRecord") -> Optional[str]:
     except ValueError:
         return None
     return f"{int(year) + 1}-Q1" if number == 4 else f"{year}-Q{number + 1}"
-
-
-def _segment_period(segment: str, record: "WhispersRecord"
-                    ) -> tuple[str, str]:
-    """(period label, why it has none). Quarterly wins over a year mention.
-
-    A quarter word that does not name the quarter AFTER the one just reported
-    is refused rather than relabelled: it would silently move guidance onto a
-    yardstick from a different period.
-    """
-    quarter = _QUARTER_WORD.search(segment)
-    if quarter is not None:
-        expected = _next_quarter_label(record)
-        if expected is None:
-            return "", "quarter_reference_missing"
-        if not expected.endswith(f"Q{_ORDINALS[quarter.group(1).lower()]}"):
-            return "", "quarter_mismatch"
-        return expected, ""
-    year = _YEAR.search(segment)
-    return (f"FY{year.group(1)}", "") if year else ("", "period_unstated")
-
-
-def _segment_numbers(segment: str) -> tuple[dict, str]:
-    """The ranges in one segment, or why none could be taken from it."""
-    out: dict[str, float] = {}
-    eps = _EPS_RANGE.search(segment)
-    if eps is not None:
-        out["eps_low"], out["eps_high"] = _amount(eps.group(1)), _amount(
-            eps.group(2))
-    elif (one := _EPS_ONE.search(segment)) is not None:
-        out["eps_low"] = out["eps_high"] = _amount(one.group(1))
-    rev = _REV_RANGE.search(segment)
-    if rev is not None:
-        out["revenue_low"] = _amount(rev.group(1)) * _SCALE[rev.group(2).lower()]
-        out["revenue_high"] = _amount(rev.group(3)) * _SCALE[rev.group(4).lower()]
-    elif (one := _REV_ONE.search(segment)) is not None:
-        out["revenue_low"] = out["revenue_high"] = (
-            _amount(one.group(1)) * _SCALE[one.group(2).lower()])
-    if out:
-        # The vendor sometimes writes the top of a range first — ADV's summary
-        # says "2026 revenue of $3.54 billion to $2.67 billion". That is a
-        # range written high-first, not a typo, and nothing in the text tells
-        # the two apart. Ordering the pair keeps the reading; refusing it (as
-        # this briefly did) threw away guidance the company had given.
-        for low, high in (("eps_low", "eps_high"),
-                          ("revenue_low", "revenue_high")):
-            if low in out and out[low] > out[high]:
-                out[low], out[high] = out[high], out[low]
-        return out, ""
-    if _NON_NUMERIC.search(segment):
-        return {}, "non_numeric_range"
-    if _OPEN_ENDED.search(segment):
-        return {}, "open_ended_range"
-    return {}, "unparsed_clause"
-
-
-def read_guidance(record: "WhispersRecord") -> GuidanceReadout:
-    """Read the company's guidance out of the summary prose.
-
-    Deterministic by design (project rule: a parser, never raw model output,
-    stands between a source and a contract model). Everything it cannot read
-    is named in `reason` — a company that guided in a form this does not cover
-    must not be indistinguishable from one that guided nothing.
-    """
-    clause = _clause_of(record.summary)
-    if not clause:
-        return GuidanceReadout(None, None, "no_guidance_clause", "")
-
-    quarterly: Optional[GuidanceReading] = None
-    annual: Optional[GuidanceReading] = None
-    reasons: list[str] = []
-    for segment in re.split(r"\band\b", clause):
-        period, why = _segment_period(segment, record)
-        if not period:
-            reasons.append(why)
-            continue
-        numbers, why = _segment_numbers(segment)
-        if not numbers:
-            reasons.append(why)
-            continue
-        condition = _QUALIFIER.search(segment)
-        reading = GuidanceReading(
-            period=period, source_excerpt=clause,
-            qualifier=condition.group(0).strip() if condition else "",
-            **numbers)
-        if period.startswith("FY"):
-            annual = annual or reading
-        else:
-            quarterly = quarterly or reading
-
-    if quarterly is not None:
-        return GuidanceReadout(quarterly, annual, "", clause)
-    if annual is not None:
-        return GuidanceReadout(None, annual, "full_year_only", clause)
-    return GuidanceReadout(None, None, ";".join(dict.fromkeys(reasons))
-                           or "unparsed_clause", clause)
 
 
 # -- the analyst consensus in the same prose -------------------------------

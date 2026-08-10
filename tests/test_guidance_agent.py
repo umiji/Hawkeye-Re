@@ -305,6 +305,7 @@ def test_a_reading_with_no_figure_at_all_is_refused():
     ("period_unreadable", "reader_failed"),
     ("period_not_next_quarter", "reader_failed"),
     ("extraction_call_failed", "call_failed"),
+    ("pending_extraction", "not_yet_read"),
 ])
 def test_every_refusal_maps_to_one_of_the_three_kinds(reason, kind):
     from hawkeye.scout.guidance_agent import failure_kind

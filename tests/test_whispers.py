@@ -27,7 +27,6 @@ from hawkeye.marketdata.whispers import (
     WhispersUnavailable,
     parse_details,
     read_consensus,
-    read_guidance,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "whispers"
@@ -189,167 +188,21 @@ def test_the_covering_window_allows_a_calendar_off_by_one_day():
     assert record("ADM").covers(date(2026, 8, 5)) is True
 
 
-# -- guidance --------------------------------------------------------------
+# -- guidance: no longer read here ------------------------------------------
 #
-# The prose puts three ranges of numbers next to each other — what the company
-# now expects, what it expected BEFORE, and what analysts expect — and only the
-# first is guidance. Every test below that names a decoy is guarding against
-# reading one of the other two as the company's own words.
-
-def test_next_quarter_eps_guidance_is_read_with_the_quarter_it_belongs_to():
-    out = read_guidance(record("AME"))
-    assert out.reading.period == "2026-Q3"
-    assert out.reading.eps_low == pytest.approx(1.85)
-    assert out.reading.eps_high == pytest.approx(1.87)
-
-
-def test_full_year_guidance_is_kept_separately_from_the_quarterly_one():
-    # AME guided both. They must not be merged: the quarterly figure is the
-    # only one comparable with next quarter's consensus.
-    out = read_guidance(record("AME"))
-    assert out.full_year.period == "FY2026"
-    assert out.full_year.eps_low == pytest.approx(8.20)
-    assert out.full_year.eps_high == pytest.approx(8.30)
-
-
-def test_full_year_only_guidance_leaves_the_quarterly_reading_empty():
-    # ADM guided the year and not the quarter. Returning $5.15-$5.60 as "the
-    # guidance" would later be compared against a QUARTERLY consensus of about
-    # $1.20 and read as a 4x beat.
-    out = read_guidance(record("ADM"))
-    assert out.reading is None
-    assert out.full_year.eps_low == pytest.approx(5.15)
-    assert out.reason == "full_year_only"
-
-
-def test_the_companys_previous_guidance_is_never_read_as_its_guidance():
-    out = read_guidance(record("ADM"))
-    assert out.full_year.eps_low != pytest.approx(4.15)
-    assert "previous guidance" not in out.excerpt
-
-
-def test_the_analyst_consensus_in_the_same_sentence_is_not_read_as_guidance():
-    out = read_guidance(record("AMD"))
-    assert out.reading.revenue_low == pytest.approx(12_700_000_000.0)
-    assert out.reading.revenue_high == pytest.approx(13_300_000_000.0)
-    assert "current consensus" not in out.excerpt
-
-
-def test_revenue_guidance_in_millions_becomes_dollars():
-    out = read_guidance(record("ADTN"))
-    assert out.reading.revenue_low == pytest.approx(275_000_000.0)
-    assert out.reading.revenue_high == pytest.approx(295_000_000.0)
-
-
-def test_a_clause_that_guides_both_eps_and_revenue_yields_both():
-    out = read_guidance(record("ALAB"))
-    assert out.reading.eps_low == pytest.approx(1.16)
-    assert out.reading.eps_high == pytest.approx(1.21)
-    assert out.reading.revenue_low == pytest.approx(540_000_000.0)
-    assert out.reading.revenue_high == pytest.approx(560_000_000.0)
-
-
-def test_a_single_approximate_figure_is_a_range_of_one_value():
-    out = read_guidance(record("ADNT"))
-    assert out.full_year.revenue_low == pytest.approx(14_800_000_000.0)
-    assert out.full_year.revenue_high == pytest.approx(14_800_000_000.0)
-
-
-def test_an_open_ended_floor_is_refused_rather_than_read_as_a_midpoint():
-    # ALGT: "2026 earnings of more than $6.00 per share". Treating $6.00 as
-    # the midpoint would understate guidance the company deliberately left
-    # open, and treating it as a range needs a top nobody published.
-    out = read_guidance(record("ALGT"))
-    assert out.full_year is None
-    assert "open_ended" in out.reason
-
-
-def test_a_range_that_is_not_numeric_is_refused():
-    # ALGT again: "third quarter results to range from a loss of $1.00 per
-    # share to breakeven".
-    out = read_guidance(record("ALGT"))
-    assert out.reading is None
-
-
-def test_a_company_that_published_no_guidance_says_so_explicitly():
-    out = read_guidance(record("ACEL"))
-    assert out.reading is None and out.full_year is None
-    assert out.reason == "no_guidance_clause"
-    assert out.excerpt == ""
-
-
-# -- the forms of "we expect" ----------------------------------------------
+# The pattern that read the company's own forward sentence was retired on
+# 2026-08-10 and its 25 cases went with it. They pinned a reader nothing calls
+# any more, and a suite that keeps testing a retired path is a suite that
+# reports coverage it does not have.
 #
-# The clause matcher used to accept exactly one wording, "the company said it
-# expects", and four of the 47 recorded names (ADEA ADV AHCO ALB) were
-# therefore recorded as having guided NOTHING while stating a full-year
-# revenue range in plain numbers. Nothing about them is hard to read — the
-# sentence just starts differently (measured 2026-08-10).
-
-def test_a_company_that_continues_to_expect_is_still_guiding():
-    # ADEA: "The company said it continues to expect 2026 revenue of $395.0
-    # million to $435.0 million."
-    out = read_guidance(record("ADEA"))
-    assert out.full_year is not None
-    assert out.full_year.period == "FY2026"
-    assert out.full_year.revenue_low == pytest.approx(395_000_000.0)
-    assert out.full_year.revenue_high == pytest.approx(435_000_000.0)
-
-
-def test_a_clause_interrupted_before_the_verb_is_still_read():
-    # AHCO: "The company said, with the divestiture in its Diabetes Health
-    # business, it now expects 2026 revenue of $2.85 billion to $2.89
-    # billion." The previous guidance ($3.45-$3.52 billion) sits in the very
-    # next sentence and must not be the range that gets read.
-    out = read_guidance(record("AHCO"))
-    assert out.full_year is not None
-    assert out.full_year.revenue_low == pytest.approx(2_850_000_000.0)
-    assert out.full_year.revenue_high == pytest.approx(2_890_000_000.0)
-    assert "previous guidance" not in out.excerpt
-
-
-# -- conditions attached to the guidance (layer 3) --------------------------
+# What replaced them: tests/test_guidance_agent.py (the gate on what an agent
+# is allowed to have read, including ACA's condition and ALGT's "a loss of
+# $1.00 to breakeven", both of which are in this same fixture corpus) and
+# tests/test_guidance_case.py (the session-mode loop end to end).
 #
-# ACA guided "2026 revenue of $2.60 billion to $2.70 billion, excluding its
-# barge business", and the analysts' figure in the same summary is "$3.02
-# billion, WHICH INCLUDES its barge business". The two numbers describe
-# different companies. The condition is quoted here so the comparison can
-# refuse downstream; nothing here decides anything.
-
-def test_a_condition_attached_to_the_guidance_is_quoted():
-    out = read_guidance(record("ACA"))
-    assert out.full_year is not None
-    assert out.full_year.qualifier == "excluding its barge business"
-
-
-def test_guidance_with_no_condition_carries_none():
-    out = read_guidance(record("AME"))
-    assert out.reading.qualifier == ""
-    assert out.full_year.qualifier == ""
-
-
-def test_a_quoted_condition_is_the_companys_own_words():
-    # Not our paraphrase: the reader has to be able to find the phrase in the
-    # summary to check that the refusal was warranted.
-    out = read_guidance(record("ACA"))
-    assert out.full_year.qualifier in out.excerpt
-
-
-def test_a_range_written_high_first_is_still_a_range():
-    # ADV states "2026 revenue of $3.54 billion to $2.67 billion". Reading
-    # that as a typo and refusing it was a guess — the vendor simply wrote the
-    # top first, and nothing in the text distinguishes the two readings. The
-    # pair is a range either way, so it is ordered rather than judged.
-    out = read_guidance(record("ADV"))
-    assert out.full_year is not None
-    assert out.full_year.revenue_low == pytest.approx(2_670_000_000.0)
-    assert out.full_year.revenue_high == pytest.approx(3_540_000_000.0)
-
-
-def test_the_excerpt_is_the_sentence_the_numbers_were_read_from():
-    out = read_guidance(record("ALSN"))
-    assert out.excerpt.startswith("The company")
-    assert "2026 revenue of $5.80 billion to $6.00 billion" in out.excerpt
+# The ANALYST consensus below is still read by pattern and still tested here.
+# That is not an inconsistency: the vendor generates that sentence from its
+# own numbers, so it has exactly one shape.
 
 
 # -- the analyst consensus in the same prose -------------------------------
@@ -497,33 +350,6 @@ _LEGS = (("eps_actual", "eps_actual_missing"),
 # Every reason this system is allowed to give. A new one has to be added here
 # deliberately, which is what stops "we could not read it" from quietly
 # growing new spellings nobody reviews.
-_KNOWN_REASONS = {"", "no_guidance_clause", "full_year_only",
-                  "non_numeric_range", "open_ended_range", "quarter_mismatch",
-                  "period_unstated", "quarter_reference_missing"}
-
-
-def test_the_corpus_is_large_enough_to_mean_something():
-    assert len(ALL) >= 40
-
-
-@pytest.mark.parametrize("ticker", ALL)
-def test_every_number_is_either_a_value_or_a_named_gap(ticker):
-    row = record(ticker)
-    for field, gap in _LEGS:
-        assert getattr(row, field) is not None or gap in row.gaps, (
-            f"{ticker}: {field} is missing and nothing says why")
-
-
-@pytest.mark.parametrize("ticker", ALL)
-def test_every_guidance_outcome_carries_a_reason_from_the_known_set(ticker):
-    out = read_guidance(record(ticker))
-    for reason in out.reason.split(";"):
-        assert reason in _KNOWN_REASONS, (
-            f"{ticker}: unexplained guidance outcome {out.reason!r} — "
-            f"clause was {out.excerpt!r}")
-    assert (out.reading is not None or out.full_year is not None
-            or out.reason), f"{ticker}: no guidance and no reason"
-
 
 _KNOWN_CONSENSUS_REASONS = {"", "no_consensus_clause", "no_full_year_consensus",
                             "full_year_period_disputed",
@@ -552,14 +378,6 @@ def test_the_full_year_yardstick_is_read_for_every_name_that_states_one():
     assert len(stated) == 18
     assert sorted(read) == sorted(stated), (
         f"stated but not read: {sorted(set(stated) - set(read))}")
-
-
-def test_no_recorded_response_defeats_the_guidance_parser():
-    # "unparsed_clause" means the company DID guide and this parser could not
-    # read the form. It is the one outcome that must never appear silently.
-    defeated = {t: read_guidance(record(t)).excerpt for t in ALL
-                if "unparsed_clause" in read_guidance(record(t)).reason}
-    assert not defeated, f"guidance forms the parser cannot read: {defeated}"
 
 
 # -- transport -------------------------------------------------------------

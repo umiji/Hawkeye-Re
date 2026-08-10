@@ -326,7 +326,11 @@ def test_a_pre_registered_row_does_not_block_the_full_year_guidance_leg(tmp_path
 
     result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
                        _config(), today=today, stock_store=store,
-                       numbers_source=_feed(event_day, _FULL_YEAR_GUIDANCE))
+                       numbers_source=_feed(event_day, _FULL_YEAR_GUIDANCE),
+                       guidance_reader=_Reader({
+                           "guided": True, "period": "FY2026",
+                           "eps_low": 5.15, "eps_high": 5.60,
+                           "quote": "2026 earnings of $5.15 to $5.60 per share"}))
 
     guidance = result.passed[0].quality.guidance
     assert guidance.status is LegStatus.BEAT
@@ -349,7 +353,12 @@ def test_the_quarterly_yardstick_comes_from_the_print_that_carried_the_guidance(
 
     result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
                        _config(), today=today, stock_store=store,
-                       numbers_source=_feed(event_day, _QUARTERLY_GUIDANCE))
+                       numbers_source=_feed(event_day, _QUARTERLY_GUIDANCE),
+                       guidance_reader=_Reader({
+                           "guided": True, "period": "2026-Q3",
+                           "eps_low": 2.50, "eps_high": 2.70,
+                           "quote": ("third quarter earnings of $2.50 to "
+                                     "$2.70 per share")}))
 
     guidance = result.passed[0].quality.guidance
     assert guidance.status is LegStatus.BEAT

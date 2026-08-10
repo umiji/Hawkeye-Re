@@ -167,14 +167,18 @@ def test_a_missing_eps_consensus_sends_the_whole_print_to_the_calendar():
     assert out[0].numbers_reason == "whispers_eps_incomplete"
 
 
-def test_the_guidance_survives_a_fallback_on_the_numbers():
+def test_the_guidance_SENTENCE_survives_a_fallback_on_the_numbers():
     """The one-vendor rule governs the surprise RATIO — its actual and its
     consensus. Guidance is a third leg measured against next quarter's
-    consensus, so reading it off the feed's prose while the ratio stands on
-    the calendar's numbers mixes nothing. Throwing it away was pure loss: 8 of
-    50 names on a live run declined for a missing revenue consensus while the
+    consensus, so carrying the feed's prose while the ratio stands on the
+    calendar's numbers mixes nothing. Throwing it away was pure loss: 8 of 50
+    names on a live run declined for a missing revenue consensus while the
     same response held their guidance sentence, and guidance has no other free
-    source anywhere."""
+    source anywhere.
+
+    Since 2026-08-10 what travels is the SENTENCE rather than a reading of it:
+    an agent reads it downstream, and it cannot read a string this module
+    dropped."""
     event = _event()
     feed = _Feed({"AAA": _record(revenue_consensus=None, summary=(
         "The company said it expects third quarter earnings of $1.10 to "
@@ -183,8 +187,7 @@ def test_the_guidance_survives_a_fallback_on_the_numbers():
 
     assert out[0].numbers_source == "calendar"          # the ratio fell back
     assert out[0].numbers_reason == "whispers_revenue_incomplete"
-    assert out[0].guidance is not None                  # the third leg did not
-    assert out[0].guidance.period == "2026-Q3"
+    assert "third quarter earnings" in out[0].summary   # the third leg did not
     assert out[0].announced_at is not None
 
 
@@ -203,9 +206,9 @@ def test_the_full_year_yardstick_travels_with_the_guidance_it_measures():
     feed = _Feed({"AAA": _record(summary=_FULL_YEAR_SUMMARY)})
     out, _ = read_numbers([event], _screened([event]), feed, limit=5)
 
-    assert out[0].guidance.period == "FY2026"
     assert out[0].full_year_eps_estimate == 4.76
     assert out[0].full_year_period == "FY2026"
+    assert _FULL_YEAR_SUMMARY == out[0].summary
 
 
 def test_the_full_year_yardstick_survives_a_fallback_on_the_numbers():
@@ -227,15 +230,15 @@ _QUALIFIED_SUMMARY = (
     "year ending December 31, 2026.")
 
 
-def test_the_condition_on_a_guidance_travels_with_it_to_the_print():
-    """The refusal happens two modules downstream, in `_guidance_leg`, and it
-    can only happen if the condition survives the walk from the summary to
-    the print row. ACA's shape."""
+def test_the_condition_on_a_guidance_reaches_the_agent_unedited():
+    """The condition is what makes ACA's guidance incomparable, and the agent
+    is the only thing that reads it now. Trimming the summary on the way past
+    — to "just the guidance sentence" — would drop it silently."""
     event = _event()
     feed = _Feed({"AAA": _record(summary=_QUALIFIED_SUMMARY)})
     out, _ = read_numbers([event], _screened([event]), feed, limit=5)
 
-    assert out[0].guidance.qualifier == "excluding its barge business"
+    assert "excluding its barge business" in out[0].summary
 
 
 _NEXT_QUARTER_SUMMARY = (
@@ -252,7 +255,6 @@ def test_the_next_quarter_yardstick_travels_with_the_guidance_it_measures():
     feed = _Feed({"AAA": _record(summary=_NEXT_QUARTER_SUMMARY)})
     out, _ = read_numbers([event], _screened([event]), feed, limit=5)
 
-    assert out[0].guidance.period == "2026-Q3"
     assert out[0].next_quarter_eps_estimate == 1.20
     assert out[0].next_quarter_revenue_estimate == 2_080_000_000.0
     assert out[0].next_quarter_period == "2026-Q3"
@@ -359,27 +361,28 @@ def test_the_feeds_fiscal_label_and_announcement_time_travel_with_it():
     assert out[0].announced_at is not None
 
 
-def test_guidance_is_read_off_the_same_response():
-    """One request already carries the third leg. Leaving it unread would
-    send every print to the tribunal with guidance permanently absent."""
+def test_the_prose_the_third_leg_lives_in_travels_off_the_same_response():
+    """One request already carries the third leg. Dropping the string here
+    would send every print onward with guidance permanently absent, and no
+    later step could recover it — the summary exists only in this response."""
     event = _event()
     feed = _Feed({"AAA": _record(summary=(
         "The company said it expects third quarter earnings of $1.10 to "
         "$1.20 per share. The current consensus is $1.05."))})
     out, _ = read_numbers([event], _screened([event]), feed, limit=5)
 
-    assert out[0].guidance is not None
-    assert out[0].guidance.period == "2026-Q3"
-    assert out[0].guidance.eps_low == 1.10 and out[0].guidance.eps_high == 1.20
+    assert "third quarter earnings of $1.10 to $1.20" in out[0].summary
 
 
-def test_a_company_that_guided_nothing_is_not_confused_with_an_unread_one():
+def test_a_print_the_feed_never_answered_for_carries_no_prose():
+    """Empty here means the extraction step never had a turn, which is a
+    different fact from a company that guided nothing — and the two must not
+    arrive downstream looking the same."""
     event = _event()
-    feed = _Feed({"AAA": _record(summary="ACME reported second quarter.")})
+    feed = _Feed({"AAA": _record(revenue_consensus=None, summary="")})
     out, _ = read_numbers([event], _screened([event]), feed, limit=5)
 
-    assert out[0].guidance is None
-    assert out[0].guidance_reason == "no_guidance_clause"
+    assert out[0].summary == ""
 
 
 # --- the universe is never narrowed here ----------------------------------

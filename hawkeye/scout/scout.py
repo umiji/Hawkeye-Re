@@ -310,8 +310,15 @@ def _read_guidance(context: _QuarterContext, event, reader,
     that name entirely, so there was no sentence for anyone to read and the
     extraction step never had a turn.
     """
-    if reader is None or not getattr(event, "summary", ""):
+    if not getattr(event, "summary", ""):
         return context
+    if reader is None:
+        # Session mode. The row is recorded saying the reading is outstanding
+        # rather than saying the company guided nothing — the two look
+        # identical on the page and mean opposite things, and only one of them
+        # is still worth doing something about.
+        return replace(context, print_row=context.print_row.model_copy(
+            update={"guidance_reason": "pending_extraction"}))
     out = reader.read(GuidanceRequest(
         ticker=event.ticker,
         fiscal_quarter=context.print_row.fiscal_quarter,
