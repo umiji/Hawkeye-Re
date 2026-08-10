@@ -138,10 +138,37 @@ class HawkeyeConfig:
     # different things, and a change to how long we WAIT for a missing figure
     # should not silently change how long a PUBLISHED figure stays revisable.
     actual_revision_watch_hours: int = 96
-    # Guidance is a small bonus and never a penalty: absence is the normal
-    # case, has no structured source, and must not become a hidden gate
-    # (§5.3 決定3). Deliberately far below the EPS/revenue contributions.
+    # Guidance above the consensus for the same period. Deliberately far below
+    # the EPS/revenue contributions.
     guidance_beat_score: float = 5.0
+    # Guidance BELOW that consensus, subtracted (User decision 2026-08-11).
+    #
+    # This reverses §5.3 決定3, which had a published miss cost nothing. The
+    # worry behind that rule survives untouched: what must not be penalised is
+    # ABSENCE — no outlook, an outlook fenced with a condition we declined to
+    # compare, or no yardstick to compare against. All three still score zero,
+    # because penalising them would punish the data gap rather than the
+    # company. A company that DID publish an outlook below the street is a
+    # fact about the company, and leaving it at zero made it identical to
+    # having said nothing.
+    #
+    # Symmetric with the bonus at the user's instruction. Both stay binary per
+    # leg — the size of the shortfall is not read — which is inconsistent with
+    # how EPS (1.0/%), revenue (2.0/%) and the whisper (0.25/%) are scored.
+    # Left as-is on purpose: setting a per-% weight needs the distribution of
+    # guidance surprises, which has not been measured, and a number chosen
+    # without one is the thing this file exists to prevent. To be revisited
+    # from live monitoring (User decision 2026-08-11).
+    #
+    # ⚠️ This is the first term that can SUBTRACT on a guidance percentage,
+    # so the missing floor under that percentage's denominator now costs
+    # points where it used to cost nothing: ALGT guided "a loss of $1.00 per
+    # share to breakeven" against a $0.08 consensus, i.e. -725%. Under a
+    # binary penalty that name loses the same 5.0 as a -3% miss, so nothing is
+    # distorted yet — but the day the weight becomes per-% it would own the
+    # ranking. EPS and revenue have `scout_min_abs_eps_estimate`; guidance has
+    # no equivalent. Not added here: it is a separate doctrine number.
+    guidance_miss_penalty: float = 5.0
     # The feed's unofficial expectation ("whisper"), which sits ABOVE consensus
     # on every name measured so far (11 of 11), so clearing it is the stricter
     # test. Paid as a bonus on top of the consensus-based surprise and never as

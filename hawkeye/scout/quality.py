@@ -130,6 +130,23 @@ class LegVerdict:
             return 0.0
         return sum(1 for _, pct in self.parts if pct > 0) / len(self.parts)
 
+    @property
+    def miss_fraction(self) -> float:
+        """The share of the compared legs that came in BELOW consensus.
+
+        The mirror of `beat_fraction`, and it has to be a separate reading
+        rather than `1 - beat_fraction`: a leg that landed exactly on
+        consensus is neither, and folding it into the miss would charge a
+        company for meeting the number.
+
+        Zero when nothing was compared, which is what keeps absence free —
+        no outlook, an outlook we declined to compare, and no yardstick all
+        produce empty `parts` (hawkeye/config.py `guidance_miss_penalty`).
+        """
+        if not self.parts:
+            return 0.0
+        return sum(1 for _, pct in self.parts if pct < 0) / len(self.parts)
+
 
 @dataclass(frozen=True)
 class EarningsQuality:
@@ -630,10 +647,13 @@ def assess_earnings(print_row: EarningsPrint,
         score += revenue_points(revenue.surprise_pct)
     # The share of the guided legs that beat, so a company guiding both EPS
     # and sales and beating on one earns half of what beating on both earns.
-    # A leg that came in BELOW subtracts nothing, same as before: "no
-    # guidance" and "weak guidance" must not collapse into one number
-    # (§5.3 決定3).
-    guidance_part = config.guidance_beat_score * guidance.beat_fraction
+    # A leg that came in BELOW now subtracts on the same terms, reversing
+    # §5.3 決定3 (User decision 2026-08-11): leaving a published shortfall at
+    # zero made it score identically to having published nothing at all.
+    # Absence still costs nothing — see `guidance_miss_penalty` in
+    # hawkeye/config.py for which three cases that covers and why.
+    guidance_part = (config.guidance_beat_score * guidance.beat_fraction
+                     - config.guidance_miss_penalty * guidance.miss_fraction)
     score += guidance_part
     whisper_beat = whisper_beat_pct(print_row, consensus, eps)
     whisper_part = whisper_points(whisper_beat, config)

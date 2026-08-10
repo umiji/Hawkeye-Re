@@ -469,10 +469,10 @@ def test_guidance_on_both_eps_and_revenue_uses_BOTH():
     assert "on_revenue" in quality.guidance.flags
 
 
-def test_one_leg_of_a_two_leg_guidance_beating_earns_half_the_bonus():
-    """EPS above, sales below. Neither is discarded: the bonus is the share
-    of the legs that actually beat, and the leg that missed is still reported
-    — guidance misses are recorded, never subtracted (§5.3 決定3)."""
+def test_one_leg_up_and_one_down_cancel_out():
+    """EPS above, sales below. Neither is discarded: half the bonus is earned
+    and half the penalty is charged, so the pair nets to nothing — which is
+    what "guided two legs, beat one and missed the other" actually says."""
     base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
                    revenue_actual=1.05e9)
     consensus = a_consensus(next_quarter_eps_avg=2.00,
@@ -486,11 +486,11 @@ def test_one_leg_of_a_two_leg_guidance_beating_earns_half_the_bonus():
 
     assert split.guidance.status is LegStatus.INLINE     # neither side wins
     assert split.guidance.beat_fraction == 0.5
-    assert (split.score - plain.score
-            == round(CONFIG.guidance_beat_score * 0.5, 2))
+    assert split.guidance.miss_fraction == 0.5
+    assert split.score == plain.score
 
 
-def test_a_guidance_that_misses_on_both_legs_still_costs_nothing():
+def test_a_guidance_that_misses_on_both_legs_is_charged_for_it():
     base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
                    revenue_actual=1.05e9)
     consensus = a_consensus(next_quarter_eps_avg=2.00,
@@ -504,7 +504,43 @@ def test_a_guidance_that_misses_on_both_legs_still_costs_nothing():
 
     assert lowered.guidance.status is LegStatus.MISS
     assert lowered.guidance.beat_fraction == 0.0
-    assert lowered.score == plain.score
+    assert lowered.guidance.miss_fraction == 1.0
+    assert lowered.score == round(plain.score - CONFIG.guidance_miss_penalty, 2)
+
+
+def test_no_outlook_at_all_is_still_free():
+    """The penalty is for a company that published a weak outlook, not for a
+    company that published none and not for a reading we declined to make.
+    Absence has no structured source on any free tier, so charging for it
+    would punish the data gap rather than the company (D-3, unchanged)."""
+    base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                   revenue_actual=1.05e9)
+    consensus = a_consensus(next_quarter_eps_avg=2.00,
+                            next_quarter_revenue_avg=1.00e9)
+    quality = assess_earnings(base, consensus, CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert quality.guidance.miss_fraction == 0.0
+    assert quality.breakdown.guidance == 0.0
+
+
+def test_an_outlook_we_declined_to_compare_is_not_charged_either():
+    """A range the company fenced with a condition is refused by us, not
+    missed by them. Charging for our own refusal would make the fail-closed
+    rule cost the company points."""
+    base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                   revenue_actual=1.05e9)
+    consensus = a_consensus(next_quarter_eps_avg=2.00,
+                            next_quarter_revenue_avg=1.00e9)
+    plain = assess_earnings(base, consensus, CONFIG)
+    fenced = assess_earnings(
+        base.model_copy(update={"guidance": GuidanceReading(
+            period="2026-Q3", eps_low=1.60, eps_high=1.70,
+            qualifier="excluding its barge business")}),
+        consensus, CONFIG)
+
+    assert fenced.guidance.status is LegStatus.ABSENT
+    assert fenced.score == plain.score
 
 
 def test_full_year_revenue_guidance_uses_the_full_year_revenue_yardstick():
@@ -566,10 +602,11 @@ def test_revenue_guidance_counts_when_the_company_gives_no_eps_range():
     assert round(quality.guidance.surprise_pct, 1) == 4.6
 
 
-def test_guidance_below_consensus_is_reported_without_a_mechanical_penalty():
-    """The Adversary is free to attack a cut; the screen does not dock
-    points for one, because "no guidance" and "weak guidance" must not be
-    scored on the same axis as the two legs that have real consensus."""
+def test_guidance_below_consensus_costs_what_beating_it_would_have_earned():
+    """Reversed on 2026-08-11 (User decision). A company that published an
+    outlook below the street said something, and scoring it the same as a
+    company that said nothing erased the difference. Saying nothing is still
+    free — that is `test_no_outlook_at_all_is_still_free`."""
     cut = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
                   revenue_actual=1.05e9,
                   guidance=GuidanceReading(period="2026-Q3", eps_low=1.60,
@@ -581,7 +618,8 @@ def test_guidance_below_consensus_is_reported_without_a_mechanical_penalty():
                               CONFIG)
 
     assert lowered.guidance.status is LegStatus.MISS
-    assert lowered.score == without.score
+    assert lowered.score == round(without.score - CONFIG.guidance_miss_penalty,
+                                  2)
     assert lowered.verdict is QuarterVerdict.MIXED
 
 
