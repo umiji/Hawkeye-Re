@@ -319,15 +319,15 @@ def _segment_numbers(segment: str) -> tuple[dict, str]:
         out["revenue_low"] = out["revenue_high"] = (
             _amount(one.group(1)) * _SCALE[one.group(2).lower()])
     if out:
-        # A top below its own floor is a typo at the vendor, not a range.
-        # ADV's summary says "2026 revenue of $3.54 billion to $2.67 billion";
-        # averaging those two gives $3.10 billion, a figure nobody published,
-        # and downstream it is indistinguishable from guidance the company
-        # actually gave. Refusing costs one reading and states why.
+        # The vendor sometimes writes the top of a range first — ADV's summary
+        # says "2026 revenue of $3.54 billion to $2.67 billion". That is a
+        # range written high-first, not a typo, and nothing in the text tells
+        # the two apart. Ordering the pair keeps the reading; refusing it (as
+        # this briefly did) threw away guidance the company had given.
         for low, high in (("eps_low", "eps_high"),
                           ("revenue_low", "revenue_high")):
             if low in out and out[low] > out[high]:
-                return {}, "range_inverted"
+                out[low], out[high] = out[high], out[low]
         return out, ""
     if _NON_NUMERIC.search(segment):
         return {}, "non_numeric_range"

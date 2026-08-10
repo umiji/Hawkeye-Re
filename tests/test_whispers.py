@@ -335,14 +335,15 @@ def test_a_quoted_condition_is_the_companys_own_words():
     assert out.full_year.qualifier in out.excerpt
 
 
-def test_an_inverted_range_is_refused_rather_than_averaged():
-    # ADV states "2026 revenue of $3.54 billion to $2.67 billion" — a top
-    # below its own floor, i.e. the vendor mistyped one of the two. Averaging
-    # them yields $3.10 billion, a figure nobody published, and it would be
-    # compared against a real consensus as if the company had said it.
+def test_a_range_written_high_first_is_still_a_range():
+    # ADV states "2026 revenue of $3.54 billion to $2.67 billion". Reading
+    # that as a typo and refusing it was a guess — the vendor simply wrote the
+    # top first, and nothing in the text distinguishes the two readings. The
+    # pair is a range either way, so it is ordered rather than judged.
     out = read_guidance(record("ADV"))
-    assert out.full_year is None
-    assert "range_inverted" in out.reason
+    assert out.full_year is not None
+    assert out.full_year.revenue_low == pytest.approx(2_670_000_000.0)
+    assert out.full_year.revenue_high == pytest.approx(3_540_000_000.0)
 
 
 def test_the_excerpt_is_the_sentence_the_numbers_were_read_from():
@@ -498,8 +499,7 @@ _LEGS = (("eps_actual", "eps_actual_missing"),
 # growing new spellings nobody reviews.
 _KNOWN_REASONS = {"", "no_guidance_clause", "full_year_only",
                   "non_numeric_range", "open_ended_range", "quarter_mismatch",
-                  "period_unstated", "quarter_reference_missing",
-                  "range_inverted"}
+                  "period_unstated", "quarter_reference_missing"}
 
 
 def test_the_corpus_is_large_enough_to_mean_something():
