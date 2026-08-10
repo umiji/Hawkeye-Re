@@ -692,3 +692,49 @@ def test_the_event_day_reaction_still_shapes_the_score():
         gap_on_event_pct=-5.0)
 
     assert confirmed.score > rejected.score
+
+
+# --- a missing outlook sentence is OUR gap, not the company's silence -------
+
+def test_a_feed_that_returned_no_summary_is_not_recorded_as_no_guidance():
+    """Until 2026-08-11 the reason was left empty, and the empty reason fell
+    through to `guidance_not_published` — so a name the earnings feed failed
+    on was written into the permanent drop record as a company that publishes
+    no outlook. The two must not render the same (the same conflation the
+    未読/開示なし split fixed one layer up)."""
+    import dataclasses
+
+    from hawkeye.scout.earnings import EarningsEvent
+    from hawkeye.scout.guidance_agent import GuidanceStats
+    from hawkeye.scout.scout import _QuarterContext, _read_guidance
+
+    asked = EarningsEvent(ticker="AAA", day=date(2026, 8, 7),
+                          eps_actual=1.20, eps_estimate=1.00,
+                          revenue_actual=1.05e9, revenue_estimate=1.00e9,
+                          summary="", numbers_source="whispers")
+    never_asked = dataclasses.replace(asked, numbers_source="calendar")
+
+    def context():
+        return _QuarterContext(
+            stock_id="stk_1", print_row=a_print(eps_actual=1.20),
+            consensus_id="con_1", consensus=a_consensus())
+
+    out = _read_guidance(None, context(), asked, None, GuidanceStats())
+    assert out.print_row.guidance_reason == "no_summary_from_feed"
+
+    out = _read_guidance(None, context(), never_asked, None, GuidanceStats())
+    assert out.print_row.guidance_reason == "feed_not_asked"
+
+    # And the leg built from it no longer claims the company said nothing.
+    assert "guidance_not_published" not in assess_earnings(
+        out.print_row, a_consensus(), CONFIG).guidance.flags
+
+
+def test_both_new_reasons_are_translated_for_the_reader():
+    from hawkeye.reports.monitor_ja import _GUIDANCE_CELL_JA
+    from hawkeye.reports.quality_ja import _flag_ja
+
+    for flag in ("no_summary_from_feed", "feed_not_asked"):
+        assert flag in _GUIDANCE_CELL_JA
+        assert _flag_ja(flag) != flag
+        assert "決算専門サイト" in _flag_ja(flag) or "問い合わせ" in _flag_ja(flag)

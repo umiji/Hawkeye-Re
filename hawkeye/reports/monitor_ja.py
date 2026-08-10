@@ -32,6 +32,8 @@ _GUIDANCE_JA = {"beat": "上振れ", "miss": "下振れ", "inline": "ほぼ一�
 _GUIDANCE_CELL_JA = {
     "pending_extraction": "未読(AI待ち)",
     "no_guidance_in_source": "開示なし",
+    "no_summary_from_feed": "⚠️文章が取れず",
+    "feed_not_asked": "問い合わせ対象外",
     "no_number_in_source": "数字なし",
     "open_ended_range": "上限なし",
     "guidance_scope_qualified": "但し書きで見送り",
@@ -55,6 +57,10 @@ _ROUTINE_GUIDANCE = frozenset((
     # (hawkeye/scout/quality.py). Most companies guide nothing; there is
     # nothing here for the reader to act on.
     "guidance_not_published",
+    # 問い合わせ上限に届かなかっただけ。走査のたびに大量に出るので注記にはしない
+    # （表のセルと件数には出る）。取れなかった方（`no_summary_from_feed`）は
+    # 問い合わせた上での失敗なので注記に残す。
+    "feed_not_asked",
 ))
 _VERDICT_JA = {"good_quarter": "良い決算", "mixed": "強弱まちまち",
                "weak": "弱い決算", "unverified": "判定不能"}

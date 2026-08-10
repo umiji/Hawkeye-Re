@@ -42,7 +42,7 @@ from hawkeye.scout.earnings import (
 )
 from hawkeye.scout import guidance_case
 from hawkeye.scout.guidance_agent import GuidanceRequest, GuidanceStats
-from hawkeye.scout.inspection import Inspection, build_inspection
+from hawkeye.scout.inspection import Inspection, build_inspection, was_asked
 from hawkeye.scout.prereg import resolve_stock
 from hawkeye.scout.revision import Revision, apply_revision, detect_revisions
 from hawkeye.scout.triage import is_investigation_target, triage_from_gates
@@ -323,7 +323,17 @@ def _read_guidance(store, context: _QuarterContext, event, reader,
     entirely, so no sentence exists and the extraction step never had a turn.
     """
     if not event.summary:
-        return context
+        # No sentence to read, and WHY there is none is a fact about us, not
+        # about the company. Left unrecorded (as it was until 2026-08-11) the
+        # empty reason falls through to `guidance_not_published` in
+        # `_guidance_leg` — so a feed outage was written down as "this company
+        # publishes no outlook", permanently, in the drop record a later
+        # review reads. Same conflation the 未読/開示なし split fixed on
+        # 2026-08-10, one layer down.
+        return replace(context, print_row=context.print_row.model_copy(
+            update={"guidance_reason": ("no_summary_from_feed"
+                                        if was_asked(event)
+                                        else "feed_not_asked")}))
     if reader is None:
         # Nothing is staged for a quarter already on record: `_record_print`
         # will skip it as a repeat, so the case would point at a row this scan
