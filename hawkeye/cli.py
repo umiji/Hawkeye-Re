@@ -105,9 +105,11 @@ from hawkeye.scout.prereg import (
 )
 from hawkeye.scout.scout import (
     build_screened_candidates,
+    rerank_after_guidance,
     run_scout,
     scan_window,
 )
+from hawkeye.scout import scan_store
 from hawkeye.scout.quality import assess_earnings
 from hawkeye.scout.triage import rebuild_triage
 from hawkeye.sentinel.monitor import check_position
@@ -362,6 +364,22 @@ def _backfill_targets(store, passed: list, top_n: int) -> list[tuple[str, str]]:
 
 
 def cmd_scout(args: argparse.Namespace) -> int:
+    """Scan only — gates, but no score, no sort, no ledger write.
+
+    A quarter's guidance leg (docs/design/RANK_AFTER_GUIDANCE.ja.md) cannot be
+    known at scan time: nothing inside this process can call the agent that
+    reads it, so `run_scout` stages the sentence to `var/guidance/` and
+    scores every judged candidate as if the company had guided nothing. That
+    score is provisional. Committing a shortlist decided on it would be
+    ranking on incomplete data — so this command writes the whole result to
+    `var/scan/` instead of the ledger, and `hawkeye rank` is what scores it
+    for real, once the guidance queue is empty.
+    """
+    if scan_store.has_pending_scan():
+        print("前回の走査がまだ順位付けされていません。順位付け(hawkeye rank)"
+              "を先に済ませるか、見通しの読み取り待ちがあれば "
+              "hawkeye guidance queue で埋めてください。", file=sys.stderr)
+        return 1
     config = HawkeyeConfig.from_env()
     finnhub = FinnhubProvider()
     if not finnhub.available:
@@ -386,10 +404,10 @@ def cmd_scout(args: argparse.Namespace) -> int:
     # the funnel reconstructs one and says so — it never silently treats an
     # after-the-fact estimate as what was knowable in advance (§6.1(D)).
     # A calendar that cannot answer ends the run here, before record_scan()
-    # below. The next window starts from the last recorded scan, so writing
-    # one for a window nobody managed to read would put those days out of
-    # reach permanently — and the funnel would have printed them as a quiet
-    # market (found live 2026-08-03).
+    # in cmd_rank. The next window starts from the last recorded scan, so
+    # writing one for a window nobody managed to read would put those days
+    # out of reach permanently — and the funnel would have printed them as a
+    # quiet market (found live 2026-08-03).
     store = _stock_store()
     try:
         result = run_scout(finnhub, provider, config, days_back=args.days,
@@ -405,6 +423,45 @@ def cmd_scout(args: argparse.Namespace) -> int:
               "読み直します。", file=sys.stderr)
         return 1
 
+    scan_store.save_scan_result(result)
+    print(render_scout_ja(result))
+    if args.monitor_csv:
+        # Written with a BOM: Excel on Japanese Windows reads a plain UTF-8 CSV
+        # as cp932 and turns every header into mojibake, which makes the check
+        # sheet unusable for the one person it is written for.
+        path = pathlib.Path(args.monitor_csv)
+        path.write_text(inspection_csv(result.inspection), encoding="utf-8-sig")
+        print(f"\n点検表をCSVに保存しました: {path} "
+              f"({len(result.inspection.rows)}行)")
+    print(f"\n(この走査はまだ台帳に記録していません。会社の見通しの読み取り待ちが"
+          f"{result.guidance.staged}件あります。"
+          f"hawkeye guidance queue で読み切ってから hawkeye rank を"
+          f"実行してください。)")
+    return 0
+
+
+def cmd_rank(args: argparse.Namespace) -> int:
+    """Re-score the pending scan now that guidance can actually be known, sort
+    it, and only THEN commit it to the ledger (docs/design/RANK_AFTER_GUIDANCE.ja.md).
+
+    This is the one code path both engines share for deciding the shortlist:
+    the score `hawkeye scout` computed was provisional (guidance unread), so
+    recomputing it here — after `hawkeye guidance queue` / `submit` has run —
+    is what keeps API mode and session mode selecting the same names off the
+    same numbers, rather than session mode ranking on a guidance leg that
+    reads as "the company said nothing" every time.
+    """
+    if not scan_store.has_pending_scan():
+        print("順位付け待ちの走査がありません。先に hawkeye scout を"
+              "実行してください。", file=sys.stderr)
+        return 1
+    config = HawkeyeConfig.from_env()
+    finnhub = FinnhubProvider()
+    store = _stock_store()
+    ledger = _ledger()
+    result = scan_store.load_scan_result()
+    rerank_after_guidance(store, result, config)
+
     # Whatever isn't sent to the tribunal THIS run — from result.passed's
     # tail onward — is the ranking-cutoff tier (docs/design/MASTER_OVERVIEW.ja.md
     # §5.1, #4). Computed before record_scan() so it can be persisted in the
@@ -415,7 +472,10 @@ def cmd_scout(args: argparse.Namespace) -> int:
         params={"window_start": result.scan_start.isoformat(),
                 "window_end": result.scan_end.isoformat(),
                 "window_truncated": result.window_truncated,
-                "days_back_override": args.days,
+                # Not preserved across the scan/rank split — see
+                # hawkeye/scout/scan_store.py. Purely descriptive; nothing
+                # downstream reads this key.
+                "days_back_override": None,
                 "duplicates_skipped": result.duplicates,
                 "min_eps_surprise": config.scout_min_eps_surprise_pct,
                 **result.numbers.as_dict()},
@@ -436,14 +496,6 @@ def cmd_scout(args: argparse.Namespace) -> int:
         quarters=config.scout_backfill_quarters)
 
     print(render_scout_ja(result))
-    if args.monitor_csv:
-        # Written with a BOM: Excel on Japanese Windows reads a plain UTF-8 CSV
-        # as cp932 and turns every header into mojibake, which makes the check
-        # sheet unusable for the one person it is written for.
-        path = pathlib.Path(args.monitor_csv)
-        path.write_text(inspection_csv(result.inspection), encoding="utf-8-sig")
-        print(f"\n点検表をCSVに保存しました: {path} "
-              f"({len(result.inspection.rows)}行)")
     summary = render_backfill_ja(backfill)
     if summary:
         print()
@@ -480,6 +532,8 @@ def cmd_scout(args: argparse.Namespace) -> int:
             ledger.record_recommendation(rec, status)
             print(render_recommendation_ja(rec))
             print(f"\n(記録済み: {rec.id} / status={status.value})")
+
+    scan_store.discard_scan_result()
     return 0
 
 
@@ -1424,18 +1478,25 @@ def build_parser() -> argparse.ArgumentParser:
                     help="structured revenue surprise %% (if known)")
     ev.set_defaults(func=cmd_evaluate)
 
-    sc = sub.add_parser("scout", help="scan earnings surprises for candidates")
+    sc = sub.add_parser("scout", help="scan earnings surprises for candidates "
+                                       "(gates only — no score, no ledger "
+                                       "write; follow with `rank`)")
     sc.add_argument("--days", type=int, default=None,
                     help="scan window in days (default: config)")
-    sc.add_argument("--evaluate", type=int, default=0, metavar="N",
-                    help="run the tribunal on the top N candidates (API mode)")
-    sc.add_argument("--open-cases", type=int, default=0, metavar="N",
-                    help="open session-mode cases for the top N candidates "
-                         "(no API key; driven by /hawkeye-run)")
-    sc.add_argument("--nav", type=float, default=100_000.0)
     sc.add_argument("--monitor-csv", default=None, metavar="PATH",
                     help="save the inspection table (取得データ点検表) as CSV")
     sc.set_defaults(func=cmd_scout)
+
+    rk = sub.add_parser("rank", help="score and record the pending scan "
+                                      "(run once `hawkeye guidance queue` "
+                                      "is empty)")
+    rk.add_argument("--evaluate", type=int, default=0, metavar="N",
+                    help="run the tribunal on the top N candidates (API mode)")
+    rk.add_argument("--open-cases", type=int, default=0, metavar="N",
+                    help="open session-mode cases for the top N candidates "
+                         "(no API key; driven by /hawkeye-run)")
+    rk.add_argument("--nav", type=float, default=100_000.0)
+    rk.set_defaults(func=cmd_rank)
 
     cn = sub.add_parser("consensus",
                         help="pre-register consensus before earnings prints")

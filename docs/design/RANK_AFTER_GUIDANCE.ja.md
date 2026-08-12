@@ -1,6 +1,11 @@
 # 順位付けを、決算の3本柱がそろってから行う（設計メモ）
 
-作成: 2026-08-11。**User承認済み（実装可）。未実装。**
+作成: 2026-08-11。**User承認済み。2026-08-12 実装済み**
+（`hawkeye scout` はゲート通過までで止まり、`hawkeye rank` が
+`hawkeye/scout/scout.py` の `rerank_after_guidance()` で点数を計算し直して
+から台帳に記録する。中間ファイルは `hawkeye/scout/scan_store.py` /
+`var/scan/pending.json`）。1-d（API方式の承認済み停止点）は据え置き
+— User判断: API方式は当面使わないため不要。
 
 ## 何が壊れているか
 

@@ -185,16 +185,6 @@ def _breakdown_lines(c: ScreenedCandidate) -> list[str]:
     parts = "  ".join(f"{label} {getattr(b, attr):+g}"
                       for attr, label in _BREAKDOWN_JA)
     lines = [f"点数の内訳: {parts}"]
-    # The guidance term is zero on every session-mode scan, because the
-    # company's outlook is read by an agent AFTER the scan while this score
-    # was computed during it. Printing "会社のガイダンス +0" with no
-    # explanation says the company guided nothing, which is a claim about the
-    # company; the truth is a claim about the order our own steps run in.
-    if b.guidance == 0:
-        lines += ["",
-                  "⚠️ 「会社のガイダンス」が0点なのは、この点数が**走査した時点**"
-                  "のものだからです。会社の見通しはそのあとの工程でAIが読むため、"
-                  "この欄には反映されていません(順位もこの点数で決まっています)。"]
     lines += ["",
               "(ニュース・インサイダー売買・アナリスト推奨は**点数には使って"
               "いません**。審理に渡す資料です)"]

@@ -29,7 +29,6 @@ from hawkeye.contracts.models import (
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     EarningsPrint,
-    next_fiscal_quarter,
 )
 from hawkeye.gates.entry_gates import run_entry_gates
 from hawkeye.marketdata.base import MarketDataProvider
@@ -41,7 +40,7 @@ from hawkeye.scout.earnings import (
     screen_events,
 )
 from hawkeye.scout import guidance_case
-from hawkeye.scout.guidance_agent import GuidanceRequest, GuidanceStats
+from hawkeye.scout.guidance_agent import GuidanceStats
 from hawkeye.scout.inspection import Inspection, build_inspection, was_asked
 from hawkeye.scout.prereg import resolve_stock
 from hawkeye.scout.revision import Revision, apply_revision, detect_revisions
@@ -99,6 +98,14 @@ class ScoutCandidate:
     # old single-leg surprise decided the ranking — a different fact from
     # "all three legs were checked and found nothing".
     quality: Optional[EarningsQuality] = None
+    # Carried alongside `quality` so a later ranking pass can recompute the
+    # score once guidance has actually been read (docs/design/RANK_AFTER_GUIDANCE.ja.md).
+    # `consensus` has to travel as the object itself, not a snapshot id: the
+    # guidance yardsticks are overlaid on it IN MEMORY by `_quarter_context`
+    # and are never written back to the store, so re-fetching by id would
+    # silently drop them.
+    stock_id: str = ""
+    consensus: Optional[ConsensusSnapshot] = None
 
 
 @dataclass
@@ -298,28 +305,21 @@ def _quarter_context(store, directory, event) -> Optional[_QuarterContext]:
                            consensus_id=consensus.id, consensus=consensus)
 
 
-def _read_guidance(store, context: _QuarterContext, event, reader,
+def _read_guidance(store, context: _QuarterContext, event,
                    stats: GuidanceStats) -> _QuarterContext:
-    """Put the company's own outlook on the print row, or say why it is not
-    there yet.
+    """Stage the company's own outlook for an agent to read, or say why
+    there is nothing to stage.
 
-    Runs BEFORE the row is recorded and before the quarter is judged, so the
-    row is written once, complete, and carrying who read it. Attaching it
-    afterwards would mean retiring a row and appending a corrected one — the
-    mechanism task 8.5 built for a VENDOR restating a figure — and a scan
-    would then report its own extraction step as the source changing its mind.
+    Runs BEFORE the row is recorded, so the row is written once. Nothing
+    inside a scan process can call an agent itself — the scan only ever
+    writes the sentence to `var/guidance/`; `hawkeye guidance queue` /
+    `submit` close the loop afterwards, and `hawkeye rank`
+    (docs/design/RANK_AFTER_GUIDANCE.ja.md) is what re-scores the print once
+    that reading has landed. The row says the reading is OUTSTANDING rather
+    than saying the company guided nothing — the two render identically and
+    mean opposite things.
 
-    Two ways in, and only the first can happen inside this process:
-
-    - **an agent is available** (API mode): one call, and its answer goes
-      through the gate in `guidance_agent.parse_reply` before it lands;
-    - **no agent** (session mode): nothing here can reach the Claude Code
-      session driving the scan, so the sentence is written to `var/guidance/`
-      and two CLI commands close the loop afterwards. The row says the
-      reading is OUTSTANDING rather than saying the company guided nothing —
-      the two render identically and mean opposite things.
-
-    A print with no summary is skipped either way: the feed declined that name
+    A print with no summary is skipped: the feed declined that name
     entirely, so no sentence exists and the extraction step never had a turn.
     """
     if not event.summary:
@@ -334,28 +334,19 @@ def _read_guidance(store, context: _QuarterContext, event, reader,
             update={"guidance_reason": ("no_summary_from_feed"
                                         if was_asked(event)
                                         else "feed_not_asked")}))
-    if reader is None:
-        # Nothing is staged for a quarter already on record: `_record_print`
-        # will skip it as a repeat, so the case would point at a row this scan
-        # never wrote.
-        if store.active_print(context.stock_id,
-                              context.print_row.fiscal_quarter) is None:
-            guidance_case.save_case(guidance_case.GuidanceCase(
-                stock_id=context.stock_id, print_id=context.print_row.id,
-                ticker=event.ticker,
-                fiscal_quarter=context.print_row.fiscal_quarter,
-                summary=event.summary))
-            stats.staged += 1
-        return replace(context, print_row=context.print_row.model_copy(
-            update={"guidance_reason": "pending_extraction"}))
-    out = reader.read(GuidanceRequest(
-        ticker=event.ticker,
-        fiscal_quarter=context.print_row.fiscal_quarter,
-        next_quarter=next_fiscal_quarter(context.print_row.fiscal_quarter),
-        summary=event.summary))
-    stats.record(out.reason)
+    # Nothing is staged for a quarter already on record: `_record_print`
+    # will skip it as a repeat, so the case would point at a row this scan
+    # never wrote.
+    if store.active_print(context.stock_id,
+                          context.print_row.fiscal_quarter) is None:
+        guidance_case.save_case(guidance_case.GuidanceCase(
+            stock_id=context.stock_id, print_id=context.print_row.id,
+            ticker=event.ticker,
+            fiscal_quarter=context.print_row.fiscal_quarter,
+            summary=event.summary))
+        stats.staged += 1
     return replace(context, print_row=context.print_row.model_copy(
-        update={"guidance": out.reading, "guidance_reason": out.reason}))
+        update={"guidance_reason": "pending_extraction"}))
 
 
 def _record_print(store, context: _QuarterContext, config=None,
@@ -472,8 +463,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
               already_seen: Optional[set[tuple[str, date]]] = None,
               numbers_source: Optional[WhispersReader] = None,
               stock_store=None,
-              directory=None,
-              guidance_reader=None) -> ScoutResult:
+              directory=None) -> ScoutResult:
     """calendar_source: object with earnings_calendar(start, end) -> list[dict]
     provider: MarketDataProvider for enrichment (prices/profile/news).
     window: the earnings days to cover — normally built by scan_window()
@@ -614,7 +604,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
         # one of the three things being judged.
         if context is not None:
             context = _read_guidance(stock_store, context, event,
-                                     guidance_reader, guidance_stats)
+                                     guidance_stats)
         quality = (assess_earnings(context.print_row, context.consensus, config)
                    if context is not None else None)
         catalyst = Catalyst(
@@ -656,6 +646,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
             candidate.quality = quality
             candidate.score = quality.score
             candidate.score_version = "three_leg"
+            candidate.stock_id = context.stock_id
+            candidate.consensus = context.consensus
         else:
             candidate.score = score_candidate(
                 s.scored_eps_pct, s.scored_revenue_pct,
@@ -728,6 +720,45 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
     # the result so the stage of every name is already decided.
     result.inspection = build_inspection(events, result,
                                          revisions_seen=len(revisions))
+    return result
+
+
+def rerank_after_guidance(store, result: ScoutResult, config: HawkeyeConfig
+                          ) -> ScoutResult:
+    """Re-score every judged candidate once the guidance queue is empty, and
+    re-sort the shortlist on the result (docs/design/RANK_AFTER_GUIDANCE.ja.md).
+
+    `run_scout` judges a quarter the moment it walks past it, which is BEFORE
+    session mode's `hawkeye guidance queue` / `submit` can have supplied the
+    company's own outlook — so the guidance leg the scan scored is always
+    "not yet read", never the real answer. Ranking on that score means the
+    shortlist — and the ledger rows recorded from it — are decided on
+    incomplete data.
+
+    This is the one place that reads the store again after the walk: the
+    active print row for a judged candidate's (stock, quarter) now carries
+    whatever `hawkeye guidance submit` attached, if anything did. The
+    consensus travels on the candidate itself rather than being re-fetched,
+    because the guidance yardsticks `_quarter_context` overlaid onto it exist
+    only in that in-memory copy (see `ScoutCandidate.consensus`).
+
+    Mutates `result` in place and returns it, so a caller can chain this onto
+    a freshly loaded scan without juggling two names for the same object.
+    """
+    for bucket in (result.passed, result.rejected):
+        for candidate in bucket:
+            if candidate.quality is None:
+                continue
+            fresh_print = store.active_print(candidate.stock_id,
+                                             candidate.quality.fiscal_quarter)
+            if fresh_print is None:
+                continue
+            gap = (candidate.brief.snapshot.gap_on_event_pct
+                   if candidate.brief is not None else None)
+            candidate.quality = assess_earnings(
+                fresh_print, candidate.consensus, config, gap)
+            candidate.score = candidate.quality.score
+    result.passed.sort(key=lambda c: -c.score)
     return result
 
 

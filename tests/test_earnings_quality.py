@@ -719,10 +719,10 @@ def test_a_feed_that_returned_no_summary_is_not_recorded_as_no_guidance():
             stock_id="stk_1", print_row=a_print(eps_actual=1.20),
             consensus_id="con_1", consensus=a_consensus())
 
-    out = _read_guidance(None, context(), asked, None, GuidanceStats())
+    out = _read_guidance(None, context(), asked, GuidanceStats())
     assert out.print_row.guidance_reason == "no_summary_from_feed"
 
-    out = _read_guidance(None, context(), never_asked, None, GuidanceStats())
+    out = _read_guidance(None, context(), never_asked, GuidanceStats())
     assert out.print_row.guidance_reason == "feed_not_asked"
 
     # And the leg built from it no longer claims the company said nothing.

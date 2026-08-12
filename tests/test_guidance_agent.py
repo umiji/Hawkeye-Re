@@ -326,42 +326,6 @@ def test_the_schema_forbids_fields_nobody_reviewed():
     assert "quote" in schema["required"]
 
 
-# --- the API-mode driver ---------------------------------------------------
-
-class _Boom:
-    def complete_json(self, *a, **kw):
-        raise RuntimeError("the model is unreachable")
-
-
-def test_an_unreachable_model_is_a_named_outcome_not_an_exception():
-    """One unreachable model must not end a scan that has already paid for
-    its market data. The print travels on with the leg empty and the row
-    saying why (invariant 6)."""
-    from hawkeye.scout.guidance_agent import LLMGuidanceReader
-
-    out = LLMGuidanceReader(_Boom()).read(a_request())
-
-    assert out.reading is None
-    assert out.reason == "extraction_call_failed"
-
-
-def test_the_driver_sends_the_summary_and_the_schema():
-    from hawkeye.tribunal.llm import ScriptedLLM
-    from hawkeye.scout.guidance_agent import LLMGuidanceReader
-
-    llm = ScriptedLLM([{
-        "guided": True, "period": "FY2026",
-        "revenue_low": 2.60, "revenue_high": 2.70, "revenue_unit": "billion",
-        "quote": "2026 revenue of $2.60 billion to $2.70 billion"}])
-
-    out = LLMGuidanceReader(llm, model="m").read(a_request())
-
-    assert out.reading.revenue_low == pytest.approx(2.60e9)
-    system, user = llm.calls[0]
-    assert ACA_SUMMARY in user
-    assert "previous guidance" in system      # the decoys are named to it
-
-
 # --- the tally -------------------------------------------------------------
 
 def test_the_three_kinds_are_counted_apart():

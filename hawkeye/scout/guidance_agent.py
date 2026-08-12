@@ -344,29 +344,3 @@ class GuidanceStats:
                 "guidance_reader_failed": self.reader_failed,
                 "guidance_call_failed": self.call_failed,
                 "guidance_staged": self.staged}
-
-
-class LLMGuidanceReader:
-    """The API-mode driver: one stateless call per print.
-
-    A failed call is a NAMED outcome rather than an exception, because the
-    alternative is one unreachable model ending a scan that had already paid
-    for its market data. The print travels on with its guidance leg empty and
-    the row saying why (invariant 6).
-    """
-
-    def __init__(self, llm, model: str = "", max_tokens: int = 2000):
-        self._llm = llm
-        self.model = model or getattr(llm, "model", "")
-        self._max_tokens = max_tokens
-
-    def read(self, request: GuidanceRequest) -> GuidanceExtraction:
-        try:
-            reply = self._llm.complete_json(
-                GUIDANCE_SYSTEM, render_request(request), build_schema(),
-                max_tokens=self._max_tokens)
-        except Exception:
-            return GuidanceExtraction(None, "extraction_call_failed")
-        if not isinstance(reply, dict):
-            return GuidanceExtraction(None, "extraction_call_failed")
-        return parse_reply(reply, request, model=self.model)

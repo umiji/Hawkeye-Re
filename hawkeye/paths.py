@@ -71,3 +71,21 @@ def guidance_dir() -> Path:
 def reports_dir() -> Path:
     """Rendered run reports."""
     return _dir("HAWKEYE_REPORTS", "reports")
+
+
+def scan_dir() -> Path:
+    """A scan awaiting ranking (docs/design/RANK_AFTER_GUIDANCE.ja.md).
+
+    `hawkeye scout` judges every candidate the moment it walks past it, which
+    is before the guidance queue above can possibly be empty — so the score
+    it computes is provisional. It writes the whole `ScoutResult` here
+    instead of recording it, and `hawkeye rank` reads it back once the queue
+    is drained, re-scores, and only THEN commits to the ledger. One scan at a
+    time, same as the guidance queue it waits on.
+    """
+    return _dir("HAWKEYE_SCAN", "scan")
+
+
+def scan_work_path() -> Path:
+    """The one pending scan, if any."""
+    return scan_dir() / "pending.json"

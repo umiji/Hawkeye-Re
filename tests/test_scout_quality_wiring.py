@@ -24,7 +24,9 @@ from hawkeye.scout.quality import (
     print_from_event,
     reconstructed_consensus,
 )
-from hawkeye.scout.scout import run_scout
+from hawkeye.scout import guidance_case
+from hawkeye.scout.guidance_agent import parse_reply
+from hawkeye.scout.scout import rerank_after_guidance, run_scout
 from hawkeye.scout.numbers import read_numbers
 from tests.conftest import FakeWhispers, make_bars, make_whispers
 
@@ -299,6 +301,17 @@ def _feed(event_day: date, summary: str) -> FakeWhispers:
         "AMZN", announced=event_day, summary=summary)})
 
 
+def _read_staged_guidance(store, reply: dict) -> None:
+    """Stand in for `hawkeye guidance queue` + `submit`: attach exactly the
+    reply a scan staged, to the row the scan wrote for it."""
+    cases = guidance_case.list_cases()
+    assert len(cases) == 1
+    case = cases[0]
+    extraction = parse_reply(reply, case.request(), model="test-model")
+    guidance_case.attach(store, case, extraction)
+    guidance_case.discard(case.id)
+
+
 def _pre_register(store, stock_id: str, event_day: date) -> str:
     """A row captured the day before the print, with no yardstick on it —
     which is every row the pre-registration pass can write, because the
@@ -326,11 +339,12 @@ def test_a_pre_registered_row_does_not_block_the_full_year_guidance_leg(tmp_path
 
     result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
                        _config(), today=today, stock_store=store,
-                       numbers_source=_feed(event_day, _FULL_YEAR_GUIDANCE),
-                       guidance_reader=_Reader({
-                           "guided": True, "period": "FY2026",
-                           "eps_low": 5.15, "eps_high": 5.60,
-                           "quote": "2026 earnings of $5.15 to $5.60 per share"}))
+                       numbers_source=_feed(event_day, _FULL_YEAR_GUIDANCE))
+    _read_staged_guidance(store, {
+        "guided": True, "period": "FY2026",
+        "eps_low": 5.15, "eps_high": 5.60,
+        "quote": "2026 earnings of $5.15 to $5.60 per share"})
+    rerank_after_guidance(store, result, _config())
 
     guidance = result.passed[0].quality.guidance
     assert guidance.status is LegStatus.BEAT
@@ -353,12 +367,12 @@ def test_the_quarterly_yardstick_comes_from_the_print_that_carried_the_guidance(
 
     result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
                        _config(), today=today, stock_store=store,
-                       numbers_source=_feed(event_day, _QUARTERLY_GUIDANCE),
-                       guidance_reader=_Reader({
-                           "guided": True, "period": "2026-Q3",
-                           "eps_low": 2.50, "eps_high": 2.70,
-                           "quote": ("third quarter earnings of $2.50 to "
-                                     "$2.70 per share")}))
+                       numbers_source=_feed(event_day, _QUARTERLY_GUIDANCE))
+    _read_staged_guidance(store, {
+        "guided": True, "period": "2026-Q3",
+        "eps_low": 2.50, "eps_high": 2.70,
+        "quote": "third quarter earnings of $2.50 to $2.70 per share"})
+    rerank_after_guidance(store, result, _config())
 
     guidance = result.passed[0].quality.guidance
     assert guidance.status is LegStatus.BEAT
@@ -388,13 +402,16 @@ def test_the_screen_still_works_without_a_store():
     assert result.passed[0].quality is None
 
 
-# --- the guidance an agent read (task 8.7 layer 2) -------------------------
+# --- the guidance an agent read, and re-scored after the fact --------------
 #
 # The third leg is the only one that arrives as prose, and since 2026-08-10 an
-# agent reads it rather than a pattern. What these pin is the wiring: that the
-# scan hands the agent the sentence, that the row it writes carries the
-# reading AND who produced it, and that a refusal is recorded by name instead
-# of arriving as an ordinary blank.
+# agent reads it rather than a pattern. Nothing inside a scan process can call
+# that agent (docs/design/RANK_AFTER_GUIDANCE.ja.md): every scan stages the
+# sentence to `var/guidance/` and moves on, so what these tests pin is the
+# STAGING contract — the sentence the queued case carries, the row it writes
+# carrying who eventually read it — and the RE-SCORING contract:
+# `rerank_after_guidance` has to pick up whatever `hawkeye guidance submit`
+# attached and fold it into the score `hawkeye rank` records.
 
 _SUMMARY = (
     "Test Corp reported second quarter earnings of $1.20 per share. "
@@ -403,53 +420,36 @@ _SUMMARY = (
     "earnings of $0.08 per share for the quarter ending September 30, 2026.")
 
 
-class _Reader:
-    """A stubbed extraction step. Records what it was asked."""
-
-    def __init__(self, reply):
-        self.reply = reply
-        self.requests = []
-
-    def read(self, request):
-        from hawkeye.scout.guidance_agent import parse_reply
-        self.requests.append(request)
-        return parse_reply(self.reply, request, model="test-model")
-
-
-def _scan(reader, tmp_path, monkeypatch, summary=_SUMMARY):
-    # Session mode stages files under var/guidance when no reader is supplied;
-    # without this a test would write into the developer's own queue.
-    monkeypatch.setenv("HAWKEYE_GUIDANCE", str(tmp_path / "guidance"))
+def _scan(tmp_path, monkeypatch, summary=_SUMMARY):
     today = date.today()
     event_day = today - timedelta(days=3)
     store = StockStore(str(tmp_path / "hawkeye.db"))
     result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
                        _config(), today=today, stock_store=store,
-                       numbers_source=_feed(event_day, summary),
-                       guidance_reader=reader)
+                       numbers_source=_feed(event_day, summary))
     return result, store
 
 
-def test_the_agent_is_given_the_sentence_and_the_quarter_that_follows(tmp_path, monkeypatch):
-    reader = _Reader({"guided": False})
+def test_the_staged_case_carries_the_sentence_and_the_quarter_that_follows(
+        tmp_path, monkeypatch):
+    _scan(tmp_path, monkeypatch)
 
-    _scan(reader, tmp_path, monkeypatch)
-
-    assert len(reader.requests) == 1
-    assert reader.requests[0].summary == _SUMMARY
-    assert reader.requests[0].next_quarter == "2026-Q3"
+    cases = guidance_case.list_cases()
+    assert len(cases) == 1
+    assert cases[0].summary == _SUMMARY
+    assert cases[0].request().next_quarter == "2026-Q3"
 
 
 def test_a_reading_no_pattern_could_produce_reaches_the_print_row(tmp_path, monkeypatch):
     """"a loss of $1.00 per share to breakeven" is -1.00 to 0.00. The
     regular expression that used to read this leg refused it, and refusing
     it is what layer 2 exists to stop."""
-    reader = _Reader({
+    _, store = _scan(tmp_path, monkeypatch)
+
+    _read_staged_guidance(store, {
         "guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
         "quote": ("third quarter results to range from a loss of $1.00 per "
                   "share to breakeven")})
-
-    _, store = _scan(reader, tmp_path, monkeypatch)
 
     row = store.active_print(store.stock_by_ticker("AMZN").id, "2026-Q2")
     assert row.guidance is not None
@@ -458,61 +458,59 @@ def test_a_reading_no_pattern_could_produce_reaches_the_print_row(tmp_path, monk
     assert row.guidance.extractor_model == "test-model"
 
 
-def test_the_row_is_written_ONCE_carrying_the_reading(tmp_path, monkeypatch):
-    """Attaching the guidance after the row was recorded would mean retiring
-    it and appending a corrected one — the mechanism built for a VENDOR
-    restating a figure. A scan would then report its own extraction step as
-    the source changing its mind."""
-    reader = _Reader({
+def test_attaching_staged_guidance_retires_the_pending_row_and_appends_one(
+        tmp_path, monkeypatch):
+    """The scan writes the row once, before the reading exists. Attaching the
+    reading afterwards is therefore necessarily a revise, not an edit — the
+    same mechanism task 8.5 built for a vendor restating a figure — and that
+    IS the real cost of deferring guidance out of the scan
+    (docs/design/RANK_AFTER_GUIDANCE.ja.md, `hawkeye/scout/guidance_case.py`
+    module docstring). This test pins that cost rather than hiding it."""
+    result, store = _scan(tmp_path, monkeypatch)
+    stock_id = store.stock_by_ticker("AMZN").id
+    assert len(store.prints(stock_id)) == 1        # the pending row, alone
+
+    _read_staged_guidance(store, {
         "guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
         "quote": ("third quarter results to range from a loss of $1.00 per "
                   "share to breakeven")})
 
-    result, store = _scan(reader, tmp_path, monkeypatch)
-
-    stock_id = store.stock_by_ticker("AMZN").id
-    assert result.revisions == []
-    assert len(store.prints(stock_id)) == 1
+    assert len(store.prints(stock_id)) == 2         # pending + the revision
+    active = store.active_print(stock_id, "2026-Q2")
+    assert active.guidance is not None
 
 
 def test_a_refusal_is_recorded_by_name_on_the_row(tmp_path, monkeypatch):
     """An empty guidance leg has three causes and only one of them is ours. A
     row that stores the blank alone cannot tell them apart afterwards."""
-    reader = _Reader({
+    _, store = _scan(tmp_path, monkeypatch)
+
+    _read_staged_guidance(store, {
         "guided": True, "period": "2026-Q3", "eps_low": 5.0, "eps_high": 6.0,
         "quote": "third quarter earnings of $5.00 to $6.00 per share"})
-
-    result, store = _scan(reader, tmp_path, monkeypatch)
 
     row = store.active_print(store.stock_by_ticker("AMZN").id, "2026-Q2")
     assert row.guidance is None
     assert row.guidance_reason == "quote_not_in_source"
-    assert result.guidance.reader_failed == 1
-    assert result.guidance.read == 0
 
 
-def test_the_reason_reaches_the_reading_of_the_quarter(tmp_path, monkeypatch):
-    reader = _Reader({"guided": False})
+def test_the_reason_reaches_the_reading_of_the_quarter_after_rerank(
+        tmp_path, monkeypatch):
+    result, store = _scan(tmp_path, monkeypatch)
 
-    result, _ = _scan(reader, tmp_path, monkeypatch)
+    _read_staged_guidance(store, {"guided": False})
+    rerank_after_guidance(store, result, _config())
 
     guidance = result.passed[0].quality.guidance
     assert guidance.status is LegStatus.ABSENT
     assert "no_guidance_in_source" in guidance.flags
 
 
-def test_no_reader_is_not_the_same_as_a_reader_that_found_nothing(
-        tmp_path, monkeypatch):
-    """Zero attempts and zero readings must not print like "it ran and the
-    companies had guided nothing"."""
-    monkeypatch.setenv("HAWKEYE_GUIDANCE", str(tmp_path / "guidance"))
-    today = date.today()
-    event_day = today - timedelta(days=3)
-    store = StockStore(str(tmp_path / "hawkeye.db"))
-    result = run_scout(FakeCalendar(_entries(event_day)),
-                       _provider(), _config(), today=today, stock_store=store,
-                       numbers_source=_feed(event_day, _SUMMARY))
+def test_a_scan_always_stages_rather_than_reading_inline(tmp_path, monkeypatch):
+    """Nothing inside a scan process can reach an agent, so the sentence is
+    always queued for `hawkeye guidance queue` / `submit` to close the loop —
+    there is no code path left that reads it inline."""
+    result, _ = _scan(tmp_path, monkeypatch)
 
     assert result.guidance.attempted == 0
-    # Staged instead: the sentence still has to be read, just not here.
     assert result.guidance.staged == 1

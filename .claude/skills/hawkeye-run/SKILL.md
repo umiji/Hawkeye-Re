@@ -56,14 +56,11 @@ them instead of opening new ones.
   ```bash
   hawkeye scout
   ```
-  This scans recent earnings surprises, applies gates and ranks the
-  survivors (funnel counts are recorded automatically).
-
-  **Do NOT pass `--open-cases` yet.** One of the three legs a quarter is
-  judged on — the company's own outlook, i.e. its guidance — is written in
-  prose and is read by an agent, which is step 2b below. A case opened
-  before that runs carries a brief saying the outlook is unread, and the
-  Bull argues from the brief.
+  This scans recent earnings surprises and applies the entry gates. It does
+  **not** score, rank, or record anything yet — nothing inside a scan
+  process can call an agent, so the guidance leg every candidate is judged
+  on is always unread at this point. `hawkeye rank` (step 2c below) is what
+  scores and records the scan, once that leg can actually be known.
 
 ### 2b. Read the guidance the scan could not
 
@@ -108,9 +105,20 @@ retry it by rewording the request, and never write the JSON yourself.
 If scout passes zero candidates, report the funnel numbers honestly and
 stop: **no catalyst means no trade — do not go hunting for one.**
 
-### 2c. Show the user the scan report, and WAIT
+### 2c. Score and record the scan, once the queue is empty
 
-Only once the guidance queue is empty:
+```bash
+hawkeye rank
+```
+
+This is the step that actually decides the shortlist: it re-scores every
+candidate against the guidance step 2b just attached (a candidate that
+published no outlook still scores zero on that leg — that is normal, not
+"still unread"), sorts, and records the scan and its 15/3-slot cutoff to the
+ledger. Nothing before this point is recorded, so running `hawkeye scout`
+again before `hawkeye rank` refuses — finish this step first.
+
+### 2d. Show the user the scan report, and WAIT
 
 ```bash
 hawkeye report scan
@@ -131,10 +139,10 @@ handed to the tribunal about them, and what could not be retrieved. The user
 runs `/hawkeye-run` and nothing else — a document they are not shown is a
 document that does not exist.
 
-If they say to continue, go to step 2d. If they name a different candidate or
+If they say to continue, go to step 2e. If they name a different candidate or
 tell you to stop, do that instead.
 
-### 2d. Open one case per name the user approved
+### 2e. Open one case per name the user approved
 
 ```bash
 hawkeye case open TICKER --from-earnings --nav <nav>
