@@ -267,6 +267,115 @@ def test_the_analyst_count_and_range_are_gone_and_the_row_says_so(tmp_path):
     assert snapshot.eps_low is None and snapshot.eps_high is None
 
 
+# --- the feed must be talking about the print we are filing under ----------
+#
+# Measured 2026-08-11 on 173 comparable pre-registered rows: 20 of them (11.6%)
+# held the NEXT quarter's consensus under this quarter's label. All 20 were
+# companies the calendar still listed as "about to report" that had in fact
+# already reported, so the forward endpoint had moved on. The calendar estimate
+# on those same rows was right, which is what made the damage visible at all.
+
+def test_a_feed_answering_about_a_later_print_does_not_become_this_consensus(
+        tmp_path):
+    """BZH, 2026-08-09: the calendar said 2026-Q3 reports tomorrow, the company
+    had reported two days earlier, and the feed answered with Q4's estimate
+    (0.9 against the quarter's real -0.34). The row kept the calendar's
+    number and threw the feed's away — silently, until the drift measurement
+    found it."""
+    store = make_store(tmp_path)
+    prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),
+                             business_days=2)
+    # The calendar schedules 2026-08-03; the feed's numbers are for a print
+    # three months out, i.e. a different quarter entirely.
+    source = StubConsensus({"AMZN": reading(next_report_date=date(2026, 11, 2),
+                                            eps_estimate=9.99)})
+
+    report = capture_consensus(store, prints, source,
+                               captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
+
+    snapshot = store.consensus_in_force(
+        store.stock_by_ticker("AMZN").id, "2026-Q2")
+    assert snapshot.eps_avg is None          # NOT 9.99
+    assert snapshot.revenue_avg is None
+    assert snapshot.eps_whisper is None
+    assert snapshot.eps_calendar == 1.83     # the calendar's is still good
+    assert report.skipped_feed_other_print == 1
+    # The row is still written. Dropping it would lose a snapshot that cannot
+    # be retaken, and the calendar's number on it is the usable one.
+    assert "AMZN" in report.tickers
+
+
+def test_the_refused_row_records_which_print_the_feed_was_answering_about(
+        tmp_path):
+    """A refusal nobody can audit is a refusal nobody can revisit. The feed's
+    own statement of its target is kept on the row whether it was accepted or
+    not."""
+    store = make_store(tmp_path)
+    prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),
+                             business_days=2)
+    source = StubConsensus({"AMZN": reading(next_report_date=date(2026, 11, 2),
+                                            quarter_end=date(2026, 9, 30),
+                                            quarter_number=3)})
+
+    capture_consensus(store, prints, source,
+                      captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
+
+    snapshot = store.consensus_in_force(
+        store.stock_by_ticker("AMZN").id, "2026-Q2")
+    assert snapshot.feed_quarter_end == date(2026, 9, 30)
+    assert snapshot.feed_quarter_number == 3
+    assert snapshot.feed_report_date == date(2026, 11, 2)
+    assert snapshot.source_note == "finnhub_only:feed_other_print"
+
+
+def test_two_vendors_a_couple_of_days_apart_are_still_the_same_print(tmp_path):
+    """One vendor dates a print by the session it is announced in and the
+    other by the morning the wires carry it, so a day or two of disagreement
+    is routine. The gap this rule exists to catch is a whole quarter."""
+    store = make_store(tmp_path)
+    prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),
+                             business_days=2)
+    source = StubConsensus({"AMZN": reading(next_report_date=date(2026, 8, 5))})
+
+    report = capture_consensus(store, prints, source,
+                               captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
+
+    snapshot = store.consensus_in_force(
+        store.stock_by_ticker("AMZN").id, "2026-Q2")
+    assert snapshot.eps_avg == 1.83
+    assert report.skipped_feed_other_print == 0
+
+
+def test_a_feed_that_states_no_report_date_cannot_be_matched_and_is_refused(
+        tmp_path):
+    """Fail closed (invariant 6). "We could not check which print this is
+    about" is exactly the state that produced the twenty bad rows, and using
+    the numbers anyway is what made it invisible."""
+    store = make_store(tmp_path)
+    prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),
+                             business_days=2)
+    source = StubConsensus({"AMZN": reading(next_report_date=None)})
+
+    report = capture_consensus(store, prints, source,
+                               captured_at=datetime(2026, 8, 2, 9, tzinfo=JST))
+
+    snapshot = store.consensus_in_force(
+        store.stock_by_ticker("AMZN").id, "2026-Q2")
+    assert snapshot.eps_avg is None
+    assert snapshot.source_note == "finnhub_only:feed_target_unstated"
+    assert report.skipped_feed_other_print == 1
+
+
+def test_the_count_of_refusals_is_printed_in_japanese():
+    """A refusal that only exists in the database is a refusal the reader
+    never learns the size of."""
+    from hawkeye.scout.prereg import CaptureReport, report_line
+
+    line = report_line(CaptureReport(captured=3, skipped_feed_other_print=2))
+
+    assert "別の決算についての予想だったため使わず 2 件" in line
+
+
 def test_running_the_job_twice_the_same_day_writes_no_second_row(tmp_path):
     store = make_store(tmp_path)
     prints = upcoming_prints(calendar_rows(), today=date(2026, 8, 2),

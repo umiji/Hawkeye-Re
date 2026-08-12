@@ -194,6 +194,21 @@ class HawkeyeConfig:
     whisper_beat_weight: float = 0.25
     whisper_beat_cap: float = 10.0
 
+    # How far the earnings feed's stated report date may sit from the
+    # calendar's before the two are judged to be describing DIFFERENT prints,
+    # and the feed's consensus is refused for this quarter's row
+    # (hawkeye/scout/prereg.py).
+    #
+    # 7 days, from the two distances it has to separate. The disagreement to
+    # tolerate is a vendor dating a print by the session it is announced in
+    # rather than the morning the wires carry it: one or two days. The gap to
+    # catch is a company that has already reported, where the feed has moved
+    # on to a print a full quarter away — measured at 82 to 90 days on the
+    # twenty rows this rule was written for (2026-08-11). 7 is an order of
+    # magnitude clear of the first and an order of magnitude short of the
+    # second, so no plausible re-measurement of either moves the boundary.
+    prereg_feed_report_date_tolerance_days: int = 7
+
     # --- Consensus pre-registration (docs/design/MASTER_OVERVIEW.ja.md §6.1(D)) ---
     # Runs are manual, so a strict T-1 window loses a print's snapshot
     # permanently on any missed day — and a snapshot missed before the

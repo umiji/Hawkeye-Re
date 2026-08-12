@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Optional, Protocol
 
+from hawkeye.config import HawkeyeConfig
 from hawkeye.contracts.stocks import (
     ConsensusSnapshot,
     SnapshotKind,
@@ -67,6 +68,11 @@ class CaptureReport:
     # cannot look like a day with no estimates (invariant 6).
     consensus_unreachable: int = 0
     skipped_already_reported: int = 0
+    # The feed answered about a DIFFERENT print than the one being filed, or
+    # would not say which print it answered about. Its figures are dropped and
+    # the calendar's are kept. Counted apart from `consensus_missing` because
+    # the feed did have numbers — they were about another quarter.
+    skipped_feed_other_print: int = 0
     nothing_to_record: int = 0
     # Names the entry gates have already refused structurally (§6.1(E)).
     # Reported rather than silently dropped: this is the count that says how
@@ -84,6 +90,7 @@ class CaptureReport:
                 "consensus_missing": self.consensus_missing,
                 "consensus_unreachable": self.consensus_unreachable,
                 "skipped_already_reported": self.skipped_already_reported,
+                "skipped_feed_other_print": self.skipped_feed_other_print,
                 "nothing_to_record": self.nothing_to_record,
                 "skipped_not_target": self.skipped_not_target,
                 "skipped_unlabelled": self.skipped_unlabelled,
@@ -174,6 +181,38 @@ def upcoming_prints(raw: list[dict], today: date, business_days: int,
     return out
 
 
+def feed_answers_about(item: UpcomingPrint, reading, tolerance_days: int
+                       ) -> str:
+    """"" when the feed's numbers are about `item`, else why they are not.
+
+    The two sources have to be describing ONE print before one's figures may
+    be filed under the other's label. They are joined on the report date
+    because that is the only fact both state: the calendar gives the fiscal
+    year and quarter but no period end, and the forward endpoint gives the
+    period end and quarter number but never the fiscal year — so the labels
+    themselves cannot be compared without inventing the missing half (NVDA's
+    quarter ending July 2026 is its fiscal 2027 Q2, and reading the year off
+    the end date files it a year early).
+
+    Why this exists: the calendar keeps listing a company as about to report
+    for a day or two after it actually has, and the forward endpoint moves on
+    the moment the print lands. In that window it answers with the NEXT
+    quarter's consensus, and nothing here noticed — 20 of 173 comparable rows
+    (11.6%, measured 2026-08-11) were filed with a consensus a quarter ahead
+    of their own label. Those rows are the bar an actual is judged against, so
+    the error does not surface as a missing number; it surfaces as a surprise
+    percentage, and from there as a rank.
+
+    An unstated date fails closed (invariant 6): "we could not check which
+    print this is about" is precisely the state that produced those 20 rows.
+    """
+    if reading.next_report_date is None:
+        return "feed_target_unstated"
+    if abs((reading.next_report_date - item.report_date).days) > tolerance_days:
+        return "feed_other_print"
+    return ""
+
+
 def resolve_stock(store, ticker: str, directory=None) -> str:
     """The master row for a ticker, created if this is the first sighting.
 
@@ -214,10 +253,14 @@ def capture_consensus(store, prints: list[UpcomingPrint],
     used; those columns now stay blank.
     """
     captured = unchanged = missing = skipped = empty = not_target = 0
-    unlabelled = unreachable = 0
+    unlabelled = unreachable = other_print = 0
     touched: list[str] = []
     filtering = bool(config is not None
                      and getattr(config, "prereg_skip_non_targets", False))
+    # Read off the doctrine defaults rather than repeated as a literal here:
+    # a number that lives in two files is a number that changes in one of
+    # them (invariant 7).
+    tolerance = (config or HawkeyeConfig()).prereg_feed_report_date_tolerance_days
     day = today or date.today()
     for item in prints:
         # No fiscal label, no row. The label is the only thing that joins this
@@ -251,6 +294,16 @@ def capture_consensus(store, prints: list[UpcomingPrint],
             else:
                 if reading is None:
                     missing += 1
+        # The feed's figures are this quarter's consensus only if the feed was
+        # answering about this quarter's print. When it was not, the row still
+        # gets written with the calendar's estimate — dropping it would lose a
+        # snapshot that cannot be retaken, and the calendar's number was the
+        # right one on all twenty rows this rule was written for.
+        refusal = ("" if reading is None
+                   else feed_answers_about(item, reading, tolerance))
+        if refusal:
+            other_print += 1
+        usable = None if refusal else reading
         # No guidance yardstick is written here, and none can be: this
         # endpoint states the consensus for the print about to happen, so the
         # bar for the guidance that print will GIVE does not exist yet. It is
@@ -262,10 +315,17 @@ def capture_consensus(store, prints: list[UpcomingPrint],
             kind=kind, expected_report_date=item.report_date,
             eps_calendar=item.eps_estimate,
             revenue_calendar=item.revenue_estimate,
-            eps_avg=reading.eps_estimate if reading else None,
-            revenue_avg=reading.revenue_estimate if reading else None,
-            eps_whisper=reading.whisper if reading else None,
-            source_note="whispers+finnhub" if reading else "finnhub_only")
+            eps_avg=usable.eps_estimate if usable else None,
+            revenue_avg=usable.revenue_estimate if usable else None,
+            eps_whisper=usable.whisper if usable else None,
+            # Kept even when the figures were refused: this IS the evidence
+            # for the refusal, and it is what a later look re-decides on.
+            feed_quarter_end=reading.quarter_end if reading else None,
+            feed_quarter_number=reading.quarter_number if reading else None,
+            feed_report_date=reading.next_report_date if reading else None,
+            source_note=("whispers+finnhub" if usable
+                         else f"finnhub_only:{refusal}" if refusal
+                         else "finnhub_only"))
         # A row with no numbers in it is not "the estimate held still" — it
         # is nothing at all, and it would make the master look covered where
         # it is blank. A live two-day window carries ~560 names, plenty of
@@ -286,6 +346,7 @@ def capture_consensus(store, prints: list[UpcomingPrint],
                          consensus_missing=missing,
                          consensus_unreachable=unreachable,
                          skipped_already_reported=skipped,
+                         skipped_feed_other_print=other_print,
                          nothing_to_record=empty,
                          skipped_not_target=not_target,
                          skipped_unlabelled=unlabelled, tickers=touched)
@@ -298,6 +359,8 @@ def report_line(report: CaptureReport) -> str:
             f"カレンダーの数字のみ {report.consensus_missing} 件 / "
             f"決算専門サイトを読めず {report.consensus_unreachable} 件 / "
             f"発表済みのため対象外 {report.skipped_already_reported} 件 / "
+            f"別の決算についての予想だったため使わず "
+            f"{report.skipped_feed_other_print} 件 / "
             f"予想が1つも取れず記録なし {report.nothing_to_record} 件 / "
             f"入口ゲートの構造的条件を満たさず調査対象外 "
             f"{report.skipped_not_target} 件 / "

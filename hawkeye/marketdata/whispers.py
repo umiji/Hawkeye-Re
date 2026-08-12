@@ -421,6 +421,13 @@ class WhispersForecast:
     # projecting it, and a projected date can move.
     confirmed_at: Optional[datetime] = None
     quarter_end: Optional[date] = None
+    # WHICH quarter the figures above are for, as the feed states it. Kept
+    # beside `quarter_end` and not derived from it: pre-registration files a
+    # row under the CALENDAR's label, and without the feed's own statement of
+    # its target there is nothing to check that label against. Discarding it
+    # is how twenty rows came to hold the next quarter's estimate under this
+    # quarter's label (measured 2026-08-11, see hawkeye/scout/prereg.py).
+    quarter_number: Optional[int] = None
 
     @property
     def is_empty(self) -> bool:
@@ -458,7 +465,22 @@ def parse_stocksdata(payload: Any) -> WhispersForecast:
         whisper=_sentinel_free(payload.get("whisper"), _NO_VALUE),
         next_report_date=_day(payload.get("nextEPSDate")),
         confirmed_at=_announced_at(payload.get("confirmDate")),
-        quarter_end=_day(payload.get("quarterDate")))
+        quarter_end=_day(payload.get("quarterDate")),
+        quarter_number=_quarter_number(payload.get("quarter")))
+
+
+def _quarter_number(value: Any) -> Optional[int]:
+    """The feed's `quarter` field as 1-4, or None when it stated nothing.
+
+    Out-of-range values are None rather than clamped: a "quarter 0" is the
+    feed saying something this system cannot interpret, and a clamped 1 would
+    be a statement about the company that nobody made.
+    """
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if 1 <= number <= 4 else None
 
 
 def _percent(ratio: Any) -> Optional[float]:

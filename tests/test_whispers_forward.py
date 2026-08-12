@@ -97,6 +97,17 @@ def test_the_quarter_end_is_read_but_no_fiscal_label_is_derived_from_it():
     assert not hasattr(forecast("NVDA"), "fiscal_quarter")
 
 
+def test_the_quarter_number_the_feed_states_is_kept():
+    """`quarter` was read and thrown away until 2026-08-12. It is the feed's
+    own statement of WHICH print its consensus is for, and discarding it left
+    nothing to check the calendar's label against — which is how twenty rows
+    came to hold the next quarter's estimate under this quarter's label."""
+    assert forecast("NVDA").quarter_number == 2
+    assert forecast("LCUT").quarter_number == 3
+    # No entry at all, so nothing is stated rather than "quarter zero".
+    assert forecast("AATC").quarter_number is None
+
+
 # -- absence ---------------------------------------------------------------
 
 def test_a_company_nobody_published_an_estimate_for_is_empty_not_wrong():

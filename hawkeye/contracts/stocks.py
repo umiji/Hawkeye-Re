@@ -342,6 +342,16 @@ class ConsensusSnapshot(BaseModel):
     # ratio's denominator depend on which of the two happened to be present.
     eps_whisper: Optional[float] = None
 
+    # WHICH print the earnings feed said its figures were about, as it stated
+    # it, kept whether the figures were accepted or refused. A refusal nobody
+    # can audit is a refusal nobody can revisit, and these three are the whole
+    # evidence for one (hawkeye/scout/prereg.py). Deliberately NOT part of
+    # `content_key()`: they are not estimates, and counting them there would
+    # make a row carrying no figures at all look like a row worth keeping.
+    feed_quarter_end: Optional[date] = None
+    feed_quarter_number: Optional[int] = None
+    feed_report_date: Optional[date] = None
+
     revenue_avg: Optional[float] = None
     revenue_low: Optional[float] = None
     revenue_high: Optional[float] = None
