@@ -198,15 +198,18 @@ def test_a_leg_with_no_actual_at_all_is_unverified():
     assert "no_actual" in quality.eps.flags
 
 
-def test_a_consensus_from_too_few_analysts_is_unverified():
-    """INVH's EPS consensus was built from ONE analyst, and nothing in the
-    vendor response says so — only a pre-registered row with a count does."""
+def test_a_thin_analyst_count_no_longer_blocks_a_beat():
+    """`earnings_min_analysts` (INVH: a consensus built from ONE analyst) was
+    retired 2026-08-13 (Set H-2, docs/design/SET_H_G_DECISIONS.ja.md): the
+    2026-08-06 move to EW means no ConsensusSnapshot this system builds ever
+    carries an analyst count, so the rule's own condition could never fire.
+    A count on the row (however it got there) must not resurrect it."""
     quality = assess_earnings(
         a_print(eps_actual=1.50, eps_actual_rows=[1.50]),
         a_consensus(eps_avg=1.00, eps_calendar=1.00, eps_analysts=1), CONFIG)
 
-    assert quality.eps.status is LegStatus.UNVERIFIED
-    assert "thin_coverage" in quality.eps.flags
+    assert quality.eps.status is LegStatus.BEAT
+    assert "thin_coverage" not in quality.eps.flags
 
 
 def test_a_near_zero_consensus_cannot_buy_a_ranking_slot():
@@ -617,6 +620,43 @@ def test_revenue_guidance_counts_when_the_company_gives_no_eps_range():
     assert quality.guidance.status is LegStatus.BEAT
     assert quality.guidance.leg == "guidance"
     assert round(quality.guidance.surprise_pct, 1) == 4.6
+
+
+def test_guidance_eps_yardstick_too_small_is_not_read_as_a_beat():
+    """ALGT guided "a loss of $1.00 per share to breakeven" against a $0.08
+    consensus — a -725% reading that is really a near-zero denominator, the
+    same failure mode `scout_min_abs_eps_estimate` already guards the EPS leg
+    against (Set H-1, docs/design/SET_H_G_DECISIONS.ja.md). The guidance leg
+    reuses that same floor rather than inventing a second doctrine number for
+    the same kind of figure."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="2026-Q3", eps_low=-1.00,
+                                         eps_high=0.0)),
+        a_consensus(next_quarter_eps_avg=0.08), CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "eps_yardstick_too_small" in quality.guidance.flags
+    assert quality.guidance.parts == ()
+    assert quality.breakdown.guidance == 0.0
+
+
+def test_guidance_revenue_still_counts_when_the_eps_yardstick_is_too_small():
+    """A company can guide both legs while only one yardstick is untrustworthy
+    — the revenue leg is unaffected and still earns its share."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="2026-Q3", eps_low=-1.00,
+                                         eps_high=0.0, revenue_low=1.10e9,
+                                         revenue_high=1.20e9)),
+        a_consensus(next_quarter_eps_avg=0.08,
+                    next_quarter_revenue_avg=1.00e9), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
+    assert [unit for unit, _ in quality.guidance.parts] == ["revenue"]
+    assert "eps_yardstick_too_small" in quality.guidance.flags
+    assert "on_revenue" in quality.guidance.flags
+    assert "on_eps" not in quality.guidance.flags
 
 
 def test_guidance_below_consensus_costs_what_beating_it_would_have_earned():

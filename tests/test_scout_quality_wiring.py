@@ -268,8 +268,8 @@ def test_an_unconfirmable_beat_cannot_outrank_a_confirmed_one(tmp_path):
         stock_id=thin, ticker="THIN", fiscal_quarter="2026-Q2",
         captured_at=datetime.combine(event_day - timedelta(days=1),
                                      datetime.min.time(), tzinfo=JST),
-        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.00, eps_calendar=1.00,
-        eps_analysts=1))                       # one analyst: unconfirmable
+        kind=SnapshotKind.PRE_REGISTERED, eps_avg=0.05,
+        eps_calendar=0.05))                    # near-zero estimate: unconfirmable
     conf = store.put_stock(Stock(ticker="CONF"))
     store.capture_consensus(ConsensusSnapshot(
         stock_id=conf, ticker="CONF", fiscal_quarter="2026-Q2",

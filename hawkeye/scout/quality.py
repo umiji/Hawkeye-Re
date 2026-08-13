@@ -220,8 +220,6 @@ def _assess_leg(leg: str, actual: Optional[float], actual_flags: list[str],
 
     if estimate is None:
         flags.append("no_consensus")
-    if analysts is not None and analysts < config.earnings_min_analysts:
-        flags.append("thin_coverage")
     if (min_abs_estimate is not None and estimate is not None
             and abs(estimate) < min_abs_estimate):
         flags.append("estimate_too_small")
@@ -240,10 +238,9 @@ def _assess_leg(leg: str, actual: Optional[float], actual_flags: list[str],
 
 # What makes a leg unverified. `no_actual` and `no_consensus` are invariant 6
 # in code: missing data scores zero and says so, and must never read either as
-# a beat or as the company having done badly. The other two are doctrine
-# numbers and live in config.
-_BLOCKING_FLAGS = ("no_actual", "no_consensus", "thin_coverage",
-                   "estimate_too_small")
+# a beat or as the company having done badly. `estimate_too_small` is a
+# doctrine number and lives in config.
+_BLOCKING_FLAGS = ("no_actual", "no_consensus", "estimate_too_small")
 
 
 def _leg_status(pct: Optional[float], estimate: Optional[float],
@@ -300,7 +297,8 @@ def _yardsticks(period: str, print_row: EarningsPrint,
 
 
 def _guidance_leg(print_row: EarningsPrint,
-                  consensus: Optional[ConsensusSnapshot]) -> LegVerdict:
+                  consensus: Optional[ConsensusSnapshot],
+                  config) -> LegVerdict:
     """Guidance against the consensus for the SAME period, captured with it.
 
     Absence is neutral by design and is the normal case: there is no
@@ -346,9 +344,22 @@ def _guidance_leg(print_row: EarningsPrint,
              (guidance.revenue_midpoint, revenue_bar, "revenue"))
     usable = [(value, yardstick, unit) for value, yardstick, unit in pairs
               if value is not None and yardstick is not None]
+    # The EPS yardstick can sit as close to zero as a EPS consensus can — ALGT
+    # guided "a loss of $1.00 per share to breakeven" against a $0.08
+    # consensus, i.e. -725% — so it reuses the EPS leg's own floor rather than
+    # a second doctrine number for the same kind of figure (Set H-1,
+    # docs/design/SET_H_G_DECISIONS.ja.md). Revenue yardsticks are not
+    # floored, matching the revenue leg above.
+    too_small = any(unit == "eps" and abs(yardstick) < config.scout_min_abs_eps_estimate
+                    for _, yardstick, unit in usable)
+    usable = [(value, yardstick, unit) for value, yardstick, unit in usable
+              if unit != "eps"
+              or abs(yardstick) >= config.scout_min_abs_eps_estimate]
     if not usable:
-        return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
-                          flags=("no_forward_consensus_to_compare",))
+        return LegVerdict(
+            leg="guidance", status=LegStatus.ABSENT,
+            flags=(("eps_yardstick_too_small",) if too_small
+                  else ("no_forward_consensus_to_compare",)))
     # EVERY leg the company guided and this system holds a bar for, not just
     # the first. A company that guided EPS and sales made two statements, and
     # scoring one of them describes our reading rather than the company.
@@ -370,10 +381,11 @@ def _guidance_leg(print_row: EarningsPrint,
     # +13% guidance beat means a different thing for a year than for a
     # quarter, and the reader is entitled to know which one was measured.
     period_flag = (f"against_{guidance.period}",) if guidance.period else ()
+    too_small_flag = ("eps_yardstick_too_small",) if too_small else ()
     return LegVerdict(leg="guidance", status=status, surprise_pct=parts[0][1],
                       actual=midpoint, estimate=yardstick, parts=parts,
                       flags=tuple(f"on_{unit}" for unit, _ in parts)
-                      + period_flag)
+                      + period_flag + too_small_flag)
 
 
 def _verdict(eps: LegVerdict, revenue: LegVerdict,
@@ -631,7 +643,7 @@ def assess_earnings(print_row: EarningsPrint,
         consensus.revenue_analysts if consensus else None, config,
         source=print_row.source.value)
 
-    guidance = _guidance_leg(print_row, consensus)
+    guidance = _guidance_leg(print_row, consensus, config)
 
     eps_part, revenue_part, gap_part = score_parts(
         eps.scored_pct, revenue.scored_pct, gap_on_event_pct)

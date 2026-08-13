@@ -79,10 +79,13 @@ class HawkeyeConfig:
     # vendor per print neither had anything left to select).
     earnings_actual_dispute_pct: float = 2.0
     earnings_actual_dispute_abs_usd: float = 0.01
-    # A consensus this thin is one analyst's opinion wearing the word
-    # "consensus" — INVH's was built from exactly one, and only a
-    # pre-registered row with an analyst count reveals it.
-    earnings_min_analysts: int = 3
+    # `earnings_min_analysts` (a consensus built from too few analysts wearing
+    # the word "consensus" — INVH's was built from exactly one) is retired,
+    # not renamed: the move to EW as the primary source (2026-08-06 decision,
+    # docs/design/DATA_SOURCE_MATRIX.ja.md §8-1) means no `ConsensusSnapshot`
+    # this system builds ever carries an analyst count any more, so the rule's
+    # own condition could never fire again (Set H-2, 2026-08-13,
+    # docs/design/SET_H_G_DECISIONS.ja.md).
     # How many names one scan asks the earnings feed about, best score first.
     # One request per print, and a scan window holds ~350 a day, so this is a
     # run-duration and rate-limit ceiling rather than a doctrine number. Names
@@ -160,14 +163,16 @@ class HawkeyeConfig:
     # without one is the thing this file exists to prevent. To be revisited
     # from live monitoring (User decision 2026-08-11).
     #
-    # ⚠️ This is the first term that can SUBTRACT on a guidance percentage,
-    # so the missing floor under that percentage's denominator now costs
-    # points where it used to cost nothing: ALGT guided "a loss of $1.00 per
-    # share to breakeven" against a $0.08 consensus, i.e. -725%. Under a
-    # binary penalty that name loses the same 5.0 as a -3% miss, so nothing is
-    # distorted yet — but the day the weight becomes per-% it would own the
-    # ranking. EPS and revenue have `scout_min_abs_eps_estimate`; guidance has
-    # no equivalent. Not added here: it is a separate doctrine number.
+    # This is the first term that could SUBTRACT on a guidance percentage, so
+    # a floor under that percentage's denominator matters even though the
+    # penalty stays binary today (2.0/% is unmeasured and deliberately not
+    # set — see above): ALGT guided "a loss of $1.00 per share to breakeven"
+    # against a $0.08 consensus, i.e. -725%, and that reading already governs
+    # the guidance leg's BEAT/MISS classification and therefore the quarter
+    # verdict, not only a future per-% score. Fixed 2026-08-13 (Set H-1,
+    # docs/design/SET_H_G_DECISIONS.ja.md): the guidance leg's EPS yardstick
+    # now reuses `scout_min_abs_eps_estimate` rather than a second doctrine
+    # number for the same kind of figure.
     guidance_miss_penalty: float = 5.0
     # The feed's unofficial expectation ("whisper"), which sits ABOVE consensus
     # on every name measured so far (11 of 11), so clearing it is the stricter

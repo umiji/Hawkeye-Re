@@ -1,10 +1,10 @@
 """Japanese rendering of the three-leg earnings judgment.
 
 The reader is a decision-maker, not a code reviewer, so a flag never appears
-as a bare identifier: `thin_coverage` reads as 「アナリスト人数が下限未満」
-followed by what that does to the judgment. The rule this whole design turns
-on — 未検証 is not a soft pass — is stated in the output rather than left for
-the reader to infer from a missing score.
+as a bare identifier: `estimate_too_small` reads as 「予想の絶対値が小さすぎて
+率が意味を持たない」followed by what that does to the judgment. The rule this
+whole design turns on — 未検証 is not a soft pass — is stated in the output
+rather than left for the reader to infer from a missing score.
 """
 from __future__ import annotations
 
@@ -37,8 +37,11 @@ _FLAG = {
         "この系では決着させる手段がありません)",
     "finnhub_actual_conflict": "Finnhubが同じ決算に矛盾する実績値を返しており、"
                                "同社の実績は使用不能",
-    "thin_coverage": "アナリスト人数が下限未満",
     "estimate_too_small": "予想の絶対値が小さすぎて率が意味を持たない",
+    "eps_yardstick_too_small": "ガイダンス(会社自身の見通し)と比べる翌四半期"
+                               "EPSコンセンサスの絶対値が小さすぎて、上振れ・"
+                               "下振れの率が意味を持たないため、この判定から"
+                               "除外しています",
     "no_consensus": "比較対象のコンセンサスを取得できていない",
     "no_actual": "実績値を取得できていない",
     "guidance_not_published": "会社がガイダンスを開示していない",
