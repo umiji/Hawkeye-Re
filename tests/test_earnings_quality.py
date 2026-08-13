@@ -267,6 +267,23 @@ def test_a_revenue_miss_is_reported_even_when_eps_beat():
     assert quality.verdict is QuarterVerdict.WEAK
 
 
+def test_a_zero_revenue_consensus_is_unverified_not_a_beat():
+    """0.0 is a value, not a missing one, so it slips past the `estimate is
+    None` check that raises `no_consensus` — the earnings-quality audit
+    (docs/backlog/EARNINGS_QUALITY_AUDIT.ja.md 検証3④) found this could have
+    let a real 0.0 consensus divide into a bogus surprise percentage and read
+    as a confirmed beat. `_pct()`'s own `estimate == 0` guard is what actually
+    stops that; this pins the guard so it can't regress unnoticed."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9),
+        a_consensus(revenue_avg=0.0, revenue_calendar=0.0), CONFIG)
+
+    assert quality.revenue.status is LegStatus.UNVERIFIED
+    assert quality.revenue.surprise_pct is None
+    assert quality.revenue.source == "whispers"
+
+
 # --- guidance: a bonus, never a gate --------------------------------------
 
 def test_missing_guidance_costs_nothing():
