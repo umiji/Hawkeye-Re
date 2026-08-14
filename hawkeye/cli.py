@@ -1,6 +1,6 @@
 """Hawkeye CLI — the manual operating surface for the MVP.
 
-Daily rhythm (docs/USER_GUIDE.ja.md):
+Daily rhythm (docs/design/USER_GUIDE.ja.md):
   evaluate      run one candidate through gates -> tribunal -> risk officer
   decide        record the user's Yes/No on a proposal
   record-entry  record the fill the user executed
@@ -16,11 +16,12 @@ Daily rhythm (docs/USER_GUIDE.ja.md):
 from __future__ import annotations
 
 import argparse
+import pathlib
 import sys
 from datetime import date
 
 from hawkeye.config import HawkeyeConfig
-from hawkeye.paths import db_path
+from hawkeye.paths import db_path, reports_dir
 from hawkeye.envfile import load_local_env
 from hawkeye.contracts.models import (
     Catalyst,
@@ -38,20 +39,29 @@ from hawkeye.ledger.scoring import (
     classify_outcome,
     thesis_accuracy,
 )
+from hawkeye.contracts.stocks import RowStatus
 from hawkeye.ledger.store import Ledger
+from hawkeye.marketdata.base import CalendarUnavailable
 from hawkeye.marketdata.finnhub import CompositeProvider, FinnhubProvider
 from hawkeye.marketdata.snapshot import build_brief
 from hawkeye.marketdata.yahoo import YahooProvider
-from hawkeye.marketdata.yahoo_earnings import YahooEarningsSource
+from hawkeye.marketdata.whispers import WhispersSource
+from hawkeye.reports.monitor_ja import inspection_csv
+from hawkeye.reports.scan_report_ja import (
+    render_scan_report_ja,
+    scan_report_csv,
+)
 from hawkeye.reports.render_ja import (
     fmt_jst,
     render_drop_cycle_ja,
     render_drop_review_ja,
     render_recommendation_ja,
+    render_backfill_ja,
     render_scout_ja,
     render_signals_ja,
 )
-from hawkeye.scout import drop_case, drop_cycle
+from hawkeye.scout import drop_case, drop_cycle, guidance_case
+from hawkeye.scout.guidance_agent import parse_reply, render_request
 from hawkeye.scout.drop_review import (
     CHECKPOINT_TRADING_DAYS,
     COHORTS,
@@ -61,6 +71,7 @@ from hawkeye.scout.drop_review import (
     collect_checkpoints,
     from_recommendation,
     from_screened,
+    is_reviewable,
     outliers,
     to_drop_review,
     with_peer_baseline,
@@ -72,11 +83,35 @@ from hawkeye.scout.benchmark import (
     min_calendar_days_for_trading_days,
     reason_snippet,
 )
+from hawkeye.ledger.stocks import StockStore
+from hawkeye.marketdata.edgar import EdgarDirectory
+from hawkeye.reports.quality_ja import (
+    render_quality_ja,
+    render_stock_history_ja,
+)
+from hawkeye.scout.single import judge_ticker
+from hawkeye.scout.drift import (
+    DriftStatus,
+    measure_consensus_drift,
+)
+from hawkeye.scout.backfill import backfill_history
+from hawkeye.scout.drift import report_line as report_drift_line
+from hawkeye.scout.prereg import (
+    capture_consensus,
+    capture_window,
+    report_line,
+    upcoming_prints,
+    warn_if_nothing_captured,
+)
 from hawkeye.scout.scout import (
     build_screened_candidates,
+    rerank_after_guidance,
     run_scout,
     scan_window,
 )
+from hawkeye.scout import scan_store
+from hawkeye.scout.quality import assess_earnings
+from hawkeye.scout.triage import rebuild_triage
 from hawkeye.sentinel.monitor import check_position
 from hawkeye.tribunal import casefile
 from hawkeye.tribunal.pipeline import (
@@ -92,6 +127,12 @@ def _provider() -> CompositeProvider:
 
 def _ledger() -> Ledger:
     return Ledger(db_path())
+
+
+def _stock_store() -> StockStore:
+    """The stock master lives in the same database as the ledger; its tables
+    are additive and outside the hash chain (§6.1)."""
+    return StockStore(db_path())
 
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
@@ -148,8 +189,52 @@ def _print_step(case: "casefile.Case") -> None:
     print(f"submit_with: hawkeye case submit {case.id} --file {package['output']}")
 
 
+def _rounded(value):
+    return round(value, 1) if value is not None else None
+
+
+def _judged_earnings(args: argparse.Namespace):
+    """The three-leg reading of a named stock's latest quarter, or None.
+
+    Same path the funnel uses — same earnings feed, same one-vendor-per-print
+    rule, same pinned consensus — so a stock a person named arrives at the
+    tribunal on exactly the evidence a discovered one would.
+    """
+    finnhub = FinnhubProvider()
+    if not finnhub.available:
+        print("--from-earnings には FINNHUB_API_KEY が必要です", file=sys.stderr)
+        return None
+    numbers = WhispersSource()
+    return judge_ticker(
+        args.ticker, finnhub, HawkeyeConfig.from_env(),
+        report_date=(date.fromisoformat(args.event_date)
+                     if args.event_date else None),
+        numbers_source=numbers,
+        stock_store=_stock_store(), directory=EdgarDirectory())
+
+
 def cmd_case_open(args: argparse.Namespace) -> int:
     config = HawkeyeConfig.from_env()
+    judged = _judged_earnings(args) if args.from_earnings else None
+    if args.from_earnings:
+        if judged is None:
+            print(f"{args.ticker}: 決算カレンダーに実績のある行が見つかりません"
+                  f"(--event-date で発表日を指定してください)", file=sys.stderr)
+            return 1
+        print(render_quality_ja(judged.quality))
+        args.description = judged.catalyst_description
+        args.event_date = judged.event.day.isoformat()
+        args.source = args.source or "scout/finnhub-earnings-calendar"
+        # Only a confirmed beat becomes a structured fact. The prompts tell
+        # both roles to prefer these over prose, so an unverified leg placed
+        # here would be laundered into a fact.
+        args.eps_surprise_pct = _rounded(judged.quality.eps.scored_pct)
+        args.revenue_surprise_pct = _rounded(judged.quality.revenue.scored_pct)
+    elif not (args.description and args.event_date):
+        print("--description と --event-date が必要です"
+              "(または --from-earnings で決算から生成してください)",
+              file=sys.stderr)
+        return 1
     catalyst = Catalyst(
         type=CatalystType(args.catalyst),
         description=args.description,
@@ -261,7 +346,40 @@ def cmd_case_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _backfill_targets(store, passed: list, top_n: int) -> list[tuple[str, str]]:
+    """(ticker, stock_id) for the names whose history is worth filling in.
+
+    A candidate carries no stock id — the master is keyed by CIK, and the
+    lookup is by ticker. A name with no master row is skipped rather than
+    created here: the master is written by the scan itself, and inventing a
+    row from a backfill would put a company on record that nothing has
+    verified is the company we think it is.
+    """
+    targets = []
+    for candidate in passed[:top_n]:
+        stock = store.stock_by_ticker(candidate.ticker)
+        if stock is not None:
+            targets.append((candidate.ticker, stock.id))
+    return targets
+
+
 def cmd_scout(args: argparse.Namespace) -> int:
+    """Scan only — gates, but no score, no sort, no ledger write.
+
+    A quarter's guidance leg (docs/design/RANK_AFTER_GUIDANCE.ja.md) cannot be
+    known at scan time: nothing inside this process can call the agent that
+    reads it, so `run_scout` stages the sentence to `var/guidance/` and
+    scores every judged candidate as if the company had guided nothing. That
+    score is provisional. Committing a shortlist decided on it would be
+    ranking on incomplete data — so this command writes the whole result to
+    `var/scan/` instead of the ledger, and `hawkeye rank` is what scores it
+    for real, once the guidance queue is empty.
+    """
+    if scan_store.has_pending_scan():
+        print("前回の走査がまだ順位付けされていません。順位付け(hawkeye rank)"
+              "を先に済ませるか、見通しの読み取り待ちがあれば "
+              "hawkeye guidance queue で埋めてください。", file=sys.stderr)
+        return 1
     config = HawkeyeConfig.from_env()
     finnhub = FinnhubProvider()
     if not finnhub.available:
@@ -270,25 +388,82 @@ def cmd_scout(args: argparse.Namespace) -> int:
         return 1
     provider = CompositeProvider(YahooProvider(), finnhub)
     ledger = _ledger()
+    today = date.today()
     # The window is derived from the previous run, so an irregular manual
     # cadence doesn't leave unscanned days (§5.2(1)). --days forces a fixed
     # lookback instead, for backfills and one-off exploration.
     window = (None if args.days
-              else scan_window(date.today(), ledger.last_scan_at(), config))
-    # Discovery stays with the calendar; the EPS numbers are re-read from
-    # Yahoo before ranking (hawkeye/scout/verify.py). If yfinance is missing
-    # the source reports itself unavailable and the scan runs on the
-    # calendar's own figures rather than failing.
-    numbers = YahooEarningsSource()
-    if not numbers.available:
-        print("yfinance が未インストールのため、決算数値はカレンダーの値のまま"
-              "使います(pip install yfinance lxml)", file=sys.stderr)
-    result = run_scout(finnhub, provider, config, days_back=args.days,
-                       window=window, already_seen=ledger.seen_events(),
-                       numbers_source=numbers if numbers.available else None)
+              else scan_window(today, ledger.last_scan_at(), config))
+    # Discovery stays with the calendar; every number the ranking rests on is
+    # read from the earnings feed before the shortlist is decided
+    # (hawkeye/scout/numbers.py). A name the feed cannot answer for keeps the
+    # calendar's own figures, for BOTH legs, and says so.
+    numbers = WhispersSource()
+    # The stock master turns each print into a stored quarter judged against
+    # the consensus that was in force before it. Without a pre-registered row
+    # the funnel reconstructs one and says so — it never silently treats an
+    # after-the-fact estimate as what was knowable in advance (§6.1(D)).
+    # A calendar that cannot answer ends the run here, before record_scan()
+    # in cmd_rank. The next window starts from the last recorded scan, so
+    # writing one for a window nobody managed to read would put those days
+    # out of reach permanently — and the funnel would have printed them as a
+    # quiet market (found live 2026-08-03).
+    store = _stock_store()
+    try:
+        result = run_scout(finnhub, provider, config, days_back=args.days,
+                           window=window, already_seen=ledger.seen_events(),
+                           today=today,
+                           numbers_source=numbers,
+                           stock_store=store,
+                           directory=EdgarDirectory())
+    except CalendarUnavailable as exc:
+        print(f"決算カレンダーを読めなかったため、走査を中止しました: {exc}",
+              file=sys.stderr)
+        print("走査は記録していないため、復旧後に再実行すれば同じ期間を"
+              "読み直します。", file=sys.stderr)
+        return 1
+
+    scan_store.save_scan_result(result)
+    print(render_scout_ja(result))
+    if args.monitor_csv:
+        # Written with a BOM: Excel on Japanese Windows reads a plain UTF-8 CSV
+        # as cp932 and turns every header into mojibake, which makes the check
+        # sheet unusable for the one person it is written for.
+        path = pathlib.Path(args.monitor_csv)
+        path.write_text(inspection_csv(result.inspection), encoding="utf-8-sig")
+        print(f"\n点検表をCSVに保存しました: {path} "
+              f"({len(result.inspection.rows)}行)")
+    print(f"\n(この走査はまだ台帳に記録していません。会社の見通しの読み取り待ちが"
+          f"{result.guidance.staged}件あります。"
+          f"hawkeye guidance queue で読み切ってから hawkeye rank を"
+          f"実行してください。)")
+    return 0
+
+
+def cmd_rank(args: argparse.Namespace) -> int:
+    """Re-score the pending scan now that guidance can actually be known, sort
+    it, and only THEN commit it to the ledger (docs/design/RANK_AFTER_GUIDANCE.ja.md).
+
+    This is the one code path both engines share for deciding the shortlist:
+    the score `hawkeye scout` computed was provisional (guidance unread), so
+    recomputing it here — after `hawkeye guidance queue` / `submit` has run —
+    is what keeps API mode and session mode selecting the same names off the
+    same numbers, rather than session mode ranking on a guidance leg that
+    reads as "the company said nothing" every time.
+    """
+    if not scan_store.has_pending_scan():
+        print("順位付け待ちの走査がありません。先に hawkeye scout を"
+              "実行してください。", file=sys.stderr)
+        return 1
+    config = HawkeyeConfig.from_env()
+    finnhub = FinnhubProvider()
+    store = _stock_store()
+    ledger = _ledger()
+    result = scan_store.load_scan_result()
+    rerank_after_guidance(store, result, config)
 
     # Whatever isn't sent to the tribunal THIS run — from result.passed's
-    # tail onward — is the ranking-cutoff tier (docs/MASTER_OVERVIEW.ja.md
+    # tail onward — is the ranking-cutoff tier (docs/design/MASTER_OVERVIEW.ja.md
     # §5.1, #4). Computed before record_scan() so it can be persisted in the
     # same breath as the scan itself, immediately below.
     sent_to_tribunal_n = max(args.evaluate or 0, args.open_cases or 0)
@@ -297,16 +472,41 @@ def cmd_scout(args: argparse.Namespace) -> int:
         params={"window_start": result.scan_start.isoformat(),
                 "window_end": result.scan_end.isoformat(),
                 "window_truncated": result.window_truncated,
-                "days_back_override": args.days,
+                # Not preserved across the scan/rank split — see
+                # hawkeye/scout/scan_store.py. Purely descriptive; nothing
+                # downstream reads this key.
+                "days_back_override": None,
                 "duplicates_skipped": result.duplicates,
                 "min_eps_surprise": config.scout_min_eps_surprise_pct,
-                **result.verification.as_dict()},
+                **result.numbers.as_dict()},
         scanned=result.scanned, screened=result.screened,
         enriched=result.enriched, gate_passed=len(result.passed),
         tickers=[c.ticker for c in result.passed])
     ledger.record_screened_candidates(
         scan_id, build_screened_candidates(result, scan_id, sent_to_tribunal_n))
+
+    # The quarters before this one, for the shortlist only (task 10). One
+    # request per name, so this runs AFTER the ranking rather than over every
+    # screened name: filling in history for companies no argument will be made
+    # about would cost hundreds of requests for nothing.
+    backfill = backfill_history(
+        store, finnhub,
+        _backfill_targets(store, result.passed,
+                          max(sent_to_tribunal_n, config.scout_backfill_top_n)),
+        quarters=config.scout_backfill_quarters)
+
     print(render_scout_ja(result))
+    summary = render_backfill_ja(backfill)
+    if summary:
+        print()
+        print(summary)
+
+    judged = [c for c in result.passed if c.quality is not None]
+    if judged:
+        print("\n## 決算の中身(EPS・売上・ガイダンスの3本柱)")
+        for candidate in judged[:max(sent_to_tribunal_n, 5)]:
+            print(render_quality_ja(candidate.quality))
+            print()
 
     if args.open_cases and result.passed:
         print("\n## セッションモード用ケース(/hawkeye-run が処理します)")
@@ -332,6 +532,252 @@ def cmd_scout(args: argparse.Namespace) -> int:
             ledger.record_recommendation(rec, status)
             print(render_recommendation_ja(rec))
             print(f"\n(記録済み: {rec.id} / status={status.value})")
+
+    scan_store.discard_scan_result()
+    return 0
+
+
+def cmd_consensus_capture(args: argparse.Namespace) -> int:
+    """Pre-register the consensus for prints due in the next few days.
+
+    Run this BEFORE the releases. Afterwards no second source for consensus
+    exists anywhere, so a day skipped here is a snapshot that can never be
+    taken — which is also why the window is two business days rather than
+    "tomorrow" (§6.1(D)).
+    """
+    config = HawkeyeConfig.from_env()
+    finnhub = FinnhubProvider()
+    if not finnhub.available:
+        print("コンセンサスの事前登録には FINNHUB_API_KEY が必要です",
+              file=sys.stderr)
+        return 1
+    days = args.days or config.consensus_capture_business_days
+    today = date.today()
+    store = _stock_store()
+    # Normally tomorrow onward. After a gap the window also covers today,
+    # whose US prints land this evening JST and would otherwise fall between
+    # two runs permanently (§6.1(D)).
+    window = capture_window(
+        today, store.last_pre_registration_at(), business_days=days,
+        gap_days=config.consensus_capture_include_today_after_days)
+    include_today = window[0] == today
+    raw = finnhub.earnings_calendar(window[0], window[-1])
+    targets = upcoming_prints(raw, today=today, business_days=days,
+                              include_today=include_today)
+    if args.limit:
+        targets = targets[:args.limit]
+    print(f"対象期間: {window[0]} 〜 {window[-1]}(営業日{days}日)"
+          + ("(前回の事前登録から日が空いているため、本日発表分も対象に"
+             "含めています)" if include_today else ""))
+    print(f"決算予定で実績がまだ出ていない銘柄: {len(targets)} 件")
+    if args.dry_run:
+        for item in targets:
+            # An empty label means no source stated the quarter, and
+            # `capture_consensus` will refuse the row — say so here rather
+            # than print a blank column that reads as a formatting glitch.
+            print(f"- {item.report_date} {item.ticker} "
+                  f"{item.fiscal_quarter or '四半期不明のため記録しません'} "
+                  f"(EPS予想 {item.eps_estimate})")
+        print("(--dry-run のため記録していません)")
+        return 0
+
+    # The same vendor that will later supply the actual. That is the point of
+    # it: a surprise ratio whose consensus and actual come from different
+    # vendors is arithmetic without a referent.
+    report = capture_consensus(store, targets, WhispersSource(),
+                               directory=EdgarDirectory(),
+                               today=today, config=config)
+    print(report_line(report))
+    warn_if_nothing_captured(report)
+    return 0
+
+
+def cmd_consensus_drift(args: argparse.Namespace) -> int:
+    """Compare each pre-registered consensus against what the feed says now.
+
+    A measurement, not a capture: nothing is written. It answers one question
+    — whether pre-registration still buys anything now that the feed states
+    the reported quarter's own consensus after the print — and the answer
+    decides whether ~600 requests a run keep being spent on it.
+
+    Run it AFTER the prints it covers have landed. Run it soon, too: the feed
+    keeps only a company's latest print, so a row becomes unmeasurable the
+    moment that company reports again.
+    """
+    store = _stock_store()
+    report = measure_consensus_drift(store, WhispersSource(),
+                                     today=date.today(), limit=args.limit)
+    for reading in report.readings:
+        if args.only_moved and reading.status is not DriftStatus.MOVED:
+            continue
+        gap = (f" ({reading.days_apart}日前に記録)"
+               if reading.days_apart is not None else "")
+        print(f"- {reading.ticker} {reading.fiscal_quarter} "
+              f"{reading.status.value}{gap}")
+        if reading.status in (DriftStatus.MOVED, DriftStatus.UNCHANGED):
+            print(f"    EPS 決算前 {reading.eps_before} → 決算後 "
+                  f"{reading.eps_after} "
+                  f"({_rounded(reading.eps_drift_pct)}%)")
+            print(f"    売上 決算前 {reading.revenue_before} → 決算後 "
+                  f"{reading.revenue_after} "
+                  f"({_rounded(reading.revenue_drift_pct)}%)")
+    print(report_drift_line(report))
+    if report.compared == 0:
+        print("(事前登録を一度も走らせていないか、対象の決算がまだ出ていません。"
+              "hawkeye consensus capture を決算の前日に走らせ、決算が出た"
+              "翌日にこのコマンドを実行してください)", file=sys.stderr)
+    return 0
+
+
+def cmd_stocks_show(args: argparse.Namespace) -> int:
+    store = _stock_store()
+    stock = store.stock_by_ticker(args.ticker)
+    if stock is None:
+        print(f"{args.ticker.upper()}: 銘柄マスタに記録がありません "
+              f"(まだ一度も探索に上がっていない銘柄です)")
+        return 1
+    history = store.history(stock.id)
+    print(render_stock_history_ja(history))
+    return 0
+
+
+def cmd_stocks_list(args: argparse.Namespace) -> int:
+    rows = _stock_store().stocks()
+    if not rows:
+        print("(銘柄マスタは空です。hawkeye scout か hawkeye consensus capture "
+              "を実行すると作られます)")
+        return 0
+    for stock in rows:
+        reviewed = (f"{stock.last_reviewed_fiscal_quarter}"
+                    f"({stock.last_stage_reached.value})"
+                    if stock.last_stage_reached else "未審査")
+        print(f"{stock.ticker:<8} {stock.id:<18} {reviewed:<24} {stock.name}")
+    print(f"\n計 {len(rows)} 銘柄")
+    return 0
+
+
+def cmd_stocks_rebuild(args: argparse.Namespace) -> int:
+    """Rebuild the master's review projection from the ledger.
+
+    The projection is a cache. If it ever disagrees with the ledger the
+    ledger is right, and this is how that is restored.
+    """
+    store = _stock_store()
+    rebuilt = store.rebuild_projection(_ledger())
+    print(f"台帳から {rebuilt} 銘柄の審査状況を作り直しました")
+    # The same rule applies to the "worth following at all" verdict: it is
+    # read off the entry-gate reports already frozen into the drop records,
+    # so it must be rebuildable from them rather than only accumulating as
+    # the funnel happens to run.
+    triaged = rebuild_triage(store)
+    print(f"入口ゲートの記録から {triaged} 銘柄の調査対象判定を作り直しました")
+    return 0
+
+
+def cmd_stocks_prune_revisions(args: argparse.Namespace) -> int:
+    """Physically remove retired print rows (task 8.5, step 5).
+
+    Retiring is what a revision does on its own; this is the separate,
+    explicit step the design asks for, because the retired row is the only
+    record of the figure a past ranking was actually made on. Previews unless
+    `--apply` is given.
+    """
+    store = _stock_store()
+    retired = [(s, p) for s in store.stocks()
+               for p in store.prints(s.id)
+               if p.status is RowStatus.SUPERSEDED
+               and (args.ticker is None or s.ticker == args.ticker)]
+    if not retired:
+        print("訂正で古くなった決算行はありません。")
+        return 0
+    print(f"# 訂正で古くなった決算行 ({len(retired)}件)\n")
+    print("| 銘柄 | 四半期 | 決算日 | EPS実績 | 売上実績 |")
+    print("|---|---|---|---|---|")
+    for stock, row in retired:
+        eps = row.eps_actual if row.eps_actual is not None else \
+            row.eps_actual_rows_usable
+        print(f"| {stock.ticker} | {row.fiscal_quarter} | {row.report_date} "
+              f"| {'-' if eps is None else f'{eps:g}'} "
+              f"| {'-' if row.revenue_actual is None else f'{row.revenue_actual:,.0f}'} |")
+    print()
+    if not args.apply:
+        print("※ これは下見です。実際には削除していません。"
+              "これらを消すと「その時どの数値で順位を付けたか」が"
+              "たどれなくなります。削除するには --apply を付けてください。")
+        return 0
+    removed = sum(store.delete_superseded_prints(s.id)
+                  for s in {stock.id: stock for stock, _ in retired}.values())
+    print(f"{removed}件を削除しました。現行の行には触れていません。")
+    return 0
+
+
+def cmd_guidance_queue(args: argparse.Namespace) -> int:
+    """List the forward statements waiting to be read, or emit one package.
+
+    One at a time, like the drop reviews: the caller spawns a fresh subagent
+    per print, so nothing it read about the previous company can colour the
+    next one's numbers.
+    """
+    cases = guidance_case.list_cases()
+    if not cases:
+        print("ガイダンスの読み取り待ちはありません。")
+        return 0
+    if args.case_id is None:
+        print(f"読み取り待ち {len(cases)}件:")
+        for c in cases:
+            print(f"  {c.id}  {c.ticker:6s} {c.fiscal_quarter}")
+        print(f"\n次: hawkeye guidance queue --case-id {cases[0].id}")
+        return 0
+    try:
+        case = guidance_case.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    print(render_request(case.request()))
+    print()
+    print(f"submit_with: hawkeye guidance submit {case.id} "
+          f"--file <読み取り結果.json>")
+    return 0
+
+
+def cmd_guidance_submit(args: argparse.Namespace) -> int:
+    """Validate one reading and attach it to the print row it belongs to.
+
+    Prints the quarter's three-leg reading again afterwards, because the
+    guidance leg is the only one that can still move at this point and a
+    number that changed without being shown is a number the reader will act
+    on the old value of.
+    """
+    try:
+        case = guidance_case.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    try:
+        extraction = parse_reply(guidance_case.load_reply(args.file),
+                                 case.request(), model=args.reader or "")
+    except (ValueError, OSError) as exc:
+        print(f"読み取り結果を受け付けられません: {exc}", file=sys.stderr)
+        return 1
+
+    store = _stock_store()
+    if guidance_case.attach(store, case, extraction) is None:
+        print(f"{case.ticker}: 読み取り対象の決算行が入れ替わっているため"
+              "反映しませんでした(実績値の訂正が間に入った可能性があります)。"
+              "この銘柄はもう一度走査してください。", file=sys.stderr)
+        return 1
+    # Only now — the staged file is what makes a failed write retryable, the
+    # same ordering the tribunal's case workspaces and the drop reviews use.
+    guidance_case.discard(case.id)
+
+    row = store.active_print(case.stock_id, case.fiscal_quarter)
+    consensus = (store.consensus(row.consensus_snapshot_id)
+                 if row.consensus_snapshot_id else None)
+    print(render_quality_ja(assess_earnings(row, consensus,
+                                            HawkeyeConfig.from_env())))
+    remaining = len(guidance_case.list_cases())
+    print("\n次: " + (f"hawkeye guidance queue (残り {remaining}件)"
+                      if remaining else "hawkeye case open ..."))
     return 0
 
 
@@ -353,8 +799,38 @@ def cmd_screened_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report_scan(args: argparse.Namespace) -> int:
+    """The scan report the USER reads, before any case is opened (task 9).
+
+    Built from the ledger rather than printed by the scan itself, because the
+    moment it is needed is later: `/hawkeye-run` reads the company outlooks
+    after the scan, and the user is asked to approve the shortlist after that.
+    """
+    ledger = _ledger()
+    scan = ledger.scan(args.scan_id)
+    if scan is None:
+        print("走査の記録がありません" if args.scan_id is None else
+              f"走査番号 {args.scan_id} の記録がありません", file=sys.stderr)
+        return 1
+    rows = ledger.screened_candidates(scan_id=scan["id"])
+    print(render_scan_report_ja(scan, rows, top_n=args.top))
+    # Always written, not only on request: the screen omits the names nobody
+    # asked the feed about, so the file is the only complete record of a scan
+    # the user can open. A flag they have to remember is a file that is
+    # missing on the day it matters.
+    path = (pathlib.Path(args.csv) if args.csv
+            else reports_dir() / f"scan-{scan['id']}.csv")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A BOM, for the same reason the check sheet carries one: Excel on
+    # Japanese Windows reads a plain UTF-8 CSV as cp932 and turns every header
+    # into mojibake.
+    path.write_text(scan_report_csv(rows), encoding="utf-8-sig")
+    print(f"\n全銘柄の表をCSVに保存しました: {path} ({len(rows)}行)")
+    return 0
+
+
 def cmd_drops_report(args: argparse.Namespace) -> int:
-    """Score the funnel's rejects (docs/MASTER_OVERVIEW.ja.md §5.2(3)).
+    """Score the funnel's rejects (docs/design/MASTER_OVERVIEW.ja.md §5.2(3)).
 
     Both ledger tables are read: `screened_candidates` holds the candidates
     dropped before the tribunal, `recommendations` the ones that reached it.
@@ -365,7 +841,8 @@ def cmd_drops_report(args: argparse.Namespace) -> int:
     ledger = _ledger()
     provider = _provider()
 
-    tracked = [from_screened(c) for c in ledger.screened_candidates()]
+    tracked = [from_screened(c) for c in ledger.screened_candidates()
+               if is_reviewable(c)]
     for row in ledger.list():
         rec = ledger.get(row["id"])
         if rec is not None:
@@ -418,6 +895,8 @@ def _tracked_candidates(ledger) -> tuple[list, dict, dict]:
     record_news: dict[str, list] = {}
     event_dates: dict[str, date] = {}
     for c in ledger.screened_candidates():
+        if not is_reviewable(c):     # still held; nothing was judged yet
+            continue
         t = from_screened(c)
         tracked.append(t)
         record_news[c.id] = list(c.news)
@@ -999,20 +1478,106 @@ def build_parser() -> argparse.ArgumentParser:
                     help="structured revenue surprise %% (if known)")
     ev.set_defaults(func=cmd_evaluate)
 
-    sc = sub.add_parser("scout", help="scan earnings surprises for candidates")
+    sc = sub.add_parser("scout", help="scan earnings surprises for candidates "
+                                       "(gates only — no score, no ledger "
+                                       "write; follow with `rank`)")
     sc.add_argument("--days", type=int, default=None,
                     help="scan window in days (default: config)")
-    sc.add_argument("--evaluate", type=int, default=0, metavar="N",
+    sc.add_argument("--monitor-csv", default=None, metavar="PATH",
+                    help="save the inspection table (取得データ点検表) as CSV")
+    sc.set_defaults(func=cmd_scout)
+
+    rk = sub.add_parser("rank", help="score and record the pending scan "
+                                      "(run once `hawkeye guidance queue` "
+                                      "is empty)")
+    rk.add_argument("--evaluate", type=int, default=0, metavar="N",
                     help="run the tribunal on the top N candidates (API mode)")
-    sc.add_argument("--open-cases", type=int, default=0, metavar="N",
+    rk.add_argument("--open-cases", type=int, default=0, metavar="N",
                     help="open session-mode cases for the top N candidates "
                          "(no API key; driven by /hawkeye-run)")
-    sc.add_argument("--nav", type=float, default=100_000.0)
-    sc.set_defaults(func=cmd_scout)
+    rk.add_argument("--nav", type=float, default=100_000.0)
+    rk.set_defaults(func=cmd_rank)
+
+    cn = sub.add_parser("consensus",
+                        help="pre-register consensus before earnings prints")
+    cn_sub = cn.add_subparsers(dest="consensus_cmd", required=True)
+    cnc = cn_sub.add_parser(
+        "capture",
+        help="snapshot the consensus for prints due in the next business days")
+    cnc.add_argument("--days", type=int, default=None,
+                     help="business days ahead to cover (default: config)")
+    cnc.add_argument("--limit", type=int, default=None,
+                     help="cap the number of names (each costs ~1s of Yahoo)")
+    cnc.add_argument("--dry-run", action="store_true",
+                     help="list the names without recording anything")
+    cnc.set_defaults(func=cmd_consensus_capture)
+
+    cnd = cn_sub.add_parser(
+        "drift",
+        help="did the pre-registered consensus match what the feed says after "
+             "the print? (a measurement; writes nothing)")
+    cnd.add_argument("--limit", type=int, default=None,
+                     help="cap the number of names (each costs one request)")
+    cnd.add_argument("--only-moved", action="store_true",
+                     help="print only the names whose consensus changed")
+    cnd.set_defaults(func=cmd_consensus_drift)
+
+    stk = sub.add_parser("stocks", help="the stock master (CIK-keyed)")
+    stk_sub = stk.add_subparsers(dest="stocks_cmd", required=True)
+    stks = stk_sub.add_parser(
+        "show", help="one company: prints, frozen consensus, past decisions")
+    stks.add_argument("ticker")
+    stks.set_defaults(func=cmd_stocks_show)
+    stkl = stk_sub.add_parser("list", help="every stock on record")
+    stkl.set_defaults(func=cmd_stocks_list)
+    stkr = stk_sub.add_parser(
+        "rebuild", help="rebuild the review projection from the ledger")
+    stkr.set_defaults(func=cmd_stocks_rebuild)
+    stkp = stk_sub.add_parser(
+        "prune-revisions",
+        help="delete print rows RETIRED by a correction. Previews unless "
+             "--apply. The row that stands is never touched — but the "
+             "retired one is the only record of the figure a past ranking "
+             "was made on, so this is deliberately a separate step.")
+    stkp.add_argument("--ticker", default=None, help="only this company")
+    stkp.add_argument("--apply", action="store_true",
+                      help="actually delete (default is a preview)")
+    stkp.set_defaults(func=cmd_stocks_prune_revisions)
+
+    gd = sub.add_parser("guidance",
+                        help="read the company's own outlook out of the "
+                             "print's prose (task 8.7 layer 2)")
+    gd_sub = gd.add_subparsers(dest="guidance_command", required=True)
+    gdq = gd_sub.add_parser("queue",
+                            help="list what is waiting, or emit one package")
+    gdq.add_argument("--case-id", default=None,
+                     help="emit this case's package instead of the list")
+    gdq.set_defaults(func=cmd_guidance_queue)
+    gds = gd_sub.add_parser("submit", help="attach one reading to its print")
+    gds.add_argument("case_id")
+    gds.add_argument("--file", required=True, help="the agent's JSON reply")
+    gds.add_argument("--reader", default=None,
+                     help="which model read it (recorded on the row)")
+    gds.set_defaults(func=cmd_guidance_submit)
+
+    rep = sub.add_parser("report",
+                         help="reports written for the user to read")
+    rep_sub = rep.add_subparsers(dest="report_command", required=True)
+    rps = rep_sub.add_parser(
+        "scan", help="one scan, for the user: the shortlist, what earned each "
+                     "score, and what happened to every other name")
+    rps.add_argument("--scan-id", type=int, default=None,
+                     help="which scan (default: the most recent one)")
+    rps.add_argument("--top", type=int, default=3,
+                     help="how many names the tribunal will take (default 3)")
+    rps.add_argument("--csv", default=None,
+                     help="where to write the all-names CSV "
+                          "(default: var/reports/scan-<id>.csv)")
+    rps.set_defaults(func=cmd_report_scan)
 
     sd = sub.add_parser("screened",
                         help="review candidates the scout funnel dropped "
-                             "(docs/MASTER_OVERVIEW.ja.md §5.1)")
+                             "(docs/design/MASTER_OVERVIEW.ja.md §5.1)")
     sd_sub = sd.add_subparsers(dest="screened_command", required=True)
     sdl = sd_sub.add_parser("list", help="list dropped candidates")
     sdl.add_argument("--scan-id", type=int, default=None,
@@ -1024,7 +1589,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     dr = sub.add_parser("drops",
                         help="score the candidates the funnel dropped "
-                             "(docs/MASTER_OVERVIEW.ja.md §5.2(3))")
+                             "(docs/design/MASTER_OVERVIEW.ja.md §5.2(3))")
     dr_sub = dr.add_subparsers(dest="drops_command", required=True)
     drr = dr_sub.add_parser(
         "report",
@@ -1104,10 +1669,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     co = ca_sub.add_parser("open", help="run gates and open a case")
     co.add_argument("ticker")
-    co.add_argument("--catalyst", required=True,
+    co.add_argument("--catalyst", default=CatalystType.EARNINGS_BEAT.value,
                     choices=[c.value for c in CatalystType])
-    co.add_argument("--description", required=True)
-    co.add_argument("--event-date", required=True, help="YYYY-MM-DD")
+    # Free text and a date, UNLESS --from-earnings supplies both from the
+    # three-leg reading of the actual print (§5.3). Judging a stock a person
+    # named on hand-typed prose would be a second, weaker standard of
+    # evidence living beside the funnel's.
+    co.add_argument("--description", default="")
+    co.add_argument("--event-date", default=None, help="YYYY-MM-DD")
+    co.add_argument("--from-earnings", action="store_true",
+                    help="judge this ticker's latest print on the three legs "
+                         "(EPS/revenue/guidance) and use that as the catalyst")
     co.add_argument("--source", default="")
     co.add_argument("--notes", default="")
     co.add_argument("--nav", type=float, default=100_000.0)
@@ -1235,7 +1807,17 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    # Every command that reads the earnings calendar fails the same way when
+    # the feed is down, and none of them can do anything useful without it.
+    # Reported as a plain message rather than a traceback, and never as a
+    # result: a command that could not look has not found nothing.
+    try:
+        return args.func(args)
+    except CalendarUnavailable as exc:
+        print(f"決算カレンダーを読めませんでした: {exc}", file=sys.stderr)
+        print("Finnhub の障害か、キーの権限切れの可能性があります。"
+              "時間をおいて再実行してください。", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

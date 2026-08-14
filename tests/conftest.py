@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -12,11 +12,62 @@ from hawkeye.contracts.models import (
     MarketSnapshot,
 )
 from hawkeye.marketdata.base import Bar
+from hawkeye.marketdata.whispers import EASTERN, WhispersRecord
+
+
+@pytest.fixture(autouse=True)
+def _isolate_the_guidance_queue(tmp_path_factory, monkeypatch):
+    """No test may write into the developer's own extraction queue.
+
+    A scan with no guidance reader stages one file per print for the session
+    to read later (hawkeye/scout/guidance_case.py). Several suites run a whole
+    scan, so without this the queue fills with fixture companies and the next
+    real run asks a subagent to read AMZN's invented summary.
+    """
+    monkeypatch.setenv("HAWKEYE_GUIDANCE",
+                       str(tmp_path_factory.mktemp("guidance")))
 
 
 @pytest.fixture
 def config() -> HawkeyeConfig:
     return HawkeyeConfig()
+
+
+def make_whispers(ticker: str = "TEST", announced: date = date(2026, 7, 31),
+                  **overrides) -> WhispersRecord:
+    """One print as the earnings feed would report it.
+
+    Complete by default — both actuals and both consensus figures present —
+    because that is the only shape the funnel accepts as the feed's own
+    reading. A test that wants the fallback branch blanks one field.
+    """
+    base = dict(
+        ticker=ticker, name=ticker,
+        announced_at=datetime(announced.year, announced.month, announced.day,
+                              16, 5, tzinfo=EASTERN),
+        quarter_end=date(2026, 6, 30), fiscal_quarter="2026-Q2",
+        year_end=date(2026, 12, 31),
+        eps_actual=1.20, eps_consensus=1.00,
+        eps_consensus_high=None, eps_consensus_low=None,
+        revenue_actual=1.05e9, revenue_consensus=1.00e9, whisper=None)
+    base.update(overrides)
+    return WhispersRecord(**base)
+
+
+class FakeWhispers:
+    """The earnings feed, stubbed by ticker. A stored exception is raised
+    rather than returned, exactly as the live reader does."""
+
+    def __init__(self, by_ticker: dict):
+        self.by_ticker = by_ticker
+        self.asked: list[str] = []
+
+    def details(self, ticker: str):
+        self.asked.append(ticker)
+        answer = self.by_ticker.get(ticker)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
 
 def make_snapshot(**overrides) -> MarketSnapshot:

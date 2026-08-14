@@ -1,0 +1,797 @@
+"""Judging a quarter on three legs (docs/design/MASTER_OVERVIEW.ja.md §5.3).
+
+Every case here is a name that was actually measured, because the design came
+out of those measurements rather than out of theory: AMZN's calendar returning
+two different actuals for one print, AAPL's two correct-but-different actuals,
+BIIB's consensus that moved 3.98 -> 2.15, INVH's consensus built from one
+analyst.
+
+The rule the tests defend, since 2026-08-07: **every percentage is one
+vendor's actual over that SAME vendor's consensus.** Which vendor is chosen
+once per print, before the ranking, and recorded on the row. What the other
+vendor said is kept and reported and never enters the arithmetic — because a
+ratio built from an adjusted-basis consensus and a possibly-GAAP actual has no
+referent, however conservatively its inputs are picked.
+
+Everything that cannot be confirmed still scores zero rather than passing
+quietly.
+"""
+from __future__ import annotations
+
+from datetime import date
+
+from hawkeye.config import HawkeyeConfig
+from hawkeye.contracts.stocks import (
+    ConsensusSnapshot,
+    EarningsPrint,
+    GuidanceReading,
+    PrintSource,
+    SnapshotKind,
+)
+from hawkeye.scout.quality import LegStatus, QuarterVerdict, assess_earnings
+
+CONFIG = HawkeyeConfig()
+
+
+def a_print(**overrides) -> EarningsPrint:
+    """A print the earnings feed supplied.
+
+    `eps_actual` is the chosen vendor's figure; `eps_actual_rows` is what the
+    calendar returned for the same print, kept for the record.
+    """
+    base = dict(stock_id="cik:0001018724", ticker="TEST",
+                fiscal_quarter="2026-Q2", report_date=date(2026, 7, 31),
+                source=PrintSource.WHISPERS)
+    base.update(overrides)
+    return EarningsPrint(**base)
+
+
+def a_calendar_print(**overrides) -> EarningsPrint:
+    """A print the feed could not answer for, so the calendar stands."""
+    return a_print(source=PrintSource.FINNHUB, **overrides)
+
+
+def a_consensus(**overrides) -> ConsensusSnapshot:
+    """`*_avg` is the feed's consensus, `*_calendar` the calendar's point
+    estimate. Which one a leg uses is decided by the print's `source`."""
+    base = dict(stock_id="cik:0001018724", ticker="TEST",
+                fiscal_quarter="2026-Q2", kind=SnapshotKind.PRE_REGISTERED,
+                eps_avg=1.00, eps_calendar=1.00, eps_analysts=20,
+                revenue_avg=1.0e9, revenue_calendar=1.0e9, revenue_analysts=18)
+    base.update(overrides)
+    return ConsensusSnapshot(**base)
+
+
+# --- one vendor decides the whole ratio -----------------------------------
+
+def test_a_feed_backed_beat_is_measured_on_the_feeds_own_pair():
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20]),
+        a_consensus(eps_avg=1.00, eps_calendar=1.00), CONFIG)
+
+    assert quality.eps.status is LegStatus.BEAT
+    assert quality.eps.surprise_pct == 20.0
+    assert quality.eps.source == "whispers"
+    assert quality.eps.actual == 1.20 and quality.eps.estimate == 1.00
+
+
+def test_a_calendar_backed_print_is_measured_on_the_calendars_own_pair():
+    """The feed declining sends the WHOLE print to the calendar, so the leg
+    reads the calendar's actual against the calendar's estimate."""
+    quality = assess_earnings(
+        a_calendar_print(eps_actual_rows=[1.20]),
+        a_consensus(eps_avg=None, eps_calendar=1.00), CONFIG)
+
+    assert quality.eps.status is LegStatus.BEAT
+    assert quality.eps.source == "finnhub"
+    assert quality.eps.actual == 1.20 and quality.eps.estimate == 1.00
+
+
+def test_the_other_vendors_consensus_cannot_veto_a_beat():
+    """BIIB: 3.98 from one vendor, 2.15 from the other. The old rule scored
+    the conservative of the two readings and called that safety; it was not.
+    The two figures are on different accounting bases, so the smaller is not
+    a stricter reading of the same thing — it is a different measurement.
+
+    The reading now stands on the pair that belong together, and the vendor
+    the print did NOT come from has no vote.
+    """
+    quality = assess_earnings(
+        a_print(eps_actual=2.58, eps_actual_rows=[2.58]),
+        a_consensus(eps_avg=2.15, eps_calendar=3.98), CONFIG)
+
+    assert quality.eps.status is LegStatus.BEAT
+    assert quality.eps.estimate == 2.15
+    assert round(quality.eps.surprise_pct, 1) == 20.0
+
+
+def test_a_feed_backed_print_with_no_feed_consensus_is_unverified():
+    """Never quietly borrows the calendar's estimate. In production this pair
+    cannot come apart — the feed only wins when it supplied both figures — so
+    a row in this shape means something upstream broke, and inventing a
+    denominator would hide it behind a plausible percentage.
+    """
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20]),
+        a_consensus(eps_avg=None, eps_analysts=None, eps_calendar=1.00),
+        CONFIG)
+
+    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert "no_consensus" in quality.eps.flags
+    assert quality.score == 0.0
+
+
+# --- what the other vendor said is recorded, not used ---------------------
+
+def test_a_differing_actual_from_the_other_vendor_is_named_not_used():
+    """AAPL: the feed 2.02 (matches the filing), the calendar 1.91 (= 2.02
+    minus $0.11 of tariff refunds). Neither is wrong; the bases differ. The
+    reading uses the feed's pair, and the gap becomes a fact the Adversary
+    can attack."""
+    quality = assess_earnings(
+        a_print(eps_actual=2.02, eps_actual_rows=[1.91]),
+        a_consensus(eps_avg=1.89, eps_calendar=1.89), CONFIG)
+
+    assert quality.eps.status is LegStatus.BEAT
+    assert quality.eps.actual == 2.02
+    assert quality.eps.other_actual == 1.91
+    assert "vendors_report_different_actuals" in quality.eps.flags
+    assert round(quality.eps.surprise_pct, 2) == 6.88
+
+
+def test_a_penny_of_rounding_is_not_worth_reporting():
+    quality = assess_earnings(
+        a_print(eps_actual=1.11, eps_actual_rows=[1.10]),
+        a_consensus(eps_avg=1.00, eps_calendar=1.00), CONFIG)
+
+    assert "vendors_report_different_actuals" not in quality.eps.flags
+    assert quality.eps.status is LegStatus.BEAT
+    assert quality.eps.surprise_pct == 11.0        # the feed's own actual
+
+
+def test_the_tribunal_is_told_the_vendors_report_different_actuals():
+    """The prompts tell the Bull and the Adversary to prefer structured
+    numbers over prose, so a figure another vendor contradicts has to carry
+    that in the same place they are looking."""
+    from hawkeye.scout.quality import describe_quality_en
+
+    text = describe_quality_en(assess_earnings(
+        a_print(eps_actual=2.02, eps_actual_rows=[1.91]),
+        a_consensus(eps_avg=1.89, eps_calendar=1.89), CONFIG))
+
+    assert "vendors_report_different_actuals" in text
+    assert "2.02" in text and "1.91" in text
+    assert "whispers" in text
+
+
+def test_the_calendar_contradicting_itself_only_bites_when_it_is_the_source():
+    """AMZN's calendar returned 1.88 AND 1.97 for one print. When the feed
+    supplied the figures this is recorded and nothing more — the reading
+    never touched the calendar. When the calendar IS the source, its actual
+    is unusable and the leg is unverified: picking the more plausible row is
+    exactly the judgment this system exists to remove."""
+    from_feed = assess_earnings(
+        a_print(eps_actual=5.75, eps_actual_rows=[1.88, 1.97]),
+        a_consensus(eps_avg=1.83, eps_calendar=1.83), CONFIG)
+    from_calendar = assess_earnings(
+        a_calendar_print(eps_actual_rows=[1.88, 1.97]),
+        a_consensus(eps_avg=None, eps_calendar=1.83), CONFIG)
+
+    assert "finnhub_actual_conflict" in from_feed.eps.flags
+    assert from_feed.eps.status is LegStatus.BEAT
+    assert from_feed.score <= 70.0                    # capped, never +215
+
+    assert from_calendar.eps.status is LegStatus.UNVERIFIED
+    assert "no_actual" in from_calendar.eps.flags
+    assert from_calendar.score == 0.0
+
+
+# --- what still makes a leg unverified ------------------------------------
+
+def test_a_leg_with_no_actual_at_all_is_unverified():
+    """Invariant 6: missing data scores zero and says so. It must never read
+    as a beat, nor as the company having done badly."""
+    quality = assess_earnings(
+        a_print(), a_consensus(eps_avg=1.00, eps_calendar=1.00), CONFIG)
+
+    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert "no_actual" in quality.eps.flags
+
+
+def test_a_thin_analyst_count_no_longer_blocks_a_beat():
+    """`earnings_min_analysts` (INVH: a consensus built from ONE analyst) was
+    retired 2026-08-13 (Set H-2, docs/design/SET_H_G_DECISIONS.ja.md): the
+    2026-08-06 move to EW means no ConsensusSnapshot this system builds ever
+    carries an analyst count, so the rule's own condition could never fire.
+    A count on the row (however it got there) must not resurrect it."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.50, eps_actual_rows=[1.50]),
+        a_consensus(eps_avg=1.00, eps_calendar=1.00, eps_analysts=1), CONFIG)
+
+    assert quality.eps.status is LegStatus.BEAT
+    assert "thin_coverage" not in quality.eps.flags
+
+
+def test_a_near_zero_consensus_cannot_buy_a_ranking_slot():
+    """REITs report FFO, so their GAAP EPS consensus sits near zero and the
+    ratio measures the denominator, not the beat (the existing guard)."""
+    quality = assess_earnings(
+        a_print(eps_actual=0.30, eps_actual_rows=[0.30]),
+        a_consensus(eps_avg=0.02, eps_calendar=0.02), CONFIG)
+
+    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert "estimate_too_small" in quality.eps.flags
+    assert quality.score == 0.0
+
+
+def test_no_consensus_row_at_all_is_unverified_not_a_beat():
+    quality = assess_earnings(a_print(eps_actual=1.20), None, CONFIG)
+    assert quality.eps.status is LegStatus.UNVERIFIED
+    assert quality.verdict is QuarterVerdict.UNVERIFIED
+
+
+# --- revenue: the same vendor, or nothing ---------------------------------
+
+def test_revenue_is_measured_on_the_same_vendor_as_eps():
+    beat = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9),
+        a_consensus(revenue_avg=1.0e9, revenue_calendar=1.0e9), CONFIG)
+    flat = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20]),
+        a_consensus(revenue_avg=None, revenue_calendar=None), CONFIG)
+
+    assert beat.revenue.status is LegStatus.BEAT
+    assert beat.revenue.source == "whispers"
+    assert round(beat.revenue.surprise_pct, 1) == 5.0
+    assert beat.score > flat.score
+
+
+def test_the_other_vendors_revenue_consensus_is_not_consulted():
+    """The mixing this rule forbids is just as wrong one leg down. A revenue
+    actual from the feed measured against the calendar's revenue estimate is
+    the same error in a bigger unit."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9),
+        a_consensus(revenue_avg=1.0e9, revenue_calendar=1.30e9), CONFIG)
+
+    assert quality.revenue.status is LegStatus.BEAT
+    assert quality.revenue.estimate == 1.0e9
+
+
+def test_a_revenue_miss_is_reported_even_when_eps_beat():
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=0.9e9),
+        a_consensus(), CONFIG)
+
+    assert quality.revenue.status is LegStatus.MISS
+    assert quality.verdict is QuarterVerdict.WEAK
+
+
+def test_a_zero_revenue_consensus_is_unverified_not_a_beat():
+    """0.0 is a value, not a missing one, so it slips past the `estimate is
+    None` check that raises `no_consensus` — the earnings-quality audit
+    (docs/backlog/EARNINGS_QUALITY_AUDIT.ja.md 検証3④) found this could have
+    let a real 0.0 consensus divide into a bogus surprise percentage and read
+    as a confirmed beat. `_pct()`'s own `estimate == 0` guard is what actually
+    stops that; this pins the guard so it can't regress unnoticed."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9),
+        a_consensus(revenue_avg=0.0, revenue_calendar=0.0), CONFIG)
+
+    assert quality.revenue.status is LegStatus.UNVERIFIED
+    assert quality.revenue.surprise_pct is None
+    assert quality.revenue.source == "whispers"
+
+
+# --- guidance: a bonus, never a gate --------------------------------------
+
+def test_missing_guidance_costs_nothing():
+    """Plenty of companies publish none, and there is no structured source
+    for it anywhere — so absence is neutral (§5.3 決定3)."""
+    without = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9),
+        a_consensus(next_quarter_eps_avg=2.00), CONFIG)
+
+    assert without.guidance.status is LegStatus.ABSENT
+    assert without.verdict is QuarterVerdict.GOOD_QUARTER
+    assert without.score > 0
+
+
+def test_guidance_above_consensus_earns_a_small_bonus():
+    base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                   revenue_actual=1.05e9)
+    raised = base.model_copy(update={"guidance": GuidanceReading(
+        period="2026-Q3", eps_low=2.10, eps_high=2.30,
+        source_excerpt="expects Q3 EPS of $2.10 to $2.30")})
+
+    without = assess_earnings(base, a_consensus(next_quarter_eps_avg=2.00),
+                              CONFIG)
+    with_guidance = assess_earnings(raised,
+                                    a_consensus(next_quarter_eps_avg=2.00),
+                                    CONFIG)
+
+    assert with_guidance.guidance.status is LegStatus.BEAT
+    assert (with_guidance.score - without.score
+            == CONFIG.guidance_beat_score)
+
+
+def test_full_year_guidance_is_never_scored_against_a_quarterly_consensus():
+    """ADM guided FY2026 EPS of $5.15-$5.60 while the quarterly consensus sat
+    near $1.20. Comparing the two reads as a +360% guidance beat that the
+    company never gave — the numbers are simply for different periods.
+
+    A full-year range is judged only against a full-year yardstick. With none
+    captured, saying so is the only honest outcome (invariant 6).
+    """
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="FY2026", eps_low=5.15,
+                                         eps_high=5.60)),
+        a_consensus(next_quarter_eps_avg=1.20), CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "no_full_year_consensus_to_compare" in quality.guidance.flags
+    assert quality.guidance.surprise_pct is None
+
+
+def test_full_year_guidance_is_scored_against_the_full_year_consensus():
+    """The rescue this exists for. ADM guided FY2026 EPS of $5.15-$5.60 and
+    the analysts' figure for the same year — stated in the same summary
+    sentence — was $4.76. That is a real beat, and it was previously recorded
+    as "no guidance published"."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="FY2026", eps_low=5.15,
+                                         eps_high=5.60)),
+        a_consensus(next_quarter_eps_avg=1.20, full_year_eps_avg=4.76,
+                    full_year_period="FY2026"), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
+    assert quality.guidance.estimate == 4.76          # never the 1.20
+    assert round(quality.guidance.surprise_pct, 1) == 12.9
+    assert "on_eps" in quality.guidance.flags
+
+
+def test_a_full_year_yardstick_for_another_year_is_refused():
+    """Same shape of error as the quarterly one, one period up: FY2027
+    guidance measured against a FY2026 consensus is a comparison nobody made.
+    """
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="FY2027", eps_low=5.15,
+                                         eps_high=5.60)),
+        a_consensus(full_year_eps_avg=4.76, full_year_period="FY2026"), CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "full_year_consensus_is_another_year" in quality.guidance.flags
+    assert quality.guidance.surprise_pct is None
+
+
+def test_an_unlabelled_full_year_yardstick_is_not_trusted():
+    """A figure whose year nobody stated could be any year. Fail closed."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="FY2026", eps_low=5.15,
+                                         eps_high=5.60)),
+        a_consensus(full_year_eps_avg=4.76), CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "no_full_year_consensus_to_compare" in quality.guidance.flags
+
+
+# --- guidance whose scope is not the consensus's scope ---------------------
+#
+# ACA is the measured case and the vendor spells the mismatch out in one
+# sentence: the company guided "2026 revenue of $2.60 billion to $2.70
+# billion, EXCLUDING its barge business", and the analysts' figure is "$3.02
+# billion ... WHICH INCLUDES its barge business". Nothing in this system can
+# add a barge business back, so the only honest reading is to refuse.
+
+def test_guidance_carrying_a_condition_is_not_compared_at_all():
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(
+                    period="FY2026", revenue_low=2.60e9, revenue_high=2.70e9,
+                    qualifier="excluding its barge business")),
+        a_consensus(full_year_revenue_avg=3.02e9, full_year_period="FY2026"),
+        CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "guidance_scope_qualified" in quality.guidance.flags
+    assert quality.guidance.surprise_pct is None
+
+
+def test_a_refused_guidance_quotes_the_condition_that_refused_it():
+    """A count of dropped comparisons nobody can read the reason for is a
+    count nobody can act on. The condition travels in the company's own
+    words."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(
+                    period="FY2026", revenue_low=2.60e9, revenue_high=2.70e9,
+                    qualifier="excluding its barge business")),
+        a_consensus(full_year_revenue_avg=3.02e9, full_year_period="FY2026"),
+        CONFIG)
+
+    assert quality.guidance.excerpt == "excluding its barge business"
+
+
+def test_a_refused_guidance_costs_no_points_and_no_penalty():
+    """Same rule as every other absence: a comparison we declined to make is
+    not the company having guided badly (§5.3 決定3)."""
+    plain = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                    revenue_actual=1.05e9)
+    consensus = a_consensus(full_year_revenue_avg=3.02e9,
+                            full_year_period="FY2026")
+    refused = plain.model_copy(update={"guidance": GuidanceReading(
+        period="FY2026", revenue_low=2.60e9, revenue_high=2.70e9,
+        qualifier="excluding its barge business")})
+
+    assert (assess_earnings(refused, consensus, CONFIG).score
+            == assess_earnings(plain, consensus, CONFIG).score)
+
+
+def test_an_unconditioned_guidance_is_still_compared():
+    """The refusal has to be narrow. Without the condition ACA's own numbers
+    are compared exactly as before."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="FY2026", revenue_low=2.60e9,
+                                         revenue_high=2.70e9)),
+        a_consensus(full_year_revenue_avg=3.02e9, full_year_period="FY2026"),
+        CONFIG)
+
+    assert quality.guidance.status is LegStatus.MISS
+    assert quality.guidance.surprise_pct is not None
+
+
+def test_the_tribunal_is_told_the_guidance_was_refused_and_why():
+    """The Adversary's job is to attack the case, and "the company guided
+    above consensus on terms nobody reconciled" is an attack. It cannot be
+    made from a leg that merely reads 'not disclosed'."""
+    from hawkeye.scout.quality import describe_quality_en
+    text = describe_quality_en(assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(
+                    period="FY2026", revenue_low=2.60e9, revenue_high=2.70e9,
+                    qualifier="excluding its barge business")),
+        a_consensus(full_year_revenue_avg=3.02e9, full_year_period="FY2026"),
+        CONFIG))
+
+    assert "excluding its barge business" in text
+
+
+def test_guidance_on_both_eps_and_revenue_uses_BOTH():
+    """A company that guided EPS and sales published two statements about the
+    future, and scoring only the first throws one of them away. Both are
+    compared, and each carries its share of the bonus."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="2026-Q3", eps_low=2.10,
+                                         eps_high=2.30, revenue_low=1.10e9,
+                                         revenue_high=1.20e9)),
+        a_consensus(next_quarter_eps_avg=2.00,
+                    next_quarter_revenue_avg=1.00e9), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
+    assert [unit for unit, _ in quality.guidance.parts] == ["eps", "revenue"]
+    assert quality.guidance.beat_fraction == 1.0
+    assert "on_eps" in quality.guidance.flags
+    assert "on_revenue" in quality.guidance.flags
+
+
+def test_one_leg_up_and_one_down_cancel_out():
+    """EPS above, sales below. Neither is discarded: half the bonus is earned
+    and half the penalty is charged, so the pair nets to nothing — which is
+    what "guided two legs, beat one and missed the other" actually says."""
+    base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                   revenue_actual=1.05e9)
+    consensus = a_consensus(next_quarter_eps_avg=2.00,
+                            next_quarter_revenue_avg=1.00e9)
+    plain = assess_earnings(base, consensus, CONFIG)
+    split = assess_earnings(
+        base.model_copy(update={"guidance": GuidanceReading(
+            period="2026-Q3", eps_low=2.10, eps_high=2.30,
+            revenue_low=0.90e9, revenue_high=0.94e9)}),
+        consensus, CONFIG)
+
+    assert split.guidance.status is LegStatus.INLINE     # neither side wins
+    assert split.guidance.beat_fraction == 0.5
+    assert split.guidance.miss_fraction == 0.5
+    assert split.score == plain.score
+
+
+def test_a_guidance_that_misses_on_both_legs_is_charged_for_it():
+    base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                   revenue_actual=1.05e9)
+    consensus = a_consensus(next_quarter_eps_avg=2.00,
+                            next_quarter_revenue_avg=1.00e9)
+    plain = assess_earnings(base, consensus, CONFIG)
+    lowered = assess_earnings(
+        base.model_copy(update={"guidance": GuidanceReading(
+            period="2026-Q3", eps_low=1.60, eps_high=1.70,
+            revenue_low=0.90e9, revenue_high=0.94e9)}),
+        consensus, CONFIG)
+
+    assert lowered.guidance.status is LegStatus.MISS
+    assert lowered.guidance.beat_fraction == 0.0
+    assert lowered.guidance.miss_fraction == 1.0
+    assert lowered.score == round(plain.score - CONFIG.guidance_miss_penalty, 2)
+
+
+def test_no_outlook_at_all_is_still_free():
+    """The penalty is for a company that published a weak outlook, not for a
+    company that published none and not for a reading we declined to make.
+    Absence has no structured source on any free tier, so charging for it
+    would punish the data gap rather than the company (D-3, unchanged)."""
+    base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                   revenue_actual=1.05e9)
+    consensus = a_consensus(next_quarter_eps_avg=2.00,
+                            next_quarter_revenue_avg=1.00e9)
+    quality = assess_earnings(base, consensus, CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert quality.guidance.miss_fraction == 0.0
+    assert quality.breakdown.guidance == 0.0
+
+
+def test_an_outlook_we_declined_to_compare_is_not_charged_either():
+    """A range the company fenced with a condition is refused by us, not
+    missed by them. Charging for our own refusal would make the fail-closed
+    rule cost the company points."""
+    base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                   revenue_actual=1.05e9)
+    consensus = a_consensus(next_quarter_eps_avg=2.00,
+                            next_quarter_revenue_avg=1.00e9)
+    plain = assess_earnings(base, consensus, CONFIG)
+    fenced = assess_earnings(
+        base.model_copy(update={"guidance": GuidanceReading(
+            period="2026-Q3", eps_low=1.60, eps_high=1.70,
+            qualifier="excluding its barge business")}),
+        consensus, CONFIG)
+
+    assert fenced.guidance.status is LegStatus.ABSENT
+    assert fenced.score == plain.score
+
+
+def test_full_year_revenue_guidance_uses_the_full_year_revenue_yardstick():
+    """The common case in the corpus: 14 of the 18 names that state a
+    full-year consensus state it on revenue, not EPS."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="FY2026",
+                                         revenue_low=5.70e9,
+                                         revenue_high=6.00e9)),
+        a_consensus(full_year_revenue_avg=5.80e9,
+                    full_year_period="FY2026"), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
+    assert quality.guidance.estimate == 5.80e9
+    assert "on_revenue" in quality.guidance.flags
+
+
+def test_guidance_for_a_quarter_other_than_the_next_one_is_not_compared():
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="2027-Q1", eps_low=2.10,
+                                         eps_high=2.30)),
+        a_consensus(next_quarter_eps_avg=2.00), CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "guidance_period_not_comparable" in quality.guidance.flags
+
+
+def test_guidance_with_no_period_label_is_still_compared():
+    """Readings recorded before the period was carried have no label.
+    Refusing those would drop guidance this system already holds, so an
+    unlabelled range keeps its old meaning: it is taken as next quarter's."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(eps_low=2.10, eps_high=2.30)),
+        a_consensus(next_quarter_eps_avg=2.00), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
+
+
+def test_revenue_guidance_counts_when_the_company_gives_no_eps_range():
+    """Amazon guides on net sales and operating income, never on EPS. Judging
+    guidance only on EPS would score every such company as "no guidance",
+    which is a fact about our reading rather than about the company."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="2026-Q3",
+                                         revenue_low=1.10e9,
+                                         revenue_high=1.16e9)),
+        a_consensus(next_quarter_revenue_avg=1.08e9), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
+    assert quality.guidance.leg == "guidance"
+    assert round(quality.guidance.surprise_pct, 1) == 4.6
+
+
+def test_guidance_eps_yardstick_too_small_is_not_read_as_a_beat():
+    """ALGT guided "a loss of $1.00 per share to breakeven" against a $0.08
+    consensus — a -725% reading that is really a near-zero denominator, the
+    same failure mode `scout_min_abs_eps_estimate` already guards the EPS leg
+    against (Set H-1, docs/design/SET_H_G_DECISIONS.ja.md). The guidance leg
+    reuses that same floor rather than inventing a second doctrine number for
+    the same kind of figure."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="2026-Q3", eps_low=-1.00,
+                                         eps_high=0.0)),
+        a_consensus(next_quarter_eps_avg=0.08), CONFIG)
+
+    assert quality.guidance.status is LegStatus.ABSENT
+    assert "eps_yardstick_too_small" in quality.guidance.flags
+    assert quality.guidance.parts == ()
+    assert quality.breakdown.guidance == 0.0
+
+
+def test_guidance_revenue_still_counts_when_the_eps_yardstick_is_too_small():
+    """A company can guide both legs while only one yardstick is untrustworthy
+    — the revenue leg is unaffected and still earns its share."""
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20], revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="2026-Q3", eps_low=-1.00,
+                                         eps_high=0.0, revenue_low=1.10e9,
+                                         revenue_high=1.20e9)),
+        a_consensus(next_quarter_eps_avg=0.08,
+                    next_quarter_revenue_avg=1.00e9), CONFIG)
+
+    assert quality.guidance.status is LegStatus.BEAT
+    assert [unit for unit, _ in quality.guidance.parts] == ["revenue"]
+    assert "eps_yardstick_too_small" in quality.guidance.flags
+    assert "on_revenue" in quality.guidance.flags
+    assert "on_eps" not in quality.guidance.flags
+
+
+def test_guidance_below_consensus_costs_what_beating_it_would_have_earned():
+    """Reversed on 2026-08-11 (User decision). A company that published an
+    outlook below the street said something, and scoring it the same as a
+    company that said nothing erased the difference. Saying nothing is still
+    free — that is `test_no_outlook_at_all_is_still_free`."""
+    cut = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                  revenue_actual=1.05e9,
+                  guidance=GuidanceReading(period="2026-Q3", eps_low=1.60,
+                                           eps_high=1.80))
+    without = assess_earnings(
+        cut.model_copy(update={"guidance": None}),
+        a_consensus(next_quarter_eps_avg=2.00), CONFIG)
+    lowered = assess_earnings(cut, a_consensus(next_quarter_eps_avg=2.00),
+                              CONFIG)
+
+    assert lowered.guidance.status is LegStatus.MISS
+    assert lowered.score == round(without.score - CONFIG.guidance_miss_penalty,
+                                  2)
+    assert lowered.verdict is QuarterVerdict.MIXED
+
+
+# --- the whole quarter ------------------------------------------------------
+
+def test_all_three_legs_beating_is_a_good_quarter():
+    quality = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=1.05e9,
+                guidance=GuidanceReading(period="2026-Q3", eps_low=2.10,
+                                         eps_high=2.30)),
+        a_consensus(next_quarter_eps_avg=2.00), CONFIG)
+
+    assert quality.verdict is QuarterVerdict.GOOD_QUARTER
+    assert [leg.status for leg in (quality.eps, quality.revenue,
+                                   quality.guidance)] == [LegStatus.BEAT] * 3
+
+
+def test_a_leg_that_missed_cannot_score_like_a_leg_with_no_data():
+    """Found on the live AMZN dry run (2026-08-02): a +194% EPS beat whose
+    revenue MISSED still scored the capped maximum, outranking a name that
+    beat on both. A miss is a fact about the quarter, and the user's own
+    definition of a good quarter requires all three legs — so it subtracts,
+    mirroring the bonus a beat earns, rather than reading as absent data."""
+    eps_only = assess_earnings(
+        a_print(eps_actual=3.00, eps_actual_rows=[3.00],
+                revenue_actual=0.9e9),
+        a_consensus(), CONFIG)
+    both_legs = assess_earnings(
+        a_print(eps_actual=1.40, eps_actual_rows=[1.40],
+                revenue_actual=1.08e9),
+        a_consensus(), CONFIG)
+
+    assert eps_only.eps.surprise_pct > both_legs.eps.surprise_pct
+    assert eps_only.score < both_legs.score
+
+
+def test_a_missing_revenue_reading_is_not_a_penalty():
+    """The mirror of the rule above: no revenue data is unverified, and
+    unverified scores zero — it must never be scored as a miss."""
+    no_data = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20]),
+        a_consensus(revenue_avg=None, revenue_calendar=None), CONFIG)
+    missed = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20],
+                revenue_actual=0.9e9),
+        a_consensus(), CONFIG)
+
+    assert no_data.score > missed.score
+
+
+def test_a_miss_the_chosen_vendor_establishes_still_subtracts():
+    quality = assess_earnings(
+        a_print(eps_actual=0.80, eps_actual_rows=[0.80]),
+        a_consensus(eps_avg=1.00, eps_calendar=1.00), CONFIG)
+
+    assert quality.eps.status is LegStatus.MISS
+    assert quality.score < 0.0
+
+
+def test_the_event_day_reaction_still_shapes_the_score():
+    """The three legs describe the print; the ranking also has to prefer a
+    reaction that confirms it without exhausting it — that term is unchanged
+    and still applies."""
+    confirmed = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20]), a_consensus(), CONFIG,
+        gap_on_event_pct=6.0)
+    rejected = assess_earnings(
+        a_print(eps_actual=1.20, eps_actual_rows=[1.20]), a_consensus(), CONFIG,
+        gap_on_event_pct=-5.0)
+
+    assert confirmed.score > rejected.score
+
+
+# --- a missing outlook sentence is OUR gap, not the company's silence -------
+
+def test_a_feed_that_returned_no_summary_is_not_recorded_as_no_guidance():
+    """Until 2026-08-11 the reason was left empty, and the empty reason fell
+    through to `guidance_not_published` — so a name the earnings feed failed
+    on was written into the permanent drop record as a company that publishes
+    no outlook. The two must not render the same (the same conflation the
+    未読/開示なし split fixed one layer up)."""
+    import dataclasses
+
+    from hawkeye.scout.earnings import EarningsEvent
+    from hawkeye.scout.guidance_agent import GuidanceStats
+    from hawkeye.scout.scout import _QuarterContext, _read_guidance
+
+    asked = EarningsEvent(ticker="AAA", day=date(2026, 8, 7),
+                          eps_actual=1.20, eps_estimate=1.00,
+                          revenue_actual=1.05e9, revenue_estimate=1.00e9,
+                          summary="", numbers_source="whispers")
+    never_asked = dataclasses.replace(asked, numbers_source="calendar")
+
+    def context():
+        return _QuarterContext(
+            stock_id="stk_1", print_row=a_print(eps_actual=1.20),
+            consensus_id="con_1", consensus=a_consensus())
+
+    out = _read_guidance(None, context(), asked, GuidanceStats())
+    assert out.print_row.guidance_reason == "no_summary_from_feed"
+
+    out = _read_guidance(None, context(), never_asked, GuidanceStats())
+    assert out.print_row.guidance_reason == "feed_not_asked"
+
+    # And the leg built from it no longer claims the company said nothing.
+    assert "guidance_not_published" not in assess_earnings(
+        out.print_row, a_consensus(), CONFIG).guidance.flags
+
+
+def test_both_new_reasons_are_translated_for_the_reader():
+    from hawkeye.reports.monitor_ja import _GUIDANCE_CELL_JA
+    from hawkeye.reports.quality_ja import _flag_ja
+
+    for flag in ("no_summary_from_feed", "feed_not_asked"):
+        assert flag in _GUIDANCE_CELL_JA
+        assert _flag_ja(flag) != flag
+        assert "決算専門サイト" in _flag_ja(flag) or "問い合わせ" in _flag_ja(flag)

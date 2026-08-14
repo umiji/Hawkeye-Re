@@ -2,8 +2,8 @@
 
 Source: a 4-agent parallel review (doc-vs-code consistency, architecture
 soundness, python code quality, adversarial investment-methodology audit)
-run against the whole `hawkeye/` codebase and `docs/ARCHITECTURE.md` /
-`docs/MASTER_OVERVIEW.ja.md`. This is the first and only place the full
+run against the whole `hawkeye/` codebase and `docs/design/ARCHITECTURE.md` /
+`docs/design/MASTER_OVERVIEW.ja.md`. This is the first and only place the full
 finding list is written down — the review conversation itself has since
 ended and a separate follow-up session confirmed the raw agent output is
 not recoverable except from this file or by re-running the review. Do not
@@ -125,7 +125,7 @@ distinct from `screened`/`gate_passed`.
 **Source:** methodology-auditor.
 **Where:** `hawkeye/cli.py` — `bm.add_argument("--horizon", type=int, default=30, ...)`.
 
-**Failure scenario:** `docs/MASTER_OVERVIEW.ja.md` §5.1 explicitly names
+**Failure scenario:** `docs/design/MASTER_OVERVIEW.ja.md` §5.1 explicitly names
 this exact trap ("観測期間を記録開始前に決めて書き残す") as a required
 safeguard for the *proposed* missed-candidate feature — but the
 *already-shipped* `benchmark`/`review-passes` commands have the identical
@@ -265,7 +265,7 @@ not what the orchestrator *reads*.
 **Status:** user's explicit ruling — "this can't be fixed within the
 architecture (a subagent always inherits its parent session's access), so
 disclose it honestly rather than pretend otherwise." Documented in
-`CLAUDE.md` invariant 4, `docs/ARCHITECTURE.md`, `docs/MASTER_OVERVIEW.ja.md`
+`CLAUDE.md` invariant 4, `docs/design/ARCHITECTURE.md`, `docs/design/MASTER_OVERVIEW.ja.md`
 §4. **Do not attempt a code fix without new instruction** — the
 methodology-auditor's suggested mitigation (log the exact subagent
 invocation prompt into the case directory for post-hoc audit) was
@@ -329,14 +329,21 @@ user always executes) makes `hawkeye positions` a sufficient manual
 backstop; not worth a fail-closed recheck at `record-entry` time. **Do not
 implement a fix without new instruction.**
 
-### M11. `scout_max_enrich` truncates on EPS-surprise order, but the final ranking formula weighs more than EPS surprise (OPEN)
+### M11. `scout_max_enrich` truncates on EPS-surprise order, but the final ranking formula weighs more than EPS surprise (FIXED 2026-08-01/2026-08-02)
 
 **Source:** methodology-auditor.
-**Where:** `hawkeye/scout/scout.py` — `screen_events()` sorts by EPS
-surprise descending; `to_enrich = screened[:config.scout_max_enrich]`
-truncates on that narrower criterion; `score_candidate()` (which also
-weighs revenue surprise and event-day gap) only ever runs on the truncated
-subset.
+**Where (as reported):** `hawkeye/scout/scout.py` — `screen_events()` sorted
+by EPS surprise descending; `to_enrich = screened[:config.scout_max_enrich]`
+truncated on that narrower criterion.
+
+**Resolution:** neither line exists now. `screen_events()` sorts by
+`score_candidate()` itself (2026-08-01), so the truncation criterion and the
+ranking criterion are the same function. The fixed slice went too
+(2026-08-02): the walk goes down the ranking one name at a time until
+`scout_target_gate_passed` have PASSED the gates, bounded by
+`scout_max_enrich` attempts. The remaining bias is a different one and is
+recorded in `MASTER_OVERVIEW.ja.md` §5.2(6) — the ordering is still built
+from surprise alone, before any price or news is fetched.
 
 **Failure scenario:** a candidate with a modest EPS beat but an
 exceptional revenue beat + ideal gap could score highest under the
@@ -417,10 +424,16 @@ the API driver (`pipeline.py`), not the session driver.
 **Source:** architect agent, F13. Resolves automatically once M1/M2 are
 fixed.
 
-### L3. §5.1 (missed-candidate feature, not yet implemented) proposes storing the reject-pile record outside the hash chain — a structural self-dealing risk in the proposal itself (OPEN — design note for whenever §5.1 is implemented, not current code)
+### L3. The reject-pile record must not sit outside the hash chain (FIXED 2026-07-29)
+
+**Resolution:** implemented as proposed. `Ledger.record_screened_candidates()`
+writes the rows and then anchors the whole batch as ONE journal event carrying
+a `batch_hash` over the sorted payloads. Per-row chaining was rejected on write
+cost (hundreds of rows per scan); the batch hash gives the tamper-evidence the
+Phase-0 denominator needs.
 
 **Source:** architect agent, F14.
-**Where:** `docs/MASTER_OVERVIEW.ja.md` §5.1, §6 — proposes treating the
+**Where:** `docs/design/MASTER_OVERVIEW.ja.md` §5.1, §6 — proposes treating the
 new table like `scans` (append-only, outside the journal's hash chain).
 
 **Concern:** this table would become the denominator for the Phase-0 kill
@@ -444,12 +457,14 @@ happen. Suggested fix when implemented: pass a recording sink into
 `run_scout()` itself rather than making recording a CLI-layer
 responsibility.
 
-### L5. §5.1's proposed reject-pile schema doesn't reuse existing contract models, and the "lightweight enrichment-cap-only" tier can't be scored on the same formula as fully-enriched tiers (OPEN — design note)
+### L5. The reject-pile schema must reuse existing contract models and tag the scoring feature set (FIXED 2026-07-29)
 
-**Source:** architect agent, F16. When implemented: define a
-`ScreenedCandidate` contract reusing `GateResult`; tag records with a
-`score_version` so cross-tier comparisons don't silently compare different
-feature sets.
+**Source:** architect agent, F16.
+**Resolution:** implemented as proposed. `ScreenedCandidate` carries a
+`gate_report: GateReport` (so `GateResult` is reused, not re-declared) and a
+`score_version` field (`partial_no_gap` / `full` / `three_leg`), so a
+comparison across tiers cannot silently put two different feature sets on the
+same axis.
 
 ### L6. Case list sorts by filename, not by `created_at` (OPEN, cosmetic)
 
@@ -488,7 +503,7 @@ cross-check would close this partially without a second LLM call.
 **Source:** doc-vs-code-consistency agent, first review pass. Not yet
 corrected in the docs.
 
-1. **`docs/MASTER_OVERVIEW.ja.md`'s "現時点で「記録に残っていないもの」"
+1. **`docs/design/MASTER_OVERVIEW.ja.md`'s "現時点で「記録に残っていないもの」"
    table** overstates the gap for the ranking-cutoff stage: it says
    "残らない" (nothing survives), but bare ticker symbols *do* survive in
    `scans.tickers` for that stage (confirmed against the live `hawkeye.db`)
@@ -498,15 +513,15 @@ corrected in the docs.
 2. Same table cites "2026-07-22の実行" for the 28→15 enrichment example;
    the matching scan in `hawkeye.db` is actually dated 2026-07-21. Figures
    (28/15/13) are correct, only the date label is off by a day.
-3. `docs/ARCHITECTURE.md` states "Judge sees the full written record and
+3. `docs/design/ARCHITECTURE.md` states "Judge sees the full written record and
    may not introduce new facts" in the same breath as claims that *are*
    code-enforced (visibility scoping). The "no new facts" rule itself is
    still prompt-only (`JUDGE_SYSTEM` text), not mechanically checked —
    distinct from the severity>=4-addressed rule, which *is* now
    code-enforced via `attack_id` matching (fixed same day as this review).
-4. `docs/ARCHITECTURE.md`'s post-trade event chain
+4. `docs/design/ARCHITECTURE.md`'s post-trade event chain
    (`user_decision → entry_trade → sentinel_signal → claim_resolution → exit_trade → outcome`)
-   disagrees with `docs/MASTER_OVERVIEW.ja.md` §7.2's sequence diagram,
+   disagrees with `docs/design/MASTER_OVERVIEW.ja.md` §7.2's sequence diagram,
    which shows `hawkeye close` (exit_trade) *before* `hawkeye claims`/
    `resolve-claim` (claim_resolution) — the opposite order. No code
    enforces either order (`cmd_resolve_claim`/`cmd_close` are independent,

@@ -18,8 +18,8 @@
 | Package | Responsibility | Future service |
 |---|---|---|
 | `hawkeye.contracts` | Shared data models (the wire format) | schema registry |
-| `hawkeye.marketdata` | Yahoo/Finnhub clients, indicators, CandidateBrief assembly | ingest service |
-| `hawkeye.scout` | Mechanical candidate discovery (earnings-surprise screen, ranking) + cohort benchmark | scout service |
+| `hawkeye.marketdata` | Yahoo / Finnhub / EarningsWhispers / EDGAR clients, indicators, CandidateBrief assembly | ingest service |
+| `hawkeye.scout` | Mechanical candidate discovery: surprise screen, vendor choice (`numbers.py`), hold-for-actuals (`waiting.py`), structural triage, ranking + drop review | scout service |
 | `hawkeye.gates` | Deterministic entry gates (pre-LLM) | part of tribunal svc |
 | `hawkeye.tribunal` | Bull / Adversary / Judge LLM roles + orchestration | tribunal service |
 | `hawkeye.risk` | Position sizing, portfolio limits, veto | risk service |
@@ -31,10 +31,22 @@
 ## Data flow
 
 ```
-Finnhub earnings calendar ─► scout: surprise screen ──┬─► survivors[:scout_max_enrich]
-                                      │               └─► beyond the cap: DROPPED*
-                                      │ (funnel counts recorded per scan)
-                                      ▼
+Finnhub earnings calendar ─► screen #1 (provisional, cheap)
+       │
+       ├─► recorded by an earlier scan, or structurally refused before (§6.1(E)) ─► skipped
+       ▼
+EarningsWhispers ─► ONE vendor supplies this print's actual AND the consensus
+ (scout_max_whispers)   it is measured against; if it cannot, the WHOLE print
+       │                falls back to the calendar's figures
+       ▼
+screen #2 (the ranking that counts)
+       │
+       ├─► the print's own numbers have not arrived ─► HELD*
+       ▼
+walk the ranking one name at a time until scout_target_gate_passed have PASSED
+the gates (or scout_max_enrich attempts are spent)  ──► the rest: DROPPED*
+       │
+       ▼
 YahooProvider ─┐
                ├─ CompositeProvider ─ build_brief() ─► CandidateBrief
 FinnhubProvider┘   (scout candidates and manual entries both land here)
@@ -62,18 +74,24 @@ FinnhubProvider┘   (scout candidates and manual entries both land here)
                                             render_recommendation_ja() ─► user
 ```
 
-`*` **DROPPED** = nothing survives per ticker today — only the aggregate funnel
-counts in the `scans` table. This is a known gap, not a design choice: the
-Phase 0 kill criterion ("BUYs must beat the reject pile", `strategy/ROADMAP.md`) is
-not measurable while most of the reject pile is unrecorded, and a missed winner
-is invisible by construction. Note the asymmetry — a bad buy is bounded by the
-stop; a missed winner is unbounded *and* silent. Recording every scanned
-candidate, plus a market/beta baseline so cohort returns can be split into alpha
-and beta, is a pending design: `docs/MASTER_OVERVIEW.ja.md` §5.1 (not yet
-implemented). The comparison over what *is* recorded had its own bugs until
-2026-07-28: manual `evaluate` picks leaked into the viability cohorts, and a
-failed price-history fetch was silently dropped rather than counted as
-censored — both fixed in `hawkeye/scout/benchmark.py`.
+`*` Every one of those exits is recorded per ticker in `screened_candidates`,
+with the stage that produced it (`actual_pending` / `actual_timeout` /
+`enrichment_cap` / `gate_reject` / `ranking_cutoff`), the numbers the screen
+saw, and the qualitative data that was visible at drop time. That is what makes
+the Phase 0 kill criterion ("BUYs must beat the reject pile",
+`strategy/ROADMAP.md`) measurable at all. The asymmetry is why it matters: a
+bad buy is bounded by the stop, while a missed winner is unbounded *and*
+silent, so the reject pile has to be as legible as the buys.
+`hawkeye/scout/drop_review.py` splits cohort returns against a market baseline.
+The comparison had its own bugs until 2026-07-28: manual `evaluate` picks
+leaked into the viability cohorts, and a failed price-history fetch was
+silently dropped rather than counted as censored — both fixed in
+`hawkeye/scout/benchmark.py`.
+
+⚠️ **`actual_pending` is the one stage the dedup ignores.** Those prints were
+never judged — the feed had not published their numbers yet — so counting them
+as seen would record a print as pending exactly once and never read it again
+(`hawkeye/scout/waiting.py`).
 
 Post-trade lifecycle (all journal events referencing the recommendation):
 

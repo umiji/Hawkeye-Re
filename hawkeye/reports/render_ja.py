@@ -13,6 +13,8 @@ from hawkeye.contracts.models import (
     Recommendation,
     to_jst,
 )
+from hawkeye.reports.monitor_ja import render_inspection_ja
+from hawkeye.reports.quality_ja import _flag_ja
 from hawkeye.sentinel.monitor import Signal
 
 _CATALYST_JA = {
@@ -194,27 +196,73 @@ def render_recommendation_ja(rec: Recommendation) -> str:
     return "\n".join(lines)
 
 
+def render_backfill_ja(stats) -> str:
+    """What the backfill of past quarters managed, and what it cannot do.
+
+    The ceiling is stated every time rather than only when it bites. A reader
+    who sees 「過去4四半期を取得」 and assumes the run of eight was checked
+    would credit a name with a consistency nobody measured — and the numbers
+    on the page look identical either way.
+    """
+    if not stats.tickers_attempted:
+        return ""
+    lines = [f"過去の決算の遡り取得: 上位 {stats.tickers_attempted}銘柄に"
+             f"問い合わせ → 新たに記録 {stats.quarters_written}四半期 / "
+             f"既に記録済みで手を付けなかった {stats.quarters_already_known}四半期"]
+    if stats.tickers_unreachable:
+        lines.append(f"  - {stats.tickers_unreachable}銘柄は問い合わせが"
+                     "完了しませんでした(会社の事情ではなく通信の失敗です。"
+                     "次回の走査で再試行します)")
+    for reason, count in sorted(stats.skipped.items()):
+        lines.append(f"  - {count}四半期: {_flag_ja(reason)}")
+    lines.append("  ※ この経路で取れるのは**EPSだけ**で、売上は取得できません。"
+                 "また**4四半期が上限**です(2026-08-10実測)。"
+                 "「8四半期ぶりに1回だけ上振れ」という形は、"
+                 "この記録では判別できません。")
+    return "\n".join(lines)
+
+
 def render_scout_ja(result) -> str:
     """ScoutResult -> Japanese shortlist report."""
     lines = [f"# 🔭 スカウト結果 ({result.scan_start} 〜 {result.scan_end})", ""]
     f = result.funnel()
     lines.append(f"ファネル: 決算イベント {f['scanned']}件 → サプライズ選別 "
                  f"{f['screened']}件 → 既出を除外 {f['duplicates']}件 → "
+                 f"実績待ちで保留 {f.get('held', 0)}件 → "
                  f"詳細取得 {f['enriched']}件 → "
                  f"ゲート通過 {f['gate_passed']}件")
-    # How much of the shortlist rests on numbers a second source confirmed.
-    # "Nobody checked" and "checked and agreed" must not read the same way.
-    v = getattr(result, "verification", None)
-    if v is not None and v.attempted:
-        line = (f"数値の照合: {v.attempted}件を Yahoo で再取得 → 確認 "
-                f"{v.verified}件 / 未確認 {v.unverified}件")
-        if v.disagreed:
-            line += f"、うちカレンダーと食い違い {v.disagreed}件"
+    # 「見送った」と「まだ判定していない」を混同させない。保留は会社についての
+    # 判断ではなく、こちらのデータがまだ揃っていないという事実で、次回の走査で
+    # 読み直す。待機期限を過ぎた分は打ち切って落選記録に残す。期限の時間数は
+    # 設定値なので、ここに数字を書くと設定を変えた日から嘘になる。
+    held = getattr(result, "held", [])
+    if held:
+        timed_out = [c for c in held if c.held_expired]
+        line = (f"実績待ちの保留 {len(held)}件: 次回の走査で読み直します"
+                f"(これは会社への判断ではなく、決算の数値がまだ届いていない"
+                f"という事実です)")
+        if timed_out:
+            line += (f"。うち {len(timed_out)}件 は待機期限"
+                     f"(`earnings_actual_wait_hours`)を過ぎたため"
+                     f"打ち切りました: "
+                     f"{'、'.join(c.ticker for c in timed_out[:8])}")
         lines.append(line)
-        if v.budget_exhausted:
-            lines.append(f"⚠️ 照合の上限({v.attempted}件)に達しました。"
+    # どの銘柄が「決算専門サイト(EarningsWhispers)の数字で順位を付けられたか」。
+    # 断られ方は3つに分けて出す — 意味も、次にやることも違うため。
+    # 「まだ取り込まれていない」は待てば来る、「サイトに繋がらなかった」は
+    # 会社についての事実ではない、「物差しが欠けている」は待っても増えない。
+    n = getattr(result, "numbers", None)
+    if n is not None and n.attempted:
+        lines.append(
+            f"決算数値の取得: {n.attempted}件を決算専門サイトに問い合わせ → "
+            f"同サイトの数字で判定 {n.from_whispers}件 / "
+            f"カレンダーの数字のまま {n.fell_back}件 / "
+            f"前期のレコードが返った {n.stale}件 / "
+            f"サイトに繋がらなかった {n.unreachable}件")
+        if n.budget_exhausted:
+            lines.append(f"⚠️ 問い合わせの上限({n.attempted}件)に達しました。"
                          "残りはカレンダーの数値のままです"
-                         "(`scout_max_verify` で調整)。")
+                         "(`scout_max_whispers` で調整)。")
     if getattr(result, "enrichment_ceiling_hit", False):
         lines.append("")
         lines.append("⚠️ **詳細取得の試行上限に達したため、ゲート通過候補が"
@@ -227,6 +275,39 @@ def render_scout_ja(result) -> str:
                      f" {result.scan_start} より前の決算はスキャンしていません"
                      "(取りこぼしの可能性あり)。必要なら "
                      "`hawkeye scout --days N` で遡って実行してください。")
+    # 取得データの点検表(§10)。順位表より前に置く理由は、下の訂正セクションと
+    # 同じ — 先にショートリストを読んでしまった読み手は、もうデータの検算をしない。
+    # 「判断材料ではなく点検表」であることは表側の見出しで宣言している。
+    inspection = getattr(result, "inspection", None)
+    if inspection is not None and (inspection.rows or inspection.counts.asked
+                                   or inspection.counts.calendar_only_not_asked):
+        lines.append("")
+        lines.append(render_inspection_ja(inspection))
+    # 発表済みの決算の数値が、あとから提供元に書き換えられることがある。
+    # ADEA は 2026-08-05 発表の四半期で、EPSの実績値だけが翌日 $0.34 → $0.42
+    # (+24%)に変わった。順位表より前に出すのは、先にショートリストを読んで
+    # しまった読み手はもう訂正に反応しないため。台帳では古い行を残したまま
+    # 新しい行を足しており、順位はすでに訂正後の数値で付けてある。
+    revisions = getattr(result, "revisions", [])
+    if revisions:
+        lines.append("")
+        lines.append(f"## ⚠️ 実績値が訂正されました ({len(revisions)}件)")
+        lines.append("")
+        lines.append("| 銘柄 | 四半期 | 項目 | 更新前 | 更新後 | 変化 |")
+        lines.append("|---|---|---|---|---|---|")
+        label = {"eps_actual": "EPS実績", "revenue_actual": "売上実績"}
+        for r in revisions:
+            pct = (f"{r.change_pct:+.1f}%" if r.change_pct is not None
+                   else "-")
+            before = "-" if r.before is None else f"{r.before:g}"
+            after = "(取り下げ)" if r.after is None else f"{r.after:g}"
+            lines.append(f"| {r.ticker} | {r.fiscal_quarter} "
+                         f"| {label.get(r.field, r.field)} | {before} "
+                         f"| {after} | {pct} |")
+        lines.append("")
+        lines.append("下の順位は訂正後の数値で付けています。訂正前の行も台帳に"
+                     "残っているので、前回どの数値で順位を付けたかは後から"
+                     "確認できます。")
     lines.append("")
     if result.passed:
         lines.append("## 候補ショートリスト(スコア順)")
@@ -304,7 +385,7 @@ def render_drop_review_ja(
     suppressed: int = 0,
     suppressed_reason: str = "",
 ) -> str:
-    """落選候補レビューの結果(docs/MASTER_OVERVIEW.ja.md §5.2(3))."""
+    """落選候補レビューの結果(docs/design/MASTER_OVERVIEW.ja.md §5.2(3))."""
     lines = [
         f"# 🔍 落選候補レビュー — T+{horizon_days}営業日時点 ({checkpoint})",
         "",

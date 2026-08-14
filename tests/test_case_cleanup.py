@@ -1,4 +1,4 @@
-"""Deleting the tribunal's scratch files (docs/MASTER_OVERVIEW.ja.md §5.2(7)).
+"""Deleting the tribunal's scratch files (docs/design/MASTER_OVERVIEW.ja.md §5.2(7)).
 
 Each role gets a subfolder holding its instructions, input, schema and reply.
 Every one of those is either regenerated deterministically from the case JSON

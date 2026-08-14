@@ -31,7 +31,12 @@ from hawkeye.scout.scout import (
     scan_window,
     score_candidate,
 )
-from tests.conftest import make_bars, make_brief
+from tests.conftest import (
+    FakeWhispers,
+    make_bars,
+    make_brief,
+    make_whispers,
+)
 
 
 def ev(ticker="AAA", day=None, eps_a=1.10, eps_e=1.00,
@@ -374,6 +379,45 @@ def test_candidates_below_the_stop_point_are_still_recorded(config):
     assert all(c.score_version == "partial_no_gap" for c in result.capped)
 
 
+class CountingNumbers:
+    """An earnings feed that records who it was asked about, so a test can
+    assert on the requests a scan does NOT make."""
+
+    def __init__(self):
+        self.asked: list[str] = []
+
+    def details(self, ticker):
+        self.asked.append(ticker)
+        return None
+
+
+def test_a_duplicate_costs_no_second_source_request(config):
+    """Dedup used to run AFTER the second-source pass, so every print the
+    overlapping window brought back was re-read and then thrown away. On a
+    7-day window run daily that is six requests in seven wasted — which
+    matters once the second source is the earnings feed rather than a
+    quota-free scraper."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [
+        {"symbol": "SEEN", "date": event_day.isoformat(),
+         "epsActual": 1.30, "epsEstimate": 1.00},
+        {"symbol": "NEW", "date": event_day.isoformat(),
+         "epsActual": 1.20, "epsEstimate": 1.00},
+    ]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    provider = StaticProvider(bars=bars, profile_data={"market_cap": 5e9})
+    numbers = CountingNumbers()
+
+    result = run_scout(FakeCalendar(entries), provider, config, today=today,
+                       already_seen={("SEEN", event_day)},
+                       numbers_source=numbers)
+
+    assert numbers.asked == ["NEW"]
+    assert result.duplicates == 1
+    assert [c.ticker for c in result.passed] == ["NEW"]
+
+
 def test_already_seen_is_per_event_not_per_ticker(config):
     """The same ticker reporting a *different* quarter is a new candidate."""
     today = date.today()
@@ -435,6 +479,7 @@ def test_run_scout_funnel(config):
     assert [c.ticker for c in result.rejected] == ["TINY"]
     assert "gate" in result.rejected[0].reject_reason
     assert result.funnel() == {"scanned": 3, "screened": 2, "duplicates": 0,
+                               "held": 0,
                                "enriched": 2, "gate_passed": 1}
     # the passed candidate carries a ready-to-evaluate brief
     good = result.passed[0]
@@ -524,6 +569,105 @@ def test_screened_candidates_keep_the_qualitative_data_they_were_judged_on(confi
     assert [n.headline for n in row.news] == ["Q2 beat"]
     assert row.insider_activity == insider
     assert row.analyst_trend == analyst
+
+
+def test_a_company_the_gates_already_refused_costs_no_feed_request(config, tmp_path):
+    """§6.1(E): the entry gates' verdict on the COMPANY (too small, too cheap,
+    too illiquid) is recorded on the master, so the next scan can skip the
+    name without fetching anything. It could not run before the screen —
+    market cap and volume come from a paid per-name call — so this is the
+    cheap cached shadow of that gate."""
+    from hawkeye.contracts.stocks import Stock
+    from hawkeye.ledger.stocks import StockStore
+
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [{"symbol": "TINY", "date": event_day.isoformat(),
+                "epsActual": 1.40, "epsEstimate": 1.00},
+               {"symbol": "OK", "date": event_day.isoformat(),
+                "epsActual": 1.30, "epsEstimate": 1.00}]
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    stock_id = store.put_stock(Stock(ticker="TINY"))
+    store.record_triage(stock_id, False, "min_market_cap", on=today)
+    numbers = CountingNumbers()
+
+    run_scout(FakeCalendar(entries), StaticProvider(
+        bars=make_bars(30, start_price=40.0, volume=2_000_000),
+        profile_data={"market_cap": 5e9}), config, today=today,
+        numbers_source=numbers, stock_store=store)
+
+    assert numbers.asked == ["OK"]
+
+
+def test_an_unknown_company_is_still_asked_about(config, tmp_path):
+    """Fails open in every uncertain direction. A wrong exclusion costs the
+    feed's reading of a print at the only moment it mattered; a wrong
+    inclusion costs one request."""
+    from hawkeye.ledger.stocks import StockStore
+
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [{"symbol": "NEW", "date": event_day.isoformat(),
+                "epsActual": 1.30, "epsEstimate": 1.00}]
+    numbers = CountingNumbers()
+
+    run_scout(FakeCalendar(entries), StaticProvider(
+        bars=make_bars(30, start_price=40.0, volume=2_000_000),
+        profile_data={"market_cap": 5e9}), config, today=today,
+        numbers_source=numbers,
+        stock_store=StockStore(str(tmp_path / "hawkeye.db")))
+
+    assert numbers.asked == ["NEW"]
+
+
+def test_a_drop_record_says_which_vendor_ranked_the_name(config):
+    """The drop review's whole job is asking why the screen let a name go, and
+    that is unanswerable without knowing whose yardstick it was measured on.
+    The field is also the one place a rename can go wrong silently: the
+    contract ignores unknown keys, so a mismatch here would default every
+    record to "calendar" with nothing raising."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [{"symbol": "AAA", "date": event_day.isoformat(),
+                "epsActual": 1.30, "epsEstimate": 1.00}]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    provider = StaticProvider(bars=bars, profile_data={"market_cap": 5e9})
+    feed = FakeWhispers({"AAA": make_whispers(
+        "AAA", announced=event_day, eps_actual=1.31, eps_consensus=1.00)})
+
+    result = run_scout(FakeCalendar(entries), provider, config, today=today,
+                       numbers_source=feed)
+    rows = build_screened_candidates(result, scan_id=9)
+
+    assert [c.numbers_source for c in result.passed] == ["whispers"]
+    assert [r.numbers_source for r in rows] == ["whispers"]
+
+
+def test_a_drop_record_says_why_the_feed_did_not_supply_the_numbers(config):
+    """The aggregate counts on the scan say HOW MANY fell back; only the
+    per-ticker reason can answer the question that matters months later —
+    which NAMES we are persistently unable to read, and whether the cause is
+    a property of the company or of one bad afternoon. Without it, a ticker
+    the feed structurally cannot serve and a ticker that timed out once look
+    identical in the record."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [{"symbol": "AAA", "date": event_day.isoformat(),
+                "epsActual": 1.30, "epsEstimate": 1.00}]
+    bars = make_bars(30, start_price=40.0, volume=2_000_000)
+    provider = StaticProvider(bars=bars, profile_data={"market_cap": 5e9})
+    # Answers about this print, but with no revenue consensus — so the WHOLE
+    # print falls back to the calendar rather than half of it.
+    feed = FakeWhispers({"AAA": make_whispers(
+        "AAA", announced=event_day, revenue_consensus=None)})
+
+    result = run_scout(FakeCalendar(entries), provider, config, today=today,
+                       numbers_source=feed)
+    rows = build_screened_candidates(result, scan_id=10)
+
+    assert result.passed[0].numbers_source == "calendar"
+    assert result.passed[0].numbers_reason == "whispers_revenue_incomplete"
+    assert [r.numbers_reason for r in rows] == ["whispers_revenue_incomplete"]
 
 
 def test_enrichment_capped_candidates_have_no_qualitative_data(config):

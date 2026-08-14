@@ -14,6 +14,28 @@ The user reads explanations as a human decision-maker, not as a code
 reviewer. This applies to all explanations in this project — bug reports,
 behavior descriptions, review summaries, everything.
 
+**Starting premise: assume the reader knows nothing about the code.** Not
+the internals, not the processing flow, not the function/table/file names,
+not the design concepts, not the domain jargon — nothing. Whatever you have
+just read in the source, the user has not read. Nothing is shared context
+until you have put it into words in this conversation. Writing as if the
+reader already knows is the single most common failure in this project's
+explanations, and it makes the answer useless no matter how correct it is.
+
+0. **Every word appearing for the FIRST time in the session gets a short
+   gloss — no exceptions.** Not just this project's own vocabulary: code
+   symbols (functions, variables, classes), table and column names, file and
+   module names, CLI subcommands, external services and APIs, library names,
+   and general technical jargon all count. On first mention, say in plain
+   Japanese what it is and what it is for, then use the bare name freely for
+   the rest of the session. One line is enough — the cost of an unnecessary
+   gloss is one line; the cost of a missing one is an explanation the reader
+   cannot follow at all, so when in doubt, gloss it.
+   - 悪い例: 「earnings_prints に前期のレコードが入っていました」
+   - 良い例: 「決算の実績値を1行ずつ貯めておくテーブル（`earnings_prints`）に、
+     今回ではなく前四半期の決算のレコードが入っていました」
+   - Being asked "それは何？" about a term you already used means this rule
+     was broken — apologising is not the fix; glossing on first use is.
 1. **Don't lead with bare symbol names.** Avoid dumping function/variable/
    table names as the explanation itself (e.g. "`ensureGaConfigured` 内の
    `isDev` が `false` になる"). The reader can't tell what that means without
@@ -27,14 +49,83 @@ behavior descriptions, review summaries, everything.
      `false`（本番環境判定）になってしまうため...」
 3. **State root cause and user-visible impact**, not just code behavior —
    what changes on screen or in system behavior as a result.
-4. **Explain domain/strategy terms the first time they come up in a
-   session**, not just code symbols. This project has its own vocabulary
-   (Bull / Adversary / Judge roles, gates, EV hurdle, thesis-accuracy,
-   pre-registration, etc. — see `strategy/INVESTMENT_DOCTRINE.md` and
-   `strategy/VERIFICATION_PROTOCOL.md`). When one of these appears for the
-   first time in a conversation, give a one-line plain-language gloss of
-   what that role/mechanism actually does before using it as shorthand
-   (e.g. "Bull（強気側の主張だけを作る役割。Adversaryの反論は見えない）").
+3.5. **Write subject–verb–object. Name the actor.** "判定が書かれる" tells the
+   reader nothing: who writes it, into what, when? Say "走査が、入口ゲートの
+   判定直後に、銘柄マスタ（`stocks` テーブル）の3つの列に書く". Passive voice
+   with the actor dropped is the single most common way an explanation in this
+   project becomes unreadable.
+
+3.6. **Never reuse a bare noun that has several referents in this system.**
+   The words 走査 / 足切り / スクリーン / ゲート / 判定 / 候補 / マスタ /
+   落選記録 all name more than one thing if left unqualified. Say WHICH one,
+   every time, even at the cost of repetition. The reader should never have to
+   ask "どのゲートの話？".
+
+   Concrete failures from 2026-08-08, all of which forced the user to ask again:
+   - 悪い: 「ゲートに到達した銘柄だけ」→ 良い: 「入口ゲート（審理に送ってよいか
+     を判定する7条件）まで到達した銘柄だけ」
+   - 悪い: 「トリアージ判定」→ 良い: 「会社そのものを対象外にする判定（入口
+     ゲート7条件のうち、株価・時価総額・売買代金の3つだけを見たもの）」
+   - 悪い: 「numbers_reason を候補と落選記録に載せた」→ 良い: 「EWが数字を出せ
+     なかった理由を、走査中の作業用データと、台帳に永久保存される
+     `screened_candidates` テーブルの両方に、銘柄ごとに書くようにした」
+   - 悪い: 「マスタ870件のうち判定を持つのは2件」→ この文は、マスタが何か・
+     870がどこから来た数字か・2が候補数ではないことを全部説明しないと通じない。
+
+3.7. **Show the real artifact instead of describing it.** When the user asks
+   what something is, print the actual JSON field, the actual sentence, the
+   actual row. One `summary` excerpt from a fixture explained "ガイダンス" in
+   a way three paragraphs of prose had failed to.
+
+3.8. **State the limits of what you built, unprompted.** On 2026-08-08 a
+   feature was wired in and described as useful; the user's questions exposed
+   that it saves one API call per run at best and probably never fires. That
+   should have been said when it was built, not extracted. If a mechanism has
+   a condition that makes it rarely fire, that condition IS the headline.
+
+3.9. **不具合・挙動の報告は散文で書くな。下の6行を穴埋めして書く。**
+   2026-08-10 に規則として散文で書いたが、その散文自体が守られなかった。散文の
+   心得は破れる。埋めていない欄がある形式は破れない。**この6行は、どれ1つ空欄に
+   してはいけない。**
+
+   ```
+   見出し: <誰が> <何を> <どうした>
+   1. 読み手: <コマンド> の <出力> を読むのは <人間 / 統括セッション / 審理の役>
+   2. 実物:   "<その画面に出ていた文字を、要約せずそのまま1行>"
+   3. 誤動作: <どの処理> が <何> を <間違ってやる / やらない>
+   4. 点数と順位: 動いた（どこが） / 動かない
+   5. 経路:   <A → B → C → BUYが出る/出ない>   経路が無ければ「無い」
+   6. 頻度と大きさ: 引き金 <実測値・標本・日付> / 大きさ <実測値 or 未測定>
+   ```
+
+   守り方:
+
+   - **見出しに主語が無ければ書き直す。** 「断られた理由が識別子のままだった」は
+     誰が誰に断られたのかが無く、初見では読めない。「決算専門サイトが数字の提供を
+     断った理由を、日本語に訳さず英語の記号のまま画面に出していた」と書く。
+   - **格好をつけた言い回しを使うな。** 「識別子」「フェイルクローズ」「埋もれる」
+     のような語は、書き手が要点を掴んだ気分になるだけで、読み手には何も渡らない。
+   - **2 は引用。** 要約した瞬間に、読み手はそれが本当に読めない文なのか検証できない。
+   - **1 を間違えると 3〜6 が全部無意味になる。** 2026-08-10、点検表の読み手を
+     「User」と書いて影響を論じたが、`hawkeye scout` の出力を読むのは統括セッション
+     であり、Userはそれを渡されない限り見ない（`.claude/skills/hawkeye-run/SKILL.md`
+     には渡す手順が無い）。読み手を間違えた報告は、直すべき場所も間違える。
+   - **3 は「順位が付いた」では埋まっていない。** それは正常動作の説明である。
+     どの処理が何を間違ってやるのか、または本来やるべきことをやらないのかを書く。
+   - **4 が「動かない」なら、それを見出しの直後に書く。** 金の話か見え方の話かを、
+     読み手が最初に知る必要がある。
+
+4. **Domain/strategy terms are the highest-risk case of rule 0.** This
+
+4. **Domain/strategy terms are the highest-risk case of rule 0.** This
+   project has its own vocabulary (Bull / Adversary / Judge roles, gates,
+   EV hurdle, thesis-accuracy, pre-registration, 審理 vs 審査, etc. — see
+   `strategy/INVESTMENT_DOCTRINE.md` and `strategy/VERIFICATION_PROTOCOL.md`).
+   These read like ordinary words, so they slip past unglossed more often
+   than code symbols do. On first mention give a one-line plain-language
+   gloss of what that role/mechanism actually *does* before using it as
+   shorthand (e.g. "Bull（強気側の主張だけを作る役割。Adversaryの反論は
+   見えない）").
 
 ## Invariants (do not break)
 
@@ -59,7 +150,7 @@ behavior descriptions, review summaries, everything.
    every role's file and nothing in code stops it from reading ahead — that
    boundary is operational discipline (SKILL.md), not a sandbox, and isn't
    fixable within this architecture (accepted 2026-07-28, see
-   `docs/MASTER_OVERVIEW.ja.md` §4 and `docs/ARCHITECTURE.md`). Don't claim
+   `docs/design/MASTER_OVERVIEW.ja.md` §4 and `docs/design/ARCHITECTURE.md`). Don't claim
    session mode has the same technical guarantee API mode does.
 5. **No autonomous trading.** The system recommends and records; the user
    executes. Don't add order placement.
@@ -79,13 +170,36 @@ rendering) · `cli`.
 
 Directories are split by *who writes the file*: `strategy/` is investment
 knowledge a human writes or approves (doctrine, protocol, roadmap, backlog,
-drafted revisions), `docs/` is system design and development notes, and
+drafted revisions), `docs/` is everything Claude and the developer write
+about the system (split into `design/` and `knowledge/` below), and
 `var/` is everything the system emits at run time (ledger, case files, drop
 measurements, reports) and is git-ignored. `hawkeye/paths.py` is the single
 place resolving `var/` locations — never hardcode a runtime path elsewhere.
 Investment standards do NOT go in `.claude/` (that defines how Claude Code
 drives the system; API mode never reads it, and the judgment criteria must
 not depend on which engine runs the tribunal).
+
+Three places carry knowledge, and they must not overlap. Cite them by full
+path (`docs/design/MASTER_OVERVIEW.ja.md`, never `docs/MASTER_OVERVIEW.ja.md`
+— the split happened on 2026-08-03 and the bare form is stale):
+
+- `docs/design/` — design and current state (`MASTER_OVERVIEW.ja.md` is the
+  one to read first; `ARCHITECTURE.md`, `DATA_SOURCES.md`, `USER_GUIDE.ja.md`,
+  `DEBUG_TOOL.md`, `ARCHITECTURE_REVIEW_BACKLOG.md` sit beside it).
+- **`docs/knowledge/` — what outlives a session**, split by WHEN to read it
+  (`README.md` is the index):
+  - `REJECTED.ja.md` — **read before proposing anything.** Approaches already
+    rejected, with the reason. Several are attractive on first sight; the file
+    exists so they are not re-discovered.
+  - `MEASUREMENTS.ja.md` — **read before quoting a number.** Every figure
+    carries its sample, date and method. A figure that is not here has not
+    been measured.
+  - `TOOLING.ja.md` — read when a command or tool misbehaves.
+  - `RETROSPECTIVES.ja.md` — process post-mortems, newest first.
+  Do not duplicate what a design doc already states; point at it.
+- `~/.claude/session-data/` — what happened in ONE session, in operational
+  detail, so the next one can resume. Machine-local, not in git, written by
+  `/ecc:save-session`. See "Where the record lives" below.
 
 ## Dev
 
@@ -119,369 +233,60 @@ API mode. Never have the orchestrating session author or edit role JSON —
 this instruction, not code, is what keeps you (the orchestrator) from
 peeking at another role's raw file; see invariant 4's caveat.
 
+## Receiving a Goal (added 2026-08-02, after a Goal was missed)
+
+When the user states a goal — via `/goal` or in plain words — the FIRST
+response must translate it into acceptance criteria before any work starts.
+A goal that cannot be checked cannot be reached on purpose, only by luck.
+
+1. **Restate it as 3-5 binary checks, in commands and outputs.** "Confirm X
+   works" is not checkable; "`hawkeye scout` runs in production and one
+   candidate completes the tribunal with a recorded id" is.
+2. **Ask before starting when any of these is true** — one short round trip
+   is cheaper than a session spent on the wrong half:
+   - a term has more than one plausible reading (this project's own
+     vocabulary is a common source: 審理 is the tribunal, 審査 is the
+     screening review, and "疑似審査" fits either);
+   - the goal bundles several deliverables of different kinds, so "mostly
+     done" could pass as done — ask which is the core and which are optional;
+   - "done" has no observable form (no command, no output, no file);
+   - it cannot be finished in one session — ask what the stopping point is.
+3. **Put the acceptance criteria at the top of the todo list**, above the
+   implementation phases. Track the goal, not the plan.
+4. **Re-read the criteria before saying anything is complete**, and
+   demonstrate each one by running the real command (see the 2026-08-02(d)
+   retrospective: "348 tests green" was reported as done while the production
+   database had none of the new tables).
+5. **When work outside the goal turns up** (a real bug, a better design),
+   say what it costs and what it delays, then let the user choose. Do not
+   silently spend the goal's budget on it.
+6. `/goal` installs a **session-scoped** stop condition: it does not survive
+   into a resumed session. If a goal is carried over in a hand-off file,
+   say so and ask the user to re-issue `/goal` in the new session.
+
 ## Governance (added 2026-07-14)
 
 Before any new feature or design change (not small bugfixes/typos), update
-`docs/MASTER_OVERVIEW.ja.md` §4 (As-Is) and §5 (gap table) — or draft a
+`docs/design/MASTER_OVERVIEW.ja.md` §4 (As-Is) and §5 (gap table) — or draft a
 short design note — and get user approval BEFORE implementing. This
 document was requested after the user flagged that prior sessions
 implemented features unilaterally without ever presenting the full
 picture (To-Be architecture, As-Is gap, and *why* the design should work)
 in one place. Keep §4/§5 current as capabilities land.
 
-## Session hand-off log
+## Where the record lives (there is no session log in this file)
 
-Record decisions and insights at the end of each working session
-(newest first).
+This file is loaded in full at the start of every session, so it holds only
+what has to be read every time. Session history is deliberately NOT here:
 
-- **2026-08-01(b)** First real session-mode run since the tree split: scout
-  opened 3 cases (BJRI/ABR/CRI), all three PASSed. The run itself was fine;
-  what it surfaced was not. Two convergent observations from the role
-  subagents — which argue from separate contexts and cannot compare notes —
-  turned out to be real defects, investigated with systematic-debugging
-  before any fix.
-
-  **(1) The ranking metric was broken, and it was the metric deciding which
-  candidates were ever examined.** `screen_events` sorted by raw EPS surprise
-  % and `to_enrich = screened[:scout_max_enrich]` cut the top 15 by that same
-  order. Three independent ways the percentage lies, all verified against
-  live Finnhub responses: (a) the calendar returns *several rows for one
-  print* with different quarter labels and different consensus — BJRI's
-  2026-07-30 came back as both +3.5% (est $0.9085) and +633.2% (est $0.1282);
-  sorting by surprise meant the broken row always won, and the correct row
-  then fell below the 5% screen, so the only surviving reading was the wrong
-  one. (b) `revenueActual` and `revenueEstimate` can be on different
-  accounting bases — ABR's actual is gross interest income (230.9M) against a
-  net-basis estimate (50.7M), i.e. "+355.3%". (c) a near-zero consensus makes
-  the ratio explode without adding information; the recorded drop pile was
-  topped by CORT +6958%, SONO +5194%, LXP +3459%, overwhelmingly REITs (GAAP
-  EPS ≈ 0, real earning power is FFO). Both of that day's top-scored
-  candidates (BJRI 85.0, ABR 85.0 — the cap-saturated maximum) were artifacts.
-  Fixed, user picked the full three-part remedy: `parse_calendar` collapses
-  rows sharing (ticker, day) to the *conservative* reading and flags
-  `conflicting_estimates`; percentages below `scout_min_abs_eps_estimate`
-  (0.10) or beyond `scout_max_trusted_revenue_surprise_pct` (50.0) are marked
-  untrusted; ranking is by the *capped* score with untrusted values scoring 0.
-  Untrusted means "cannot buy a ranking slot" — NOT dropped (still recorded,
-  with the trust flags, so a later drop review doesn't read "+6958%, dropped"
-  as a missed monster) and NOT passed through as fact: a distrusted number is
-  kept out of the structured snapshot fields entirely, because the prompts
-  tell Bull and Adversary to prefer those over prose, so leaving it there
-  would launder it into a fact. The catalyst text says what was measured and
-  why it isn't stood behind. Verified against the real rows: BJRI now reads
-  +3.5% and drops below the screen, CRI 66.23 → 1.23, ABR 85.0 → 0.0, and a
-  genuine +40%/+5% name ranks first.
-
-  **(2) `Claim.id` was a random uuid, so `parse_thesis` was not
-  deterministic.** Session mode parses the thesis three times — Adversary
-  package, Judge package, finalize — so each role saw a different set of
-  `clm_` ids; the Adversary cited ids the Judge could not find, and neither
-  matched the ledger. The comment in `casefile.py` asserting determinism was
-  simply false. Same bug class as the 2026-07-28 attack-id fix, and the same
-  remedy: `claim_content_id()`, a before-validator that fills only an absent
-  id (stored payloads keep theirs — invariant 1). Damage was bounded today
-  because claim resolution reads ids off the stored record, but any future
-  rule matching claim ids across parses would have failed silently, exactly
-  as `_judge_rule_check` once did. **Not fixed, worth knowing:**
-  `parse_attack_report` still honours an LLM-supplied `id` (`a.get("id") or
-  ...`) even though its docstring says ids are never the LLM's choice — the
-  schema doesn't expose the field, so it can't happen today, but the guard
-  is prose rather than code.
-
-  226/226 offline tests green (216 + 10 new). Docs: MASTER_OVERVIEW §4 gained
-  both write-ups and §5 a new "サプライズ率の信頼性" row recording the
-  deferred option — replacing the percentage with a price-normalized surprise
-  ((actual − estimate) / price) is the principled fix but needs a price for
-  every screened name *before* ranking, so it waits until the trust-flagged
-  data shows how much distortion the current remedy leaves.
-
-- **2026-08-01** Three planned steps, each committed after a green run.
-  (1) `26b7ad8` — split the tree by *who writes the file*: `strategy/`
-  (investment knowledge a human writes or approves) vs `docs/` (system
-  design) vs `var/` (everything the system emits at run time, git-ignored).
-  `hawkeye/paths.py` is now the single resolver for runtime locations;
-  `HAWKEYE_VAR` moves the whole tree. Investment standards deliberately stay
-  out of `.claude/` — API mode never reads it, so criteria kept there would
-  silently depend on which engine ran the tribunal.
-  (2) `18835ba` — the drop-candidate review round (`drops measure/queue/
-  submit/revise`, driven by the new `/hawkeye-review` skill in its own
-  session). The measurement engine and the table both existed but nothing
-  joined them: no CLI path ever called `record_drop_reviews()`. Design
-  points now enforced in code: only T+10 is investigated (a name looked at
-  twice would double-count in the 20-per-category tally); every measured
-  candidate is recorded, not only outliers (no denominator = "3 got away"
-  reads as neither good nor bad); `recorded_drop_review_keys()` stops a
-  round re-measuring what it cannot store. **Split `unforeseeable` into
-  `collection_gap` + `unforeseeable`** — "nobody could have known" is the
-  one category that ends an inquiry, so our own collection defects (narrow
-  news window, single source) were accumulating inside the one verdict that
-  requires no follow-up. The investigator now receives what we held at
-  decision time alongside a fresh fetch **cut at the decision date in code**
-  (articles published later are never handed over — the same reasoning as
-  invariant 4), and `submit()` overturns `unforeseeable` to `collection_gap`
-  when the record shows the news was public in time (invariant 3). Renamed
-  `drop_review_min_samples_per_stage` → `_per_category` (value 20 unchanged).
-  (3) `98b6e49` — `strategy/TRIBUNAL_ROLES.ja.md` generated from
-  `prompts.py` (`hawkeye docs tribunal-roles --write|--check`). Prompts stay
-  in `prompts.py`; a new numbered Judge rule fails generation until it gets
-  a Japanese gloss. 216/216 offline tests green.
-
-  **Two things worth knowing.** (a) `cases/` (12 case JSONs) vanished during
-  this session — cause never identified; not reproducible from the test
-  suite, not in the recycle bin, and the code that deletes directories
-  (`_remove_role_workspace`) can only touch `cases/<case_id>/`, never the
-  parent. The ledger was unaffected (chain verified, 12 recommendations
-  readable). (b) Prompted by that, the user **downgraded the case JSON from
-  "audit trail" to "debugging convenience"**: it does hold the LLM's raw
-  pre-normalization reply which the ledger lacks, but no code compares the
-  two and the file sits in git-ignored `var/` outside the hash chain, so its
-  loss is undetectable. Claiming audit value for a file with neither a
-  reader nor tamper-evidence is the worst combination — nobody dares delete
-  it, nobody notices when it goes. If that comparison ever genuinely needs
-  to happen, the raw values belong in the ledger, hash-chained. Docs and
-  test docstrings updated to say this plainly.
-
-- **2026-07-29** User recovered the full architecture review finding list
-  at `docs/ARCHITECTURE_REVIEW_BACKLOG.md` (the 2026-07-28(b) entry below
-  had marked it unrecoverable — that note is now stale, read the backlog
-  file instead). Worked through it in two rounds, prioritizing
-  integrity/consistency findings first per user request: (1) H1 — Adversary
-  and Judge argued over the Bull's raw, un-normalized thesis dict in both
-  API mode (`pipeline.run_tribunal`) and session mode
-  (`casefile.write_package`) instead of the parsed/clamped `Thesis` that
-  actually gets stored, so the debated record and the stored record could
-  disagree. Both call sites now parse once and render the normalized model.
-  (2) M5 — session-mode `finalize()` persisted `case.recommendation_id`
-  before the caller confirmed the ledger insert succeeded; a crash in
-  between left a case looking "complete" with no matching ledger row, and
-  `submit()` refuses to touch an already-answered role, making the work
-  unrecoverable. `finalize()` no longer sets `recommendation_id`; new
-  `mark_complete()` does, called only after the ledger write succeeds;
-  `cmd_case_submit` detects and retries an unconfirmed-but-role-complete
-  case instead of erroring. (3) M9 — `verify_chain()` never cross-checked
-  `recommendations.payload` against anything, so rewriting it directly via
-  SQL (and updating its own `hash` column to match) passed silently; it now
-  recomputes the payload hash and compares it against the tamper-evident
-  `payload_hash` captured in the `recommendation_recorded` journal event.
-  (4) H5 + M13 — `hawkeye benchmark --horizon` was unpinned (could be
-  re-run at whatever value makes the spread look favorable) and
-  `forward_return` added the horizon as *calendar* days while every other
-  holding-period convention in the doctrine is *trading* days (~30%
-  under-count over a multi-week span). User approved pinning the official
-  Phase-0 horizon at 30 trading days
-  (`config.phase0_benchmark_horizon_days`); `forward_return` now walks
-  `bars` by index (trading-day-native) instead of adding a calendar delta;
-  added `min_calendar_days_for_trading_days()` so the pending-vs-censored
-  pre-filter converts correctly instead of mislabeling genuinely-still-
-  pending records as "fetch failed". 87/87 green after this round
-  (commits 472421e, 99678a4).
-
-  User then asked to actually start running the candidate-selection cycle
-  (nothing held currently) and specifically wanted dropped candidates
-  recorded — this is exactly §5.1's proposal (missed-candidate tracking),
-  written 2026-07-14(b) and never implemented. Implemented the recording
-  MVP (deferred the analysis-loop / beta-alpha benchmark refinement in
-  §5.1, since those need accumulated data to mean anything): new
-  `ScreenedCandidate` contract (stages: enrichment_cap, gate_reject,
-  ranking_cutoff); `Ledger.record_screened_candidates()` persists the batch
-  and anchors its integrity as ONE `screened_candidates_recorded` journal
-  event (per-row hash-chaining wasn't worth the write overhead, but
-  `verify_chain()` now cross-checks the batch hash the same way it does for
-  `recommendations` — same M9 pattern, applied proactively here); `hawkeye
-  scout` now records automatically every run, `hawkeye screened list`
-  reviews what's recorded. Also fixed a bug §5.1 had specifically flagged
-  while reading the design doc: rejected/capped candidates never had
-  `score` computed (stayed at the dataclass default 0.0), which would have
-  made any later score-vs-return correlation check meaningless — score is
-  now computed for every candidate that gets far enough to have the data
-  for it (gap-aware "full" once a brief is built, "partial_no_gap"
-  otherwise, tagged via `score_version`). Separately found and fixed a
-  live blocker while smoke-testing: `hawkeye --help` (and any command
-  printing an em dash or emoji) crashed with `UnicodeEncodeError` on
-  Windows — `sys.stdout`/`stderr` default to the system codepage (cp932),
-  same bug class as commit 01152f2's file-I/O version, just for console
-  streams. Fixed by reconfiguring both to UTF-8 at the top of `main()`.
-  91/91 offline tests green.
-
-- **2026-07-28(b)** Follow-up to the same-day review below: worked through
-  the leftover findings that were only summarized (not saved verbatim —
-  the transcript that produced the full 21-item architecture list and
-  doc-vs-code drift catalog had already ended, so only this log's summary
-  survived). Fixed two concrete, scoped bugs directly (no design decision
-  needed — both restore an already-documented invariant rather than change
-  behavior): (1) `casefile.list_cases()` silently skipped unreadable case
-  files (`except Exception: continue`); now prints a warning to stderr with
-  the file path before skipping, so a corrupted case doesn't just quietly
-  vanish from `hawkeye case list`. (2) `Ledger.append_event()`'s
-  read-prev-hash-then-insert was two separate statements with no shared
-  transaction; two processes appending concurrently could both read the
-  same `prev_hash` and each insert a row claiming it, corrupting the hash
-  chain in a way `verify_chain()` can only detect after the fact, never
-  undo. Fixed with an explicit `BEGIN IMMEDIATE` transaction around the
-  read+insert (plus `PRAGMA busy_timeout=5000` so a second writer waits
-  instead of erroring). New regression test spawns 6 threads × 15 events
-  each against one SQLite file and asserts the chain still verifies.
-  Two further findings were architecture-level and taken to the user per
-  the governance rule above instead of being fixed unilaterally: (a)
-  portfolio-cap (`max_positions`) is checked in `build_position_plan()`
-  against an `open_position_count` snapshotted once when a case opens, not
-  re-checked when the position is actually entered — concurrent evaluations
-  could each see "one slot free" and jointly exceed the cap once both are
-  manually entered. User's call: leave as-is — invariant 5 (no autonomous
-  trading, user always executes) makes `hawkeye positions` a sufficient
-  manual backstop; not worth a fail-closed recheck at `record-entry` time.
-  (b) Session-mode role separation (`write_package()`) is code-enforced only
-  for *what's written into each role's input file* — nothing stops the
-  orchestrating Claude Code session itself (which has full filesystem
-  access to the case directory) from reading another role's raw output
-  before spawning the next subagent; the real boundary is the SKILL.md
-  instruction not to. User's call: this can't be fixed within the
-  architecture (a subagent always inherits its parent session's access), so
-  disclose it honestly rather than pretend otherwise — documented in
-  `docs/MASTER_OVERVIEW.ja.md` §4, `docs/ARCHITECTURE.md`, and invariant 4
-  above. 81/81 offline tests green (79 prior + 2 new; `test_llm_auth.py`
-  still excluded, pre-existing unrelated collection failure, still
-  out of scope). The remaining ~19 architecture findings and the
-  doc-vs-code drift catalog from the original 2026-07-28 review are still
-  unrecovered (never saved outside that ended conversation) — if a future
-  session needs them, they must be re-derived by re-running a review, not
-  looked up.
-
-- **2026-07-28** User asked for an architecture/design/code review to
-  confirm the system can actually deliver on its stated goal. Ran 4
-  independent parallel reviews (doc-vs-code consistency, architecture
-  soundness, python code quality, adversarial investment-methodology
-  audit). Two CRITICAL findings were reached independently by multiple
-  reviewers with no shared context — treated as high-confidence, not
-  coincidence:
-  (1) `_judge_rule_check` enforced "severe attack addressed" via a
-  60-character substring match against `attack_statement`, not semantic
-  content. A judge that paraphrases (any real LLM) fails this check even
-  after genuinely refuting the attack, silently overturning a correct BUY
-  to PASS with an authoritative-looking "[RULE ENFORCEMENT]" note. This is
-  the likely real cause of the 2026-07-14 "3/3 candidates PASSed via rule
-  enforcement" result — previously read as a healthy outcome, now suspect.
-  **Fixed**: `Attack` gets a stable, content-hashed `id`
-  (`_content_id()`, sha256 of category+statement+evidence — deterministic,
-  not random, so two independent parses of the same raw dict agree); the
-  Judge must now cite `attack_id` in `addressed[]`; `_judge_rule_check`
-  matches by id-set membership. Both API and session drivers render an
-  ID-tagged, already-parsed attack view to the Judge instead of the
-  Adversary's raw JSON. Regression tests added proving a paraphrased
-  statement with the right id still counts, and a wrong/missing id still
-  overturns BUY. Old ledger rows keep loading (`attack_id` defaults to
-  `""`), unaffected since Recommendation payloads are immutable.
-  (2) An unverified hard entry gate (e.g. missing market cap from a
-  Finnhub free-tier gap) returned `passed=True, unverified=True` and was
-  never counted as a hard failure — contradicting invariant 6 in spirit
-  (labeled unverified, but not blocking). Investment risk: an illiquid or
-  micro-cap candidate could reach the LLM tribunal and get a real BUY with
-  no way to exit cleanly at the pre-registered stop. **Fixed (fail-closed,
-  user's explicit choice over a soft unverified-count threshold)**:
-  `GateReport.hard_failures` now includes unverified hard gates. Also
-  exposed a latent bug in the shared test fixture `make_bars()` (stopped
-  ~30 days short of `end` for n=300, masked until now by the old
-  silent-pass gate behavior) — fixed to anchor exactly on `end`.
-  Separately, the methodology audit found the *already-shipped*
-  `hawkeye benchmark` cohort comparison — the actual Phase 0 kill-criterion
-  measurement — had the same two failure modes `docs/MASTER_OVERVIEW.ja.md`
-  §5.1 warns about for the *proposed* future feature: manual `evaluate`
-  picks were never filtered out of viability stats despite
-  `strategy/ROADMAP.md` requiring it, and any ticker whose price history fetch
-  failed (delisted/acquired/API outage) was silently dropped rather than
-  flagged — survivorship bias, since failed-fetch tickers are
-  disproportionately the worst performers. **Fixed**: new
-  `hawkeye/scout/benchmark.py::collect_samples()`; `hawkeye benchmark`
-  defaults to `--source scout` and reports per-cohort censored counts with
-  an explicit survivorship-bias warning instead of a silent skip count.
-  Full test suite: 79/79 green (one pre-existing, unrelated collection
-  failure in `tests/test_llm_auth.py` — imports a function that doesn't
-  exist in `hawkeye/tribunal/llm.py` — left unfixed, out of scope). The
-  remaining review findings (doc-vs-code drift: a few factual inaccuracies
-  in ARCHITECTURE.md/MASTER_OVERVIEW.ja.md; ~19 further architecture
-  findings from portfolio-cap-not-enforced-across-concurrent-evaluations to
-  ledger hash-chain race conditions to session-mode role separation being
-  prose-enforced rather than code-enforced; code-quality HIGH findings
-  around ledger concurrent-write races and silent case-file-read failures)
-  were reported but not acted on this session — not yet triaged into this
-  log or the backlog.
-- **2026-07-14(c)** User asked for a "50%必達" strategy/tactics audit against
-  `MASTER_OVERVIEW.ja.md`. Verdict: current design is a strong bias-removal
-  experiment but the return math doesn't close — modeled ceiling ~+47%/yr
-  under aggressive assumptions (p=0.55, 8 slots fully turning), realistic
-  case ~+13.5%/yr once occupancy (~70%) and profit-taking-at-target (no
-  trailing/runner logic, avg realized ~1.3R not 2R+) are modeled. Missing
-  levers identified: trade-count (single detector = zero candidates in
-  earnings off-season), right-tail capture (target hit = review, not
-  partial-exit-and-trail), and a pre-registered path to raise risk_pct
-  (currently ~1/43 of full Kelly at p=0.55/2:1 payout — literal numbers
-  belong to the reader's own priors, not a forecast). Also flagged missing
-  defenses: no portfolio-level drawdown circuit breaker, no regime filter,
-  no sector-concentration cap. Wrote `strategy/STRATEGY_BACKLOG.ja.md`: full
-  review + 12-item backlog (BL-01..12) tiered by cost/measurement-impact
-  and sequenced against current dev state (Phase 0 has 0 open positions,
-  3 evaluated candidates — cheapest possible time to make small
-  risk-officer logic changes before cohort samples accumulate). Explicitly
-  preserved the existing Phase-0 kill-criterion discipline: detector
-  diversification and primary-source deep-reading (the two biggest
-  offense levers) stay gated behind the 50-evaluated-candidates checkpoint
-  already in ROADMAP.md — this audit does not override that. Nothing in
-  the backlog has been implemented; awaiting user go-ahead per tier.
-- **2026-07-14(b)** User flagged that development had proceeded feature-by-
-  feature with no single presentation of the full picture (To-Be
-  architecture, As-Is gap, investment principle, data model, user
-  workflows) — described feeling unable to oversee direction. Wrote
-  `docs/MASTER_OVERVIEW.ja.md`: requirements recap, honest explanation of
-  *why* the design should improve returns (bias removal via role
-  separation, asymmetric R:R enforcement, EV hurdle separating "good
-  story" from "good trade", mechanical candidate sourcing, calibration/
-  skill-vs-luck as the real compounding edge — explicitly framed as "a
-  system that promises a guaranteed return is a red flag, not a feature"),
-  full To-Be vs As-Is gap table, ER diagram, two sequence diagrams, and
-  per-task user workflows (candidate selection / holding / post-sale /
-  system improvement / retrospective). Published as an artifact too.
-  Added the governance rule above per the user's explicit request.
-- **2026-07-14** First real (non-synthetic) session-mode run: 3/3 scouted
-  candidates PASSed, all via Judge rule enforcement (unaddressed severity-5
-  attacks / sucker-test failures) — a healthy outcome, but user correctly
-  flagged that Bull/Adversary were arguing over news headlines+summaries
-  only, with no structured fundamentals. Risk: can't distinguish "process
-  correctly rejecting weak setups" from "process structurally incapable of
-  ever producing BUY because inputs are too thin" — exactly the H1/H2
-  ambiguity the Phase 0 kill criterion exists to catch. Response:
-  (1) wired scout's computed eps/revenue surprise into MarketSnapshot as
-  structured fields (previously only in catalyst.description prose);
-  (2) added InsiderActivity (net open-market buy/sell, Finnhub
-  insider-transactions) and AnalystTrend (recommendation counts,
-  Finnhub recommendation) to CandidateBrief, wired via duck-typed
-  provider.insider_activity()/analyst_trend() (optional — Yahoo-only
-  providers degrade to None, never raise); both may require a paid
-  Finnhub tier, undocumented which — code treats absence as unverified,
-  not "no activity". Prompts updated to cite these fields and to trust
-  structured surprise numbers over prose-implied ones. (3) Added
-  `hawkeye review-passes` — individual postmortem flagging PASSed/declined
-  tickers that moved >= threshold afterward, distinct from `benchmark`'s
-  aggregate cohort stats; a big rally on a PASSed name is a signal the
-  PASS call may have been wrong (or new info emerged after — check
-  `hawkeye show` before concluding either way). 14 new tests (72 total).
-- **2026-07-13(b)** Session mode: user runs Hawkeye inside Claude Code on
-  subscription (no metered API key). Added `casefile` (case open/step/submit
-  CLI) + `/hawkeye-run` skill; API and session drivers share
-  `assemble_recommendation()` so records are identical and comparable
-  (`model` field distinguishes engines). Scout's earnings-only coverage gap
-  acknowledged: off-season quiet is BY DESIGN for Phase 0 (no catalyst = no
-  trade); additional detectors (insider clusters, news triage — cheap in
-  session mode) queued behind the Phase 0 viability verdict.
-- **2026-07-13** Reprioritized on user direction: the full funnel (scout →
-  tribunal → monitor → attribution) must be validated BEFORE any automation.
-  Added `scout` (Finnhub earnings-calendar surprise screen → gates → ranked
-  shortlist, funnel counts persisted in `scans`) and `benchmark` (forward
-  returns of BUY vs tribunal-PASS vs gate-reject cohorts — the Phase 0
-  viability metric; BUYs must beat the reject pile). ROADMAP.md rewritten
-  with measurable phase gates + a project-level kill criterion. Manual
-  `evaluate` candidates stay a separate cohort (catalyst.source) so human
-  picks never contaminate system-validation stats.
-- **2026-07-12** Initial build: contracts, gates, tribunal (Bull/Adversary/
-  Judge with rule enforcement), risk officer, hash-chained ledger,
-  sentinel, JA reports, CLI, 44 offline tests. Doctrine v1: risk 0.75%/pos,
-  RR≥2, EV≥5%, time stop 45d, thesis-accuracy threshold 0.6.
+- **To resume work** — `~/.claude/session-data/<date>-<id>-session.tmp`,
+  written by `/ecc:save-session` and read by `/ecc:resume-session`. Local to
+  the machine, not in git, shared by every project on it. It carries
+  operational state: what worked, what failed and why, the exact next step.
+- **Lessons that outlive a session** — `docs/knowledge/` (see Layout above).
+  Git-tracked, read on the trigger its README states. Anything from a session
+  that still matters a month later belongs there, not in a log.
+- **The old hand-off entries (2026-07-12 .. 2026-08-03)** — moved verbatim to
+  `docs/knowledge/HANDOFF_ARCHIVE.ja.md`. Nothing was discarded; it simply
+  stopped being loaded into every session, where it had grown to 77% of this
+  file.

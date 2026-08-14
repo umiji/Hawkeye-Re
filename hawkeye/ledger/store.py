@@ -340,7 +340,7 @@ class Ledger:
 
     def last_scan_at(self) -> Optional[datetime]:
         """When the most recent scan ran — the anchor for the next scan's
-        lookback window (docs/MASTER_OVERVIEW.ja.md §5.2(1))."""
+        lookback window (docs/design/MASTER_OVERVIEW.ja.md §5.2(1))."""
         row = self._conn.execute(
             "SELECT ts FROM scans ORDER BY id DESC LIMIT 1").fetchone()
         if not row:
@@ -362,11 +362,19 @@ class Ledger:
         going blind because one old row predates a model change would
         silently re-evaluate candidates, which is worse than the parse
         error it would otherwise raise.
+
+        `actual_pending` is the one drop stage that does NOT count as seen.
+        Those rows say the print's own numbers had not arrived and it was
+        never judged, so counting them would close the door the hold exists
+        to keep open — the print would be recorded as pending once and never
+        read again (hawkeye/scout/waiting.py). Every other stage, including
+        `actual_timeout`, is a decision that was actually taken.
         """
         out: set[tuple[str, date]] = set()
         queries = (
             "SELECT json_extract(payload, '$.ticker'),"
-            " json_extract(payload, '$.event_date') FROM screened_candidates",
+            " json_extract(payload, '$.event_date') FROM screened_candidates"
+            " WHERE stage != 'actual_pending'",
             "SELECT json_extract(payload, '$.ticker'),"
             " json_extract(payload, '$.brief.catalyst.event_date')"
             " FROM recommendations",
@@ -381,6 +389,28 @@ class Ledger:
                     continue
         return out
 
+    def scan(self, scan_id: Optional[int] = None) -> Optional[dict]:
+        """One scan, newest by default, WITH its id.
+
+        `list_scans()` drops the id, which is the key every dropped candidate
+        of that run is filed under — so the scan report, which has to join the
+        two, cannot be built from it.
+        """
+        q = ("SELECT id, ts, params, scanned, screened, enriched, gate_passed,"
+             " tickers FROM scans")
+        args: list[Any] = []
+        if scan_id is None:
+            q += " ORDER BY id DESC LIMIT 1"
+        else:
+            q += " WHERE id = ?"
+            args.append(scan_id)
+        row = self._conn.execute(q, args).fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "ts": row[1], "params": json.loads(row[2]),
+                "scanned": row[3], "screened": row[4], "enriched": row[5],
+                "gate_passed": row[6], "tickers": json.loads(row[7])}
+
     def list_scans(self) -> list[dict]:
         return [
             {"ts": r[0], "params": json.loads(r[1]), "scanned": r[2],
@@ -391,7 +421,7 @@ class Ledger:
                 " tickers FROM scans ORDER BY id").fetchall()
         ]
 
-    # -- screened-but-dropped candidates (docs/MASTER_OVERVIEW.ja.md §5.1) ---
+    # -- screened-but-dropped candidates (docs/design/MASTER_OVERVIEW.ja.md §5.1) ---
 
     def record_screened_candidates(self, scan_id: int,
                                    candidates: list[ScreenedCandidate]) -> None:
@@ -437,7 +467,7 @@ class Ledger:
                        for r in self._conn.execute(q, args).fetchall()),
                       key=lambda c: _instant(c.recorded_at))
 
-    # -- drop-candidate reviews (docs/MASTER_OVERVIEW.ja.md §5.2(3)) ---------
+    # -- drop-candidate reviews (docs/design/MASTER_OVERVIEW.ja.md §5.2(3)) ---------
 
     def record_drop_reviews(self, reviews: list[DropReview]) -> str:
         """Persist a batch of scored/investigated drops; returns the batch id.

@@ -9,13 +9,26 @@ never a silent pass.
 | Daily OHLCV (1y) | Yahoo Finance | `query1.finance.yahoo.com/v8/finance/chart/{t}` | none |
 | News (fallback) | Yahoo Finance | `/v1/finance/search` | none |
 | Company profile, market cap, sector | Finnhub | `/stock/profile2` | `FINNHUB_API_KEY` (free) |
-| Company news (14d) | Finnhub | `/company-news` | 〃 |
+| Company news (window anchored on the catalyst: `news_lead_days`=3 before, up to `news_max_items`=25 kept) | Finnhub | `/company-news` | 〃 |
+| Earnings calendar — WHO reports and WHEN (the scan's whole universe) | Finnhub | `/calendar/earnings` | 〃 |
+| **Earnings numbers** — EPS and revenue, actual AND consensus, plus guidance prose and announcement time | **EarningsWhispers** | `earningswhispers.com/api/epsdetails/{t}` | none |
+| Consensus pre-registration (distribution and analyst count — the only source for either) | Yahoo via yfinance | `earnings_estimate` / `revenue_estimate` | none |
+| Ticker → SEC registrant number (CIK), company name | EDGAR | `company_tickers.json` | none |
 | Next earnings date | Finnhub | `/calendar/earnings` | 〃 |
 | Insider open-market buy/sell (net, 90d) | Finnhub | `/stock/insider-transactions` | 〃 (may require a paid tier — degrades to `None`, never a silent zero) |
 | Analyst recommendation trend (latest vs. prior period) | Finnhub | `/stock/recommendation` | 〃 (same caveat) |
 
-Composite policy: Yahoo for prices always; Finnhub for profile/news/earnings
-when a key is present, Yahoo news otherwise.
+Composite policy: Yahoo for prices always; Finnhub for profile, news and the
+earnings CALENDAR when a key is present, Yahoo news otherwise.
+
+⚠️ **The earnings calendar and the earnings NUMBERS are different needs with
+different sources.** Finnhub says who reports and when; EarningsWhispers
+supplies the figures a print is ranked on. One print stands on ONE vendor —
+its actual and the consensus it is measured against always come from the same
+place, because the feed's consensus is an adjusted-basis figure while the
+calendar's actual may be GAAP, and a ratio built from one of each means
+nothing (`hawkeye/scout/numbers.py`). When the feed cannot answer, the WHOLE
+print falls back to the calendar rather than half of it.
 
 Derived indicators (computed locally in `marketdata/snapshot.py`, unit-tested):
 20-day average dollar volume · 14-day ATR as % of price · event-day
@@ -29,7 +42,8 @@ Manual overrides: every snapshot field can be overridden from the CLI
 ## Dossier contents (what Bull/Adversary actually see)
 
 `CandidateBrief` — the only thing the tribunal reads — carries: the
-catalyst description, up to 10 news items (headline + source + summary),
+catalyst description, up to `news_max_items` (25) news items nearest the
+catalyst (headline + source + summary),
 the quantitative snapshot (price/liquidity/volatility/event-reaction
 numbers, and structured `eps_surprise_pct`/`revenue_surprise_pct` when the
 candidate came from scout), and — when a Finnhub tier supports them —

@@ -175,7 +175,7 @@ class GateReport(BaseModel):
         # Fail closed: an unverified hard gate is data we don't have, not
         # data that cleared the bar. Letting it through would silently trade
         # away the liquidity/size/freshness floor the hard gate exists to
-        # enforce (see docs/MASTER_OVERVIEW.ja.md, "入口ゲート「未検証」の
+        # enforce (see docs/design/MASTER_OVERVIEW.ja.md, "入口ゲート「未検証」の
         # 実質素通り" fix, 2026-07-28).
         return [r for r in self.results if r.hard and (not r.passed or r.unverified)]
 
@@ -191,7 +191,7 @@ class GateReport(BaseModel):
 
 # ---------------------------------------------------------------------------
 # Screened-but-dropped candidates (missed-candidate tracking,
-# docs/MASTER_OVERVIEW.ja.md §5.1) — every candidate the scout funnel drops
+# docs/design/MASTER_OVERVIEW.ja.md §5.1) — every candidate the scout funnel drops
 # past the surprise screen, recorded at drop time so the Phase-0 "BUY beats
 # reject pile" comparison isn't limited to only the final tribunal-PASS
 # stage. Recording at drop time (not re-fetching prices later) avoids
@@ -200,9 +200,39 @@ class GateReport(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ScreenedCandidateStage(str, Enum):
+    # Held: the print's own numbers have not arrived, so it was never judged.
+    # One row per scan, and the ONLY stage the dedup lets through — a pending
+    # row must not stop the next scan reading the print again
+    # (hawkeye/scout/waiting.py).
+    ACTUAL_PENDING = "actual_pending"
+    ACTUAL_TIMEOUT = "actual_timeout"    # held past the window, given up on
     ENRICHMENT_CAP = "enrichment_cap"    # sorted below scout_max_enrich, never enriched
     GATE_REJECT = "gate_reject"          # enriched (or enrichment itself failed), then rejected
     RANKING_CUTOFF = "ranking_cutoff"    # gate-passed, but outside this run's tribunal slot count
+
+
+class ScoreBreakdown(BaseModel):
+    """The ranking score split into the five things that can earn it.
+
+    Stored because the user is shown the ranking and asked to accept it: a
+    number with no derivation is a number they can only take on trust. The
+    parts are the arithmetic itself (hawkeye/scout/earnings.py `score_parts`
+    plus the guidance and whisper terms in `assess_earnings`), not a
+    reconstruction — a reconstruction would drift from the real formula the
+    first time a weight changed.
+
+    News, insider activity and analyst revisions are deliberately absent:
+    they are handed to the tribunal as material and score nothing.
+    """
+    eps: float = 0.0
+    revenue: float = 0.0
+    gap: float = 0.0        # the event-day price move
+    guidance: float = 0.0
+    whisper: float = 0.0
+
+    @property
+    def total(self) -> float:
+        return self.eps + self.revenue + self.gap + self.guidance + self.whisper
 
 
 class ScreenedCandidate(BaseModel):
@@ -221,16 +251,30 @@ class ScreenedCandidate(BaseModel):
     eps_surprise_trusted: bool = True
     revenue_surprise_trusted: bool = True
     conflicting_estimates: bool = False
-    # Which source supplied the EPS figures — "calendar" (Finnhub) or
-    # "yahoo" (added 2026-08-02) — and what the calendar had read when Yahoo
+    # Which vendor supplied BOTH figures the surprise above was computed from
+    # — "calendar" (the Finnhub earnings calendar) or "whispers"
+    # (EarningsWhispers) — and what the calendar had read when the feed
     # replaced it. Both are needed to answer two different later questions:
-    # "was this decision made on verified numbers?" and "how often do the
-    # two sources actually disagree?". Optional so records written before
+    # "which vendor's yardstick was this decision made on?" and "how often do
+    # the two vendors actually disagree?". Optional so records written before
     # the split still load (invariant 1).
-    eps_source: str = "calendar"
+    numbers_source: str = "calendar"
+    # WHY the earnings feed's figures are not the ones above, when it was
+    # asked. Empty means either "the feed supplied them" or "nobody asked",
+    # which `numbers_source` tells apart. Recorded per ticker because the
+    # aggregate counts on the scan cannot answer the question that matters
+    # later: "which NAMES are we persistently unable to read, and is the
+    # reason a property of the company or of one bad afternoon?"
+    numbers_reason: str = ""
     calendar_eps_surprise_pct: Optional[float] = None
     score: float
     score_version: str            # "full" (gap-aware) or "partial_no_gap"
+    # What earned `score`, when the three-leg reading produced it. None means
+    # the row predates this field or the funnel ran without a stock store —
+    # in both cases the score exists but its derivation was never written
+    # down, and the report says so rather than printing five zeros
+    # (invariant 1: old records must still load unchanged).
+    score_breakdown: Optional[ScoreBreakdown] = None
     price: Optional[float] = None
     price_asof: Optional[date] = None
     stage: ScreenedCandidateStage
@@ -240,7 +284,7 @@ class ScreenedCandidate(BaseModel):
     # What was visible at drop time. Enrichment already fetched these, and
     # they were then discarded for every dropped candidate — so a later drop
     # review had no way to reconstruct the qualitative picture the decision
-    # was actually made against (docs/MASTER_OVERVIEW.ja.md §5.2(5)). Kept
+    # was actually made against (docs/design/MASTER_OVERVIEW.ja.md §5.2(5)). Kept
     # at no extra API cost. Empty for the enrichment_cap stage, which is
     # dropped before any of this is fetched — absence here means "never
     # looked", not "looked and found nothing".
@@ -250,7 +294,7 @@ class ScreenedCandidate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Drop-candidate review (docs/MASTER_OVERVIEW.ja.md §5.2(3))
+# Drop-candidate review (docs/design/MASTER_OVERVIEW.ja.md §5.2(3))
 # ---------------------------------------------------------------------------
 
 class MissCategory(str, Enum):

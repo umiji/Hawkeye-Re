@@ -1,6 +1,6 @@
 """Drop-candidate review — was the screen right to drop it?
 
-docs/MASTER_OVERVIEW.ja.md §5.2(3) (which supersedes the earlier, coarser
+docs/design/MASTER_OVERVIEW.ja.md §5.2(3) (which supersedes the earlier, coarser
 §5.1 [2] sketch). The ledger records every candidate the funnel dropped, but
 a record nobody scores teaches nothing. This module is the scoring half:
 measure each dropped candidate at two fixed checkpoints and attribute the
@@ -66,7 +66,16 @@ COHORTS: tuple[str, ...] = (
     "RANKING_CUTOFF",  # gate-passed, ranked below this run's tribunal slots
     "GATE_REJECT",     # rejected by an entry gate
     "ENRICHMENT_CAP",  # never enriched: sorted below scout_max_enrich
+    "ACTUAL_TIMEOUT",  # the print's own numbers never arrived; given up on
 )
+
+# `actual_pending` is deliberately absent, and is filtered out before a
+# candidate ever becomes a TrackedCandidate. It is not a drop: the print was
+# never judged, it is still open, and one row exists per look — so counting it
+# would both measure a decision nobody made and count one print many times.
+# `actual_timeout` IS counted: giving up because the data never came is a real
+# outcome, and "how often does that cost us a good name" is exactly the kind
+# of thing the drop review exists to measure.
 
 # Cohorts worth investigating one name at a time. Enrichment-cap drops are
 # deliberately excluded: their only recorded reason is "ranked 16th or lower
@@ -82,7 +91,18 @@ _STAGE_TO_COHORT = {
     ScreenedCandidateStage.ENRICHMENT_CAP: "ENRICHMENT_CAP",
     ScreenedCandidateStage.GATE_REJECT: "GATE_REJECT",
     ScreenedCandidateStage.RANKING_CUTOFF: "RANKING_CUTOFF",
+    ScreenedCandidateStage.ACTUAL_TIMEOUT: "ACTUAL_TIMEOUT",
 }
+
+
+def is_reviewable(c: ScreenedCandidate) -> bool:
+    """Whether this dropped row represents a decision worth measuring.
+
+    False for a print still being held: nothing was judged, the print is still
+    open, and there is one row per look. Both counting it as a drop and
+    counting it repeatedly would corrupt the tallies the screen is revised on.
+    """
+    return c.stage in _STAGE_TO_COHORT
 
 
 @dataclass(frozen=True)

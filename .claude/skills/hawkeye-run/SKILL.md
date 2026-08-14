@@ -22,6 +22,11 @@ investment case yourself**. All user-facing conversation is in Japanese.
    argue strictly from the provided dossier, same as API mode.
 4. Never bypass `hawkeye case submit` — it is where validation, judge-rule
    enforcement, the risk-officer veto, and ledger recording happen.
+5. **The same two rules bind the guidance extraction** (step 2b), which is
+   an agent step OUTSIDE the tribunal. You never write its JSON, and it
+   never sees the consensus its reading will be measured against. Its reply
+   goes through `hawkeye guidance submit`, which is where the quote is
+   checked against the source text — the only hallucination check there is.
 
 ## Procedure
 
@@ -49,19 +54,106 @@ them instead of opening new ones.
 
 - If `FINNHUB_API_KEY` is set:
   ```bash
-  hawkeye scout --open-cases 3
+  hawkeye scout
   ```
-  This scans recent earnings surprises, applies gates, and opens session
-  cases for the top candidates (funnel counts are recorded automatically).
-- If not set: tell the user scout needs a free Finnhub key, and ask them for
-  a ticker + catalyst instead, then:
+  This scans recent earnings surprises and applies the entry gates. It does
+  **not** score, rank, or record anything yet — nothing inside a scan
+  process can call an agent, so the guidance leg every candidate is judged
+  on is always unread at this point. `hawkeye rank` (step 2c below) is what
+  scores and records the scan, once that leg can actually be known.
+
+### 2b. Read the guidance the scan could not
+
+The scan writes down each company's forward statement and stops; nothing
+inside it can call you. Work the queue until it is empty:
+
+```bash
+hawkeye guidance queue                       # what is waiting
+hawkeye guidance queue --case-id <id>        # ONE package
+```
+
+For each case, **spawn a fresh subagent** and give it the package text
+verbatim. Its whole job is to copy one range out of one sentence. It must
+answer with JSON in exactly this shape, and **you must not edit its
+answer** — the CLI is what validates it:
+
+```json
+{"guided": true, "period": "FY2026",
+ "eps_low": null, "eps_high": null,
+ "revenue_low": 2.60, "revenue_high": 2.70, "revenue_unit": "billion",
+ "open_ended": false, "qualifier": "excluding its barge business",
+ "quote": "2026 revenue of $2.60 billion to $2.70 billion"}
+```
+
+Write the reply to a file and submit it:
+
+```bash
+hawkeye guidance submit <case_id> --file <reply.json> --reader <model>
+```
+
+The submit prints the quarter's three legs again, because the guidance leg
+is the only one that can still move at this point.
+
+**One subagent per case, and it sees only the package.** It must never be
+shown the consensus figure its reading will be measured against — an
+extractor that can see the bar it is about to clear has stopped
+extracting. `hawkeye guidance queue` already withholds it; do not add it.
+
+A refused reading is a normal outcome and is recorded by name. Do not
+retry it by rewording the request, and never write the JSON yourself.
+
+If scout passes zero candidates, report the funnel numbers honestly and
+stop: **no catalyst means no trade — do not go hunting for one.**
+
+### 2c. Score and record the scan, once the queue is empty
+
+```bash
+hawkeye rank
+```
+
+This is the step that actually decides the shortlist: it re-scores every
+candidate against the guidance step 2b just attached (a candidate that
+published no outlook still scores zero on that leg — that is normal, not
+"still unread"), sorts, and records the scan and its 15/3-slot cutoff to the
+ledger. Nothing before this point is recorded, so running `hawkeye scout`
+again before `hawkeye rank` refuses — finish this step first.
+
+### 2d. Show the user the scan report, and WAIT
+
+```bash
+hawkeye report scan
+```
+
+It prints the report and always writes the full table to
+`var/reports/scan-<id>.csv` — tell the user that path, since the screen omits
+the names the earnings feed was never asked about and the file does not.
+
+**Paste its entire output into the conversation for the user to read**, then
+stop and ask whether to proceed. Do not summarise it, do not reorder it, and
+do not open a single case until the user has answered.
+
+This is the one point in the run where the user sees what the machine
+decided and can disagree before any argument is built on it: which names are
+about to be argued over, what earned each one its score, what else is being
+handed to the tribunal about them, and what could not be retrieved. The user
+runs `/hawkeye-run` and nothing else — a document they are not shown is a
+document that does not exist.
+
+If they say to continue, go to step 2e. If they name a different candidate or
+tell you to stop, do that instead.
+
+### 2e. Open one case per name the user approved
+
+```bash
+hawkeye case open TICKER --from-earnings --nav <nav>
+```
+for each of the top candidates the scan ranked.
+- If `FINNHUB_API_KEY` is not set: tell the user scout needs a free Finnhub
+  key, and ask them for a ticker + catalyst instead, then:
   ```bash
   hawkeye case open TICKER --catalyst <type> --description "<facts>" --event-date YYYY-MM-DD --nav <nav>
   ```
   (Manual candidates are recorded as a separate cohort — mention this.)
-
-If scout passes zero candidates, report the funnel numbers honestly and
-stop: **no catalyst means no trade — do not go hunting for one.**
 
 ### 3. Drive each case through the tribunal
 

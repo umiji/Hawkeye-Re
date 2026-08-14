@@ -1,4 +1,4 @@
-"""Persistence for drop-candidate reviews (docs/MASTER_OVERVIEW.ja.md §5.2(3)).
+"""Persistence for drop-candidate reviews (docs/design/MASTER_OVERVIEW.ja.md §5.2(3)).
 
 The measurement half (`hawkeye/scout/drop_review.py`) recomputes alpha and z
 on every run and throws them away. That is fine for a report and useless for

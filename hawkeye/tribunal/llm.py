@@ -15,6 +15,27 @@ class LLMError(RuntimeError):
     pass
 
 
+def resolve_client_kwargs(env: dict[str, str]) -> dict:
+    """Map credential env vars to ``anthropic.Anthropic()`` kwargs.
+
+    ``ANTHROPIC_API_KEY`` takes precedence — an empty dict defers entirely to
+    the SDK's own resolution chain. Otherwise an explicit bearer token
+    (``ANTHROPIC_AUTH_TOKEN``, or failing that ``CLAUDE_CODE_OAUTH_TOKEN`` —
+    the token a Claude Code subscription hands out) is passed through as
+    ``auth_token``. Claude Code's OAuth-shaped tokens (``sk-ant-oat...``)
+    additionally need the ``oauth-2025-04-20`` beta header to authenticate.
+    """
+    if env.get("ANTHROPIC_API_KEY"):
+        return {}
+    token = env.get("ANTHROPIC_AUTH_TOKEN") or env.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if not token:
+        return {}
+    kwargs: dict = {"auth_token": token}
+    if token.startswith("sk-ant-oat"):
+        kwargs["default_headers"] = {"anthropic-beta": "oauth-2025-04-20"}
+    return kwargs
+
+
 @runtime_checkable
 class LLMClient(Protocol):
     def complete_json(self, system: str, user: str, schema: dict,
@@ -30,9 +51,18 @@ class AnthropicLLM:
             raise LLMError(
                 "anthropic SDK not installed — run: pip install 'hawkeye[llm]'"
             ) from exc
-        # Anthropic() resolves credentials from ANTHROPIC_API_KEY,
-        # ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile.
-        self._client = anthropic.Anthropic()
+        # Anthropic() resolves credentials from ANTHROPIC_API_KEY or
+        # ANTHROPIC_AUTH_TOKEN on its own; resolve_client_kwargs() adds a
+        # Claude Code subscription's CLAUDE_CODE_OAUTH_TOKEN as a fallback,
+        # with the beta header that token shape requires.
+        try:
+            self._client = anthropic.Anthropic(**resolve_client_kwargs(os.environ))
+        except TypeError as exc:
+            raise LLMError(
+                "no Anthropic credentials found — set ANTHROPIC_API_KEY, "
+                "ANTHROPIC_AUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN "
+                "(run `claude setup-token` to generate one)"
+            ) from exc
         self.model = model or os.environ.get("HAWKEYE_MODEL", "claude-opus-4-8")
 
     def complete_json(self, system: str, user: str, schema: dict,

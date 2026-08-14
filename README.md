@@ -135,10 +135,10 @@ System design and development — what an engineer reads:
 
 | Doc | Contents |
 |---|---|
-| [docs/MASTER_OVERVIEW.ja.md](docs/MASTER_OVERVIEW.ja.md) | **起点はここから。** To-Be全体像・As-Is差分・投資原則・ER図・シーケンス・Userワークフロー(日本語) |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Service decomposition, contracts, data flow |
-| [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) | Free-tier data sources and degradation behavior |
-| [docs/USER_GUIDE.ja.md](docs/USER_GUIDE.ja.md) | 日本語ユーザーガイド(日々の運用手順) |
+| [docs/design/MASTER_OVERVIEW.ja.md](docs/design/MASTER_OVERVIEW.ja.md) | **起点はここから。** To-Be全体像・As-Is差分・投資原則・ER図・シーケンス・Userワークフロー(日本語) |
+| [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | Service decomposition, contracts, data flow |
+| [docs/design/DATA_SOURCES.md](docs/design/DATA_SOURCES.md) | Free-tier data sources and degradation behavior |
+| [docs/design/USER_GUIDE.ja.md](docs/design/USER_GUIDE.ja.md) | 日本語ユーザーガイド(日々の運用手順) |
 
 System documentation is English (token economy); all user-facing output —
 reports and the user guide — is Japanese.

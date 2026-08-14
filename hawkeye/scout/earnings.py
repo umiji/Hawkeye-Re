@@ -28,8 +28,10 @@ genuine surprise out of the scarce enrichment slots.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime
 from typing import NamedTuple, Optional
+
+from hawkeye.contracts.stocks import GuidanceReading, resolve_fiscal_quarter
 
 
 @dataclass(frozen=True)
@@ -41,21 +43,87 @@ class EarningsEvent:
     revenue_actual: Optional[float]
     revenue_estimate: Optional[float]
     conflicting_estimates: bool = False   # the calendar disagreed with itself
-    # Which source the EPS figures above came from: "calendar" (Finnhub) or
-    # "yahoo". Revenue is always the calendar's — see
-    # hawkeye/marketdata/yahoo_earnings.py for why only EPS crosses over.
-    eps_source: str = "calendar"
-    # The surprise as the source PUBLISHED it. Yahoo rounds the estimate it
-    # displays but computes the surprise from full precision, so recomputing
-    # from the two displayed numbers understates the beat (BJRI 2026-07-30:
-    # 0.90/0.94 displayed, +4.95% published, +4.44% if recomputed). When this
-    # is set it wins over any computation — that rule is enforced here rather
-    # than left to callers to remember.
+    # Which vendor ALL FOUR figures above came from: "calendar" (the Finnhub
+    # earnings calendar) or "whispers" (EarningsWhispers). One print stands on
+    # one vendor, both legs — a ratio whose actual and consensus come from
+    # different vendors compares an adjusted-basis estimate against a possibly
+    # GAAP actual (hawkeye/scout/numbers.py).
+    numbers_source: str = "calendar"
+    # Why the feed's figures are NOT the ones above, when it was asked. Empty
+    # means either "the feed supplied them" (numbers_source == "whispers") or
+    # "nobody asked" — which `numbers_source` tells apart. Named rather than
+    # boolean because "has not ingested this print yet" is worth waiting for
+    # and "could not reach the site" is not a fact about the company at all.
+    numbers_reason: str = ""
+    # The surprise as the source PUBLISHED it, when it published one on the
+    # same basis we measure on. Vendors compute from full precision while
+    # displaying a rounded estimate, so recomputing from the two displayed
+    # numbers understates the beat (BJRI 2026-07-30: 0.90/0.94 displayed,
+    # +4.95% published, +4.44% if recomputed). When this is set it wins over
+    # any computation — enforced here rather than left to callers to remember.
     eps_surprise_pct_reported: Optional[float] = None
-    # What the calendar read before verification replaced it. Kept so the
-    # disagreement rate between the two sources accumulates as data instead
-    # of being overwritten silently.
+    # What the calendar read before the feed's figures replaced it. Kept so
+    # the disagreement rate between the two sources accumulates as data
+    # instead of being overwritten silently.
     calendar_eps_surprise_pct: Optional[float] = None
+    # The calendar's own four figures, kept alongside the chosen pair rather
+    # than replaced by them (2026-08-02). How far the vendors disagree is a
+    # measurement this system takes, and it is impossible against a value that
+    # was overwritten.
+    calendar_eps_actual: Optional[float] = None
+    calendar_eps_estimate: Optional[float] = None
+    calendar_revenue_actual: Optional[float] = None
+    calendar_revenue_estimate: Optional[float] = None
+    # When the release actually crossed the wire, from the feed. The clock a
+    # 48-hour hold would run on is NOT this one (a held print is one the feed
+    # has not ingested, so its timestamp belongs to the previous quarter) —
+    # this is here for the record and for the report.
+    announced_at: Optional[datetime] = None
+    # The third leg, read deterministically off the same response that carried
+    # the numbers. `guidance_reason` names what could not be read, so a
+    # company that guided in an unhandled form is never indistinguishable from
+    # one that guided nothing (invariant 6).
+    guidance: Optional[GuidanceReading] = None
+    guidance_reason: str = ""
+    # The feed's summary prose, verbatim, carried because the guidance in it
+    # is read by an AGENT rather than by a pattern (task 8.7 layer 2) and the
+    # agent has to be given the sentence. Kept whole: cutting it down to "the
+    # guidance sentence" needs the reading the agent exists to produce, and a
+    # wrong cut is invisible — the agent would faithfully report a range out
+    # of whatever survived it.
+    summary: str = ""
+    # The analysts' FULL-YEAR figures, read from the same sentence that named
+    # the guidance above. They travel together because they only mean anything
+    # together: a full-year range judged against next quarter's consensus is
+    # the +348% ADM never guided, and judged against nothing at all it is
+    # recorded as a company that published no outlook. `full_year_period`
+    # is what lets the comparison refuse a yardstick from another year.
+    full_year_eps_estimate: Optional[float] = None
+    full_year_revenue_estimate: Optional[float] = None
+    full_year_period: str = ""
+    # The same thing one period down, for a company that guided the quarter
+    # rather than the year. It used to come from a separate Yahoo lookup taken
+    # at a different moment than the guidance it judges; it is in this
+    # response's own prose, so it now travels with it and costs no request.
+    next_quarter_eps_estimate: Optional[float] = None
+    next_quarter_revenue_estimate: Optional[float] = None
+    next_quarter_period: str = ""
+    # The source's own fiscal label (`2026-Q2`), when the calendar gave one.
+    # Preferred over the calendar quarter of the report date, which is wrong
+    # for any company whose fiscal year does not end in December.
+    fiscal_quarter: Optional[str] = None
+    # The feed's unofficial expectation for THIS print, carried so the ranking
+    # can pay a small bonus for clearing it (task 8). Only ever set from the
+    # feed's own response, so it is present exactly when `numbers_source` is
+    # the feed — a whisper beside a calendar actual would be two vendors in
+    # one comparison.
+    whisper: Optional[float] = None
+    # Every distinct EPS actual the calendar returned for this one print.
+    # AMZN's came back as 1.88 on one row and 1.97 on another; collapsing to
+    # the conservative row is right for ranking, but a print row holding only
+    # one of them would read as a clean single-source figure. Two values here
+    # means the source contradicts itself, and its actual is unusable.
+    all_eps_actuals: tuple[float, ...] = ()
 
 
 class ScreenedEvent(NamedTuple):
@@ -129,14 +197,29 @@ def _collapse_duplicates(events: list[EarningsEvent]) -> list[EarningsEvent]:
 
     collapsed: list[EarningsEvent] = []
     for group in grouped.values():
+        actuals = tuple(sorted({round(e.eps_actual, 6) for e in group
+                                if e.eps_actual is not None}))
         if len(group) == 1:
-            collapsed.append(group[0])
+            collapsed.append(replace(group[0], all_eps_actuals=actuals))
             continue
         readings = {round(s, 6) for s in map(eps_surprise_pct, group)
                     if s is not None}
         collapsed.append(replace(min(group, key=_conservative_first),
-                                 conflicting_estimates=len(readings) > 1))
+                                 conflicting_estimates=len(readings) > 1,
+                                 all_eps_actuals=actuals))
     return collapsed
+
+
+def _fiscal_quarter_label(row: dict) -> Optional[str]:
+    """`2026-Q2` from the calendar's own year/quarter fields, or None.
+
+    Decided by the shared resolver rather than formatted here, so this stays
+    one of the four bases in a single fixed order instead of a fourth private
+    rule (EW移行 §2). None rather than a guess: there is no fallback left for
+    the caller to reach for.
+    """
+    return resolve_fiscal_quarter(source_year=row.get("year"),
+                                  source_quarter=row.get("quarter")).label or None
 
 
 def parse_calendar(raw: list[dict]) -> list[EarningsEvent]:
@@ -156,8 +239,61 @@ def parse_calendar(raw: list[dict]) -> list[EarningsEvent]:
             eps_actual=row.get("epsActual"),
             eps_estimate=row.get("epsEstimate"),
             revenue_actual=row.get("revenueActual"),
-            revenue_estimate=row.get("revenueEstimate")))
+            revenue_estimate=row.get("revenueEstimate"),
+            fiscal_quarter=_fiscal_quarter_label(row)))
     return _collapse_duplicates(events)
+
+
+_EPS_POINT_CAP = 50.0
+_REVENUE_WEIGHT = 2.0
+_REVENUE_POINT_CAP = 20.0
+
+
+def eps_points(surprise: Optional[float]) -> float:
+    """Ranking points an EPS surprise is worth, capped both ways.
+
+    Symmetric by construction: a leg that missed subtracts what the same
+    magnitude of beat would have added. Without that, a miss scores like
+    missing data, and a name that beat hugely on EPS while missing on
+    revenue outranks one that beat on both — which is the opposite of the
+    reader's own definition of a good quarter.
+    """
+    if surprise is None:
+        return 0.0
+    return max(min(surprise, _EPS_POINT_CAP), -_EPS_POINT_CAP)
+
+
+def revenue_points(surprise: Optional[float]) -> float:
+    if surprise is None:
+        return 0.0
+    return max(min(surprise * _REVENUE_WEIGHT, _REVENUE_POINT_CAP),
+               -_REVENUE_POINT_CAP)
+
+
+def score_parts(eps_surprise: Optional[float],
+                revenue_surprise: Optional[float],
+                gap_on_event_pct: Optional[float]
+                ) -> tuple[float, float, float]:
+    """The same score as `score_candidate`, kept as (EPS, revenue, gap).
+
+    Split out so the report handed to the user can say WHICH of the three
+    earned the points. It is the one arithmetic, not a second copy of it —
+    `score_candidate` below is now the sum of exactly these parts, so a weight
+    that changes here cannot leave the displayed breakdown behind.
+    """
+    eps = eps_points(eps_surprise)
+    revenue = (revenue_points(revenue_surprise)
+               if revenue_surprise is not None and revenue_surprise > 0
+               else 0.0)
+    gap = 0.0
+    if gap_on_event_pct is not None:
+        if 2.0 <= gap_on_event_pct <= 15.0:
+            gap = 15.0
+        elif 0.0 <= gap_on_event_pct < 2.0:
+            gap = 5.0
+        elif gap_on_event_pct < 0.0 or gap_on_event_pct > 25.0:
+            gap = -10.0
+    return eps, revenue, gap
 
 
 def score_candidate(eps_surprise: Optional[float],
@@ -174,17 +310,8 @@ def score_candidate(eps_surprise: Optional[float],
     components are capped, so a number that is merely enormous cannot buy a
     ranking slot away from a genuine one.
     """
-    score = 0.0 if eps_surprise is None else min(eps_surprise, 50.0)
-    if revenue_surprise is not None and revenue_surprise > 0:
-        score += min(revenue_surprise * 2.0, 20.0)
-    if gap_on_event_pct is not None:
-        if 2.0 <= gap_on_event_pct <= 15.0:
-            score += 15.0
-        elif 0.0 <= gap_on_event_pct < 2.0:
-            score += 5.0
-        elif gap_on_event_pct < 0.0 or gap_on_event_pct > 25.0:
-            score -= 10.0
-    return round(score, 2)
+    return round(sum(score_parts(eps_surprise, revenue_surprise,
+                                 gap_on_event_pct)), 2)
 
 
 def _eps_trusted(event: EarningsEvent, min_abs_estimate: float) -> bool:

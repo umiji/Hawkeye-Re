@@ -41,7 +41,7 @@ from hawkeye.config import HawkeyeConfig
 from hawkeye.marketdata.finnhub import FinnhubProvider
 from hawkeye.marketdata.snapshot import event_stats
 from hawkeye.marketdata.yahoo import YahooProvider
-from hawkeye.marketdata.yahoo_earnings import YahooEarningsSource
+from hawkeye.marketdata.whispers import WhispersSource
 from hawkeye.scout.earnings import (
     EarningsEvent,
     ScreenedEvent,
@@ -50,7 +50,7 @@ from hawkeye.scout.earnings import (
     score_candidate,
     screen_events,
 )
-from hawkeye.scout.verify import verify_events
+from hawkeye.scout.numbers import read_numbers
 
 # Finnhub symbols are uppercase alphanumerics; dots and hyphens appear on
 # class shares (BRK.B, BF-B). Anything else is a typo or an injection
@@ -142,28 +142,22 @@ class _RecordingFinnhub(FinnhubProvider):
         return cal.get("earningsCalendar", []) if isinstance(cal, dict) else []
 
 
-class _RecordingYahooEarnings(YahooEarningsSource):
-    """The real Yahoo numbers source, keeping the rows it read.
+class _RecordingWhispers(WhispersSource):
+    """The real earnings feed, keeping the record it read.
 
-    Same rule as the Finnhub side: what the page shows must be the response
-    the code actually worked from, not a second fetch that might land
-    differently. yfinance has no HTTP chokepoint we can wrap, so the capture
-    point is one level up — the rows the source parsed out of the frame.
+    Same rule as the Finnhub side: what the page shows must be the answer the
+    code actually worked from, not a second fetch that might land differently.
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.raw_rows: list[dict] = []
-        self.fetched = False
 
-    def _rows(self, ticker: str):
-        rows = super()._rows(ticker)
-        if not self.fetched:
-            self.fetched = True
-            self.raw_rows = [{"Earnings Date": day.isoformat(),
-                              **{str(k): v for k, v in row.items()}}
-                             for day, row in rows]
-        return rows
+    def details(self, ticker: str):
+        record = super().details(ticker)
+        if record is not None:
+            self.raw_rows.append(jsonable(record))
+        return record
 
 
 # --- JSON rendering ---------------------------------------------------------
@@ -252,27 +246,48 @@ def _measurements(measured: ScreenedEvent, event: EarningsEvent,
                        if gap is not None else None)}
 
 
-def _yahoo_view(event: EarningsEvent, config: HawkeyeConfig, bars: list,
-                source) -> dict:
-    """The same print as Yahoo reports it, run through the same screen.
+# Why the feed declined, in the reader's words. Kept here rather than in
+# production because production stores the machine-readable reason and this
+# page is the only place a person reads it.
+_DECLINED_JA = {
+    "whispers_unreachable": "決算専門サイトに接続できなかった"
+                            "（会社についての事実ではない）",
+    "whispers_no_record": "決算専門サイトにこの銘柄のレコードが無い",
+    "whispers_previous_quarter": "決算専門サイトがまだ前期のレコードを返している"
+                                 "（今回の決算を取り込んでいない）",
+    "whispers_later_print": "決算専門サイトはより新しい決算を返した"
+                            "（カレンダーの日付が誤っている可能性）",
+    "whispers_announcement_time_missing": "決算専門サイトの発表時刻が空で、"
+                                          "同じ決算かどうか確認できない",
+    "whispers_eps_incomplete": "決算専門サイトにEPSの実績かコンセンサスが無い",
+    "whispers_revenue_incomplete": "決算専門サイトに売上の実績かコンセンサスが無い",
+}
 
-    The substitution itself is production's `verify_events`, not a copy of
-    it — a debug view that decides for itself what "verified" means would
-    stop explaining the engine and start competing with it.
+
+def _whispers_view(event: EarningsEvent, config: HawkeyeConfig, bars: list,
+                   source) -> dict:
+    """The same print as the earnings feed reports it, run through the same
+    screen.
+
+    The substitution itself is production's `read_numbers`, not a copy of
+    it — a debug view that decided for itself which vendor wins would stop
+    explaining the engine and start competing with it.
     """
     provisional = _screened(event, config, _NO_THRESHOLD, _NO_THRESHOLD)
-    verified, stats = verify_events([event], [provisional] if provisional else [],
-                                    source, limit=1)
-    if not stats.verified:
+    read, stats = read_numbers([event], [provisional] if provisional else [],
+                               source, limit=1,
+                               always=[(event.ticker, event.day)])
+    replaced = read[0]
+    if not stats.from_whispers:
         return {"verified": False,
-                "reason": "Yahooに該当する決算が見つからない（未報告、"
-                          "銘柄が無い、または取得に失敗）"}
-    replaced = verified[0]
+                "reason": _DECLINED_JA.get(
+                    replaced.numbers_reason,
+                    replaced.numbers_reason or "決算専門サイトを読んでいない")}
     measured = _screened(replaced, config, _NO_THRESHOLD, _NO_THRESHOLD)
     if measured is None:
         return {"verified": False,
-                "reason": "Yahooの値からサプライズ率を計算できない"}
-    view = {"verified": True, "eps_source": replaced.eps_source,
+                "reason": "決算専門サイトの値からサプライズ率を計算できない"}
+    view = {"verified": True, "numbers_source": replaced.numbers_source,
             **_measurements(measured, replaced, config, bars)}
     view["differs"] = sorted(
         k for k in ("eps_actual", "eps_estimate", "eps_surprise_pct",
@@ -328,7 +343,8 @@ def _print_view(rows: list[dict], event: Optional[EarningsEvent],
     view.update(parsed=True, event=event,
                 **_measurements(measured, event, config, bars))
     if numbers_source is not None:
-        view["yahoo"] = _yahoo_view(event, config, bars, numbers_source)
+        view["whispers"] = _whispers_view(event, config, bars,
+                                          numbers_source)
     return view
 
 
@@ -394,13 +410,14 @@ def _earnings_section(provider: _RecordingFinnhub, ticker: str,
         error = f"{type(exc).__name__}: {exc}"
     prints = build_prints(rows, config, bars, numbers_source)
     return Section(
-        id="earnings", title="決算カレンダー（Finnhub と Yahoo の読みを並べる）",
-        source="Finnhub /calendar/earnings + Yahoo (yfinance) earnings_dates",
+        id="earnings",
+        title="決算カレンダー（Finnhub と決算専門サイトの読みを並べる）",
+        source="Finnhub /calendar/earnings + earningswhispers /api/epsdetails",
         calls=_since(provider, mark), error=error,
         hawkeye={
             "window": {"from": start.isoformat(), "to": end.isoformat()},
             "raw_rows": len(rows),
-            "yahoo_rows": getattr(numbers_source, "raw_rows", []),
+            "whispers_rows": getattr(numbers_source, "raw_rows", []),
             "prints": prints,
             "thresholds": {
                 "min_eps_surprise_pct": config.scout_min_eps_surprise_pct,
@@ -412,14 +429,17 @@ def _earnings_section(provider: _RecordingFinnhub, ticker: str,
         note="スカウト本体は銘柄を指定せず日付範囲で全銘柄を取得する。ここは"
              "同じエンドポイントを1銘柄に絞っただけで、解釈は本番と同じ関数"
              "（parse_calendar / screen_events / score_candidate / "
-             "verify_events）が行う。2026-08-02以降、本番はEPSの実績と予想を"
-             "Yahooから取り直しており、この表はその置き換え前後を並べたもの。"
-             "サプライズ率はYahooが公表した値をそのまま使う（表示上の丸めた"
-             "予想値から計算すると値がずれるため）。なお銘柄を指定した場合、"
-             "Finnhubは from をどれだけ過去に置いても「直近1回の決算＋今後の"
-             "予定日」しか返さない（2026-08-01に実測）。Yahoo側は過去25回分"
-             "程度まで遡れるので、Finnhubに無い過去の決算はYahoo列だけが"
-             "埋まる。")
+             "read_numbers）が行う。2026-08-07以降、本番は順位付けに使う数値を"
+             "すべて決算専門サイト（EarningsWhispers）から取っており、この表は"
+             "その置き換え前後を並べたもの。⚠️ 1つの決算につき提供元は1つ — "
+             "実績とコンセンサスは必ず同じ提供元から取る。片方だけ差し替えると"
+             "「調整後の予想 vs GAAPの実績」という意味の無い率になるため。"
+             "サプライズ率は、提供元がコンセンサス基準で公表している場合のみ"
+             "その値をそのまま使う（表示上の丸めた予想値から計算すると値が"
+             "ずれるため）。ウィスパー数値を基準にした公表値は使わない。"
+             "なお銘柄を指定した場合、Finnhubは from をどれだけ過去に置いても"
+             "「直近1回の決算＋今後の予定日」しか返さない（2026-08-01に実測）。"
+             "決算専門サイトは最新の1決算しか返さない。")
 
 
 def _insider_section(provider: _RecordingFinnhub, ticker: str) -> Section:
@@ -500,9 +520,9 @@ def probe_ticker(ticker: str, *, config: Optional[HawkeyeConfig] = None,
     except Exception as exc:                  # noqa: BLE001 — report, never fail
         price_error = f"{type(exc).__name__}: {exc}"
 
-    numbers = _RecordingYahooEarnings()
+    numbers = _RecordingWhispers()
     earnings = _earnings_section(finnhub, symbol, config, bars, calendar_days,
-                                 numbers if numbers.available else None)
+                                 numbers)
     latest = _latest_print_date(earnings)
 
     sections = [

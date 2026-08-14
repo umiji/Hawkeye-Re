@@ -1,0 +1,20 @@
+{
+  "ticker": "ONON",
+  "company": "On Holding AG",
+  "nextEPSDate": "2026-08-11T00:00:00",
+  "releaseTime": 1,
+  "confirmDate": "2026-07-28T16:30:50.933",
+  "twitter": "",
+  "lastEPSTime": "2026-05-12T05:00:00",
+  "description": " On Holding AG operates as a holding company. The Company, through its subsidiaries, provides footwear and sports apparel product includes ultralight and stretchable fabrics and accessories. On Holding AG is based in ZURICH.   \n",
+  "epsImpact": null,
+  "avgEPSMove": null,
+  "consensusEst": 0.38,
+  "revenueEst": 1110000000.0,
+  "whisper": 0.46,
+  "quarterDate": "2026-06-30T00:00:00",
+  "quarter": 2,
+  "indNo": 321,
+  "sectNo": 14,
+  "sectName": "Discretionary"
+}

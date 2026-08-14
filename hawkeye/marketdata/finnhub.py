@@ -12,7 +12,7 @@ from typing import Optional
 import httpx
 
 from hawkeye.contracts.models import AnalystTrend, InsiderActivity, NewsItem
-from hawkeye.marketdata.base import Bar
+from hawkeye.marketdata.base import Bar, CalendarUnavailable
 
 _INSIDER_BUY_SELL_CODES = {"P", "S"}  # open-market purchase / sale only
 
@@ -103,15 +103,53 @@ class FinnhubProvider:
         return out
 
     def earnings_calendar(self, start: date, end: date) -> list[dict]:
-        """Raw earnings-calendar entries (all symbols) for a date range."""
+        """Raw earnings-calendar entries (all symbols) for a date range.
+
+        Raises CalendarUnavailable rather than returning [] when the feed
+        cannot be read. An empty list is a factual claim — "no company
+        reported in this window" — and the whole funnel acts on it; a
+        request that never answered has made no claim at all.
+        """
         if not self.available:
-            return []
+            raise CalendarUnavailable("FINNHUB_API_KEY が未設定です")
         try:
             cal = self._get("calendar/earnings",
                             **{"from": start.isoformat(), "to": end.isoformat()})
+        except httpx.HTTPError as exc:
+            raise CalendarUnavailable(
+                f"決算カレンダーを取得できません ({start} 〜 {end}): "
+                f"{type(exc).__name__}") from exc
+        if not isinstance(cal, dict) or "earningsCalendar" not in cal:
+            raise CalendarUnavailable(
+                f"決算カレンダーの応答が想定の形式ではありません ({start} 〜 {end})")
+        return cal.get("earningsCalendar") or []
+
+    def earnings_history(self, ticker: str,
+                         limit: int = 4) -> Optional[list[dict]]:
+        """Past quarters' EPS actual and the calendar's point estimate.
+
+        None when the call did not complete, `[]` when it answered with
+        nothing. The two must not collapse: an unreachable ticker is worth
+        retrying and a company with no history is not (invariant 6).
+
+        Two limits of this endpoint, probed live on 2026-08-10 against AAPL
+        and MSFT rather than taken from the vendor's docs:
+
+        - It returns FOUR rows whatever `limit` says (tried 8, 20, and
+          omitted). `limit` is still sent, so a smaller ask stays honest if
+          the tier ever changes.
+        - The rows carry `actual` and `estimate` only — no revenue. The
+          earnings-calendar endpoint does carry revenue but answers a PAST
+          window with zero rows on this key, so there is no second call that
+          would complete the picture.
+        """
+        if not self.available:
+            return None
+        try:
+            rows = self._get("stock/earnings", symbol=ticker, limit=limit)
         except httpx.HTTPError:
-            return []
-        return cal.get("earningsCalendar", []) if isinstance(cal, dict) else []
+            return None
+        return rows if isinstance(rows, list) else None
 
     def insider_activity(self, ticker: str,
                          window_days: int = 90) -> Optional[InsiderActivity]:
@@ -200,7 +238,7 @@ class FinnhubProvider:
         earnings landed near the freshness limit could have its earnings
         coverage pushed out of `limit` by newer, unrelated headlines — so
         the tribunal argued over a candidate without ever seeing the report
-        it was supposed to be reacting to (docs/MASTER_OVERVIEW.ja.md
+        it was supposed to be reacting to (docs/design/MASTER_OVERVIEW.ja.md
         §5.2(5)). With `event_date` the window starts just before the event
         and the items kept are the ones nearest to it.
         """
