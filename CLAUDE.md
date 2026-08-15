@@ -224,45 +224,27 @@ be invisible to the reader.
 
 ## Session mode (/hawkeye-run)
 
-The tribunal can be driven by a Claude Code session instead of the API:
-`.claude/skills/hawkeye-run/SKILL.md` orchestrates `hawkeye case
-open/step/submit`, spawning one fresh subagent per role. Invariants 3/4
-apply doubly here: `casefile.write_package()` is the only place deciding
-what a role sees, and `case submit` runs the same parsers/rule checks as
-API mode. Never have the orchestrating session author or edit role JSON —
-this instruction, not code, is what keeps you (the orchestrator) from
-peeking at another role's raw file; see invariant 4's caveat.
+`.claude/skills/hawkeye-run/SKILL.md` owns the procedure and Ground rules
+for session mode (information separation, never author or edit role
+output, never bypass `hawkeye case submit`) — read it before touching
+orchestration, not this file. Invariants 3/4 above apply doubly here; the
+code boundary is `casefile.write_package()`.
 
-## Receiving a Goal (added 2026-08-02, after a Goal was missed)
+## Receiving a Goal — Hawkeye addendum (added 2026-08-02)
 
-When the user states a goal — via `/goal` or in plain words — the FIRST
-response must translate it into acceptance criteria before any work starts.
-A goal that cannot be checked cannot be reached on purpose, only by luck.
+The global acceptance-criteria rule (`~/.claude/rules/common/goals.md`)
+applies in full here: translate a stated goal into 3-5 binary checks
+before starting, ask before proceeding when a term is ambiguous or "done"
+has no observable form, track the goal (not the plan) at the top of the
+todo list, and re-read the criteria — by running the real command — before
+claiming anything is complete. Two things specific to this project:
 
-1. **Restate it as 3-5 binary checks, in commands and outputs.** "Confirm X
-   works" is not checkable; "`hawkeye scout` runs in production and one
-   candidate completes the tribunal with a recorded id" is.
-2. **Ask before starting when any of these is true** — one short round trip
-   is cheaper than a session spent on the wrong half:
-   - a term has more than one plausible reading (this project's own
-     vocabulary is a common source: 審理 is the tribunal, 審査 is the
-     screening review, and "疑似審査" fits either);
-   - the goal bundles several deliverables of different kinds, so "mostly
-     done" could pass as done — ask which is the core and which are optional;
-   - "done" has no observable form (no command, no output, no file);
-   - it cannot be finished in one session — ask what the stopping point is.
-3. **Put the acceptance criteria at the top of the todo list**, above the
-   implementation phases. Track the goal, not the plan.
-4. **Re-read the criteria before saying anything is complete**, and
-   demonstrate each one by running the real command (see the 2026-08-02(d)
-   retrospective: "348 tests green" was reported as done while the production
-   database had none of the new tables).
-5. **When work outside the goal turns up** (a real bug, a better design),
-   say what it costs and what it delays, then let the user choose. Do not
-   silently spend the goal's budget on it.
-6. `/goal` installs a **session-scoped** stop condition: it does not survive
-   into a resumed session. If a goal is carried over in a hand-off file,
-   say so and ask the user to re-issue `/goal` in the new session.
+- Vocabulary is a common source of ambiguity here: 審理 is the tribunal,
+  審査 is the screening review, and "疑似審査" fits either reading — ask
+  which is meant rather than picking one.
+- 2026-08-02(d): "348 tests green" was reported as done while the
+  production database had none of the new tables. A green test suite is
+  evidence about logic, not about the delivered path.
 
 ## Governance (added 2026-07-14)
 
@@ -273,6 +255,22 @@ document was requested after the user flagged that prior sessions
 implemented features unilaterally without ever presenting the full
 picture (To-Be architecture, As-Is gap, and *why* the design should work)
 in one place. Keep §4/§5 current as capabilities land.
+
+## Task intake gate (added 2026-08-15)
+
+`docs/task-list.md` is the single source of truth for progress; work one
+task at a time. **Before starting any new task request — even a casual
+one-liner — check it against `docs/task-template.md`'s 7 fields** (ID/
+title, purpose, scope, prohibitions, completion criteria, test plan, stop
+conditions). If any are missing or ambiguous, ask the user in a bulleted
+list before writing any code. Once confirmed, add the formal entry to
+`docs/task-list.md` and get agreement before branching or implementing.
+
+The detailed per-task cycle (implement → test → update task-list →
+commit/Draft PR → evidence-backed report), the standing prohibitions, and
+the stop conditions live in the `hawkeye-task-cycle` skill
+(`.claude/skills/hawkeye-task-cycle/SKILL.md`) — read it once a task is
+confirmed and you're about to start work.
 
 ## Where the record lives (there is no session log in this file)
 
