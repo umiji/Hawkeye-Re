@@ -1,37 +1,39 @@
 ---
 name: hawkeye-task-cycle
-description: Use when a new task/ticket request comes in (even a casual one-liner) and before starting implementation — vet it against docs/task-template.md, ask about missing/ambiguous fields, then register it in docs/task-list.md. Also use while executing a confirmed task (implement/test/commit cycle) or writing its completion report.
+description: Use when a new task/ticket request comes in (even a casual one-liner) and before starting implementation — vet it against docs/task-template.md, ask about missing/ambiguous fields, then register it in docs/task-list-hawkeye-re.md. Also use while executing a confirmed task (implement/test/commit cycle) or writing its completion report.
 ---
 
 # Hawkeye task cycle
 
 Governs how a task moves from a raw request to a closed, evidence-backed
-entry in `docs/task-list.md`, which is the single source of truth for
+entry in `docs/task-list-hawkeye-re.md`, which is the single source of truth for
 progress. Work **one task at a time** — don't start a second task before
 the current one reaches a terminal status (`完了` / `保留` / `中止`).
 
 ## 1. Intake — before writing any code
 
-Check the request against the 7 fields in `docs/task-template.md` (ID/
-title, purpose, scope, prohibitions, completion criteria, test plan, stop
+Check the request against the 7 fields in `docs/task-template.md` (ID/task
+name, purpose, scope, prohibitions, completion criteria, test plan, stop
 conditions). If any field is missing or ambiguous, ask the user in a
 bulleted list — do not guess (see Prohibited, below). Once confirmed, add
-the formal entry to `docs/task-list.md` and get agreement before branching
-or implementing.
+the formal entry to `docs/task-list-hawkeye-re.md`: field 1 splits across the ID and
+タスク名 (task name, ~10-40 chars, states the task plainly) columns; fields
+2-4 (purpose/scope/prohibitions) go into タスク詳細; field 5 goes into
+完了条件. Get agreement before branching or implementing.
 
 For the acceptance-criteria judgment calls themselves (how to phrase a
 binary check, when a goal needs a round-trip question before starting),
 follow `~/.claude/rules/common/goals.md` — this skill only adds the
-Hawkeye-specific artifacts (`docs/task-template.md` / `docs/task-list.md`),
+Hawkeye-specific artifacts (`docs/task-template.md` / `docs/task-list-hawkeye-re.md`),
 not a second set of rules for the same call.
 
 ## 2. Per-task cycle
 
 1. Confirm spec — re-read the task's 完了条件 (completion criteria) in
-   `docs/task-list.md`.
+   `docs/task-list-hawkeye-re.md`.
 2. Implement.
 3. Run tests.
-4. Update `docs/task-list.md` (状態 / 進捗 / 証拠 columns) with the real
+4. Update `docs/task-list-hawkeye-re.md` (状態 / 進捗 / 証拠 columns) with the real
    outcome.
 5. Git commit, then open a Draft PR.
 6. Report with evidence (§4 below).
@@ -51,7 +53,7 @@ not a second set of rules for the same call.
 - The working tree already has unconfirmed diffs at session start (check
   `git status` before touching anything).
 - The work would exceed the scope recorded for the task in
-  `docs/task-list.md`.
+  `docs/task-list-hawkeye-re.md`.
 
 ## 5. Completion report — a bare "done" is not acceptable
 

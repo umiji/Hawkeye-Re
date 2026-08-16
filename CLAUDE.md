@@ -258,13 +258,14 @@ in one place. Keep §4/§5 current as capabilities land.
 
 ## Task intake gate (added 2026-08-15)
 
-`docs/task-list.md` is the single source of truth for progress; work one
-task at a time. **Before starting any new task request — even a casual
-one-liner — check it against `docs/task-template.md`'s 7 fields** (ID/
-title, purpose, scope, prohibitions, completion criteria, test plan, stop
-conditions). If any are missing or ambiguous, ask the user in a bulleted
-list before writing any code. Once confirmed, add the formal entry to
-`docs/task-list.md` and get agreement before branching or implementing.
+`docs/task-list-hawkeye-re.md` is the single source of truth for progress;
+work one task at a time. **Before starting any new task request — even a
+casual one-liner — check it against `docs/task-template.md`'s 7 fields**
+(ID/title, purpose, scope, prohibitions, completion criteria, test plan,
+stop conditions). If any are missing or ambiguous, ask the user in a
+bulleted list before writing any code. Once confirmed, add the formal
+entry to `docs/task-list-hawkeye-re.md` and get agreement before branching
+or implementing.
 
 The detailed per-task cycle (implement → test → update task-list →
 commit/Draft PR → evidence-backed report), the standing prohibitions, and
