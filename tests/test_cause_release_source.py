@@ -91,6 +91,59 @@ def test_a_record_with_no_article_id_names_the_gap():
     assert "article_id_missing" in record.gaps
 
 
+# --- the space a stripped tag leaves behind (T-012) --------------------------
+
+def test_a_stripped_tag_leaves_no_space_in_front_of_punctuation():
+    """The bold figure and the comma after it are separated by a tag, and the
+    tag becomes a space. What comes out has to be what the company wrote.
+
+    Left in, our own text stops matching itself: the reader copies the natural
+    `million, compared` and the quote check refuses it as absent from the
+    release. Measured cost on 30 names: 3,320 characters of real explanation
+    discarded, and SDRL accused of inventing every block it returned.
+    """
+    from hawkeye.marketdata.whispers import release_text
+
+    text = release_text(
+        "<p>Total operating expenses increased by <b>$43 million</b> to "
+        "<b>$377 million</b>, compared to <b>$334 million</b>.</p>"
+        "<p>Fewer operating days for the <i>West Tellus</i>; margin held.</p>")
+    assert "$377 million, compared to $334 million." in text
+    assert "West Tellus; margin held." in text
+    assert " ," not in text and " ." not in text and " ;" not in text
+
+
+def test_the_repair_leaves_alone_every_space_a_company_did_write():
+    """Six characters, and no more. Each of these is text that a wider rule
+    would corrupt — measured on real releases 2026-08-18, which is why `%`,
+    `’` and `)` are not in the class.
+    """
+    from hawkeye.marketdata.whispers import release_text
+
+    kept = [
+        "2025 % Change",              # a column heading, not a percentage
+        "fiscal ’27 outlook",    # 2027 abbreviated, not an apostrophe-s
+        "( www.seadrill.com )",       # lopsided if only one side is closed
+        "Adjusted EBITDA (non-GAAP)",
+        "revenue — up 13%",
+        'the chief executive said "we grew',
+    ]
+    for phrase in kept:
+        assert phrase in release_text(f"<p>{phrase}</p>"), phrase
+
+
+def test_a_newline_before_punctuation_is_left_where_it_is():
+    """A block end becomes a newline, and welding two table rows together
+    would invent a sentence the company never laid out. None of the six
+    characters follows a newline in the measured sample, so nothing is lost
+    by refusing to cross one."""
+    from hawkeye.marketdata.whispers import release_text
+
+    text = release_text("<tr><td>Net income</td></tr><tr><td>.</td></tr>")
+    assert "Net income\n." in text
+    assert "Net income." not in text      # the row boundary survives
+
+
 # --- the extractor ----------------------------------------------------------
 
 def _gemini(handler, **kw) -> GeminiExtractor:

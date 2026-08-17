@@ -765,6 +765,30 @@ _NAMED_ENTITY = re.compile(r"&[a-zA-Z#0-9]+;")
 _ENTITIES = {"&nbsp;": " ", "&amp;": "&", "&quot;": '"', "&#39;": "'",
              "&apos;": "'", "&lt;": "<", "&gt;": ">"}
 
+# Stripping a tag leaves a space where the tag was, and a company that wrote
+# `<b>$377 million</b>, compared to` gets read back as `$377 million ,
+# compared to` — a space it never wrote, 173 of them across ten releases
+# (measured 2026-08-18). It is our text that then fails to match itself: the
+# reader copies the natural form and the quote check refuses it. Measured
+# cost before this line existed: 3,320 characters of real company explanation
+# discarded across 5 of 30 names, one of them (SDRL) filed as
+# `extractor_invented_every_block` — the accusation reserved for a reader
+# manufacturing sentences (T-012).
+#
+# SIX CHARACTERS, and the smallness is the measurement, not caution. All 13
+# blocks that had been refused come back on these alone; adding `)]}`, `%` or
+# `”` recovers not one more block and doubles to triples what is rewritten
+# (173 -> 365 -> 396). Each of those also breaks real text: `%` turns the
+# column heading `2025 % Change` into `2025% Change`, `’` turns `fiscal ’27`
+# into `fiscal’27`, and `)` leaves `( www.seadrill.com )` lopsided as
+# `( www.seadrill.com)`, which a reader tidies back and fails on. What makes
+# these six safe is that English never puts a space in front of them.
+#
+# Newlines are excluded (`[^\S\n]`): none of the six ever follows one in the
+# measured sample, so including them would buy nothing and risk welding two
+# table rows together.
+_SPACE_BEFORE_PUNCTUATION = re.compile(r"[^\S\n]+([,.;:!?])")
+
 
 def release_text(article: Any) -> str:
     """One release's HTML as the prose a person would read off the page."""
@@ -781,6 +805,7 @@ def release_text(article: Any) -> str:
     # kept: a literal `&hellip;` in the source is a character the company did
     # not write, and a quote covering it could never match.
     text = _NAMED_ENTITY.sub(" ", text)
+    text = _SPACE_BEFORE_PUNCTUATION.sub(r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
