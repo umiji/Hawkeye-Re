@@ -90,11 +90,31 @@ class CauseText:
     extractor returned only inventions. The first is a fact about us, the
     second about the company, the third about our reader — and only the third
     is a defect to chase (invariant 6).
+
+    `detail` is what the failing step actually said, and it exists BESIDE
+    `reason` rather than inside it: `reason` is a small fixed vocabulary the
+    ledger stores and `failure_kind` classifies, and free text in that column
+    would break both. Added by T-011 after two sessions were spent guessing
+    at a rate limit whose limit, id and window were all stated in a reply
+    this class caught and dropped (2026-08-17 429, 2026-08-18 400). Empty on
+    success — a message sitting beside a good excerpt would read as a warning
+    about it.
     """
     excerpt: str
     source_text: str
     reason: str = ""
     rejected: tuple[str, ...] = ()
+    detail: str = ""
+
+
+def _said(exc: BaseException) -> str:
+    """One line naming what failed, for a person reading a scan's stderr.
+
+    The exception type is kept: `GeminiUnavailable` and a bare `TimeoutError`
+    are different stories about the same blank excerpt.
+    """
+    message = " ".join(str(exc).split())
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
 def _comparable(text: str) -> str:
@@ -231,17 +251,21 @@ class ReleaseCauseSource:
             return CauseText("", "", "no_release_from_feed")
         try:
             release = self._feed.article(ticker, article_id)
-        except Exception:
+        except Exception as exc:
             # About the connection, not the company, and worth retrying —
             # which is exactly what `release_fetch_failed` is classified as.
-            return CauseText("", "", "release_fetch_failed")
+            return CauseText("", "", "release_fetch_failed",
+                             detail=_said(exc))
         if not (release or "").strip():
             return CauseText("", "", "no_release_from_feed")
         try:
             blocks = self._extractor.blocks(release, ticker, fiscal_quarter)
-        except Exception:
+        except Exception as exc:
             # The release DID arrive, so it travels on: the reason names our
             # reader, and the text is still the authority a later attempt
-            # would check against.
-            return CauseText("", release, "extractor_call_failed")
+            # would check against. What the reader SAID travels with it —
+            # swallowed, it takes the quota id, the limit and the offending
+            # field down with it (T-011).
+            return CauseText("", release, "extractor_call_failed",
+                             detail=_said(exc))
         return build_cause_text(release, blocks)

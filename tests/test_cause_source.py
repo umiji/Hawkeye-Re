@@ -198,3 +198,69 @@ def test_every_kept_block_is_a_literal_substring_of_the_release(block):
     built = build_cause_text(RELEASE, [block])
     for piece in built.excerpt.split("\n\n"):
         assert piece in RELEASE
+
+
+# --- T-011: a failure that can be diagnosed ---------------------------------
+
+class _Feed:
+    def __init__(self, article):
+        self._article = article
+
+    def article(self, ticker, article_id):
+        if isinstance(self._article, Exception):
+            raise self._article
+        return self._article
+
+
+class _Extractor:
+    available = True
+
+    def __init__(self, outcome):
+        self._outcome = outcome
+
+    def blocks(self, release, ticker, fiscal_quarter):
+        if isinstance(self._outcome, Exception):
+            raise self._outcome
+        return self._outcome
+
+
+def test_a_failed_extraction_keeps_the_named_reason():
+    """The vocabulary downstream classifies on must not change. `detail` is
+    added beside it, never instead of it."""
+    from hawkeye.scout.cause_source import ReleaseCauseSource
+
+    built = ReleaseCauseSource(
+        _Feed(RELEASE), _Extractor(RuntimeError("quota"))
+    ).text_for("AII", "2608137728", "2026-Q2")
+    assert built.reason == "extractor_call_failed"
+
+
+def test_a_failed_extraction_also_keeps_what_went_wrong():
+    """Two sessions were spent guessing at a limit whose answer was in the
+    body of the reply that got thrown away here (2026-08-17 429, 2026-08-18
+    400). The named reason says WHICH step failed; this says why."""
+    from hawkeye.scout.cause_source import ReleaseCauseSource
+
+    built = ReleaseCauseSource(
+        _Feed(RELEASE),
+        _Extractor(RuntimeError("the extractor answered 429: daily quota, "
+                                "limit: 20"))
+    ).text_for("AII", "2608137728", "2026-Q2")
+    assert "limit: 20" in built.detail
+
+
+def test_a_failed_release_fetch_also_keeps_what_went_wrong():
+    from hawkeye.scout.cause_source import ReleaseCauseSource
+
+    built = ReleaseCauseSource(
+        _Feed(RuntimeError("EW answered 503")), _Extractor([])
+    ).text_for("AII", "2608137728", "2026-Q2")
+    assert built.reason == "release_fetch_failed"
+    assert "503" in built.detail
+
+
+def test_a_success_carries_no_detail():
+    """An empty detail is what "nothing went wrong" looks like — a leftover
+    message beside a good excerpt would read as a warning about it."""
+    built = build_cause_text(RELEASE, [REAL])
+    assert built.detail == ""

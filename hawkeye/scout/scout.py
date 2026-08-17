@@ -12,6 +12,7 @@ is a first-class metric of the system, same as P&L.
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
@@ -335,6 +336,13 @@ def _stage_cause(context: _QuarterContext, event, cause_source) -> str:
         # the source and must survive to the row: "no release reached us",
         # "the release explains nothing" and "our extractor composed every
         # block" are three different facts and only the last is ours to fix.
+        if built.detail:
+            # The row keeps the classifiable reason; the operator gets the
+            # sentence behind it. A scan that quietly drops a third of its
+            # names to a spent quota should say so while it is running, not
+            # leave it to be inferred from a column a day later (T-011).
+            print(f"  {event.ticker}: {built.reason} — {built.detail}",
+                  file=sys.stderr)
         return built.reason
     cause_case.save_case(cause_case.CauseCase(
         stock_id=context.stock_id, print_id=context.print_row.id,

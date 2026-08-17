@@ -172,3 +172,150 @@ def test_an_unreadable_reply_raises_rather_than_yielding_no_blocks(payload):
     assert parse_blocks(_reply(["a"])) == ["a"]
     with pytest.raises(GeminiUnavailable):
         parse_blocks(payload)
+
+
+# --- T-011: the model, the pacing, and saying what went wrong ---------------
+
+def test_the_model_is_told_not_to_think_in_the_dialect_it_understands():
+    """The 3.x models replaced `thinkingBudget` (a token count) with
+    `thinkingLevel` (a named step), and sending the old field is a flat 400.
+
+    Measured 2026-08-18 against `gemini-3.5-flash-lite`: `thinkingBudget: 0`
+    → `400 INVALID_ARGUMENT`; `thinkingLevel: "minimal"` → 200 with
+    `thoughtsTokenCount: 0`. The setting is not cosmetic — a model reasoning
+    its way toward a better sentence is a model composing one, and composing
+    is the failure this whole path exists to prevent.
+    """
+    import json
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json=_reply([]))
+
+    _gemini(handler).blocks("release", "AIRO", "2026-Q2")
+    thinking = seen["generationConfig"]["thinkingConfig"]
+    assert thinking == {"thinkingLevel": "minimal"}
+    assert "thinkingBudget" not in json.dumps(seen)
+
+
+def test_calls_are_spaced_to_stay_inside_the_per_minute_allowance():
+    """15 requests per minute is the free-tier ceiling for this model, and a
+    release takes 1.6-4.9s to answer — so back-to-back calls would run at up
+    to 37/minute and draw a 429 the run then has to sit out.
+
+    The wait is imposed here rather than in the scan because this class is
+    what knows the model's limits.
+    """
+    clock = [1000.0]
+    waits = []
+
+    def handler(request):
+        return httpx.Response(200, json=_reply(["ok"]))
+
+    def sleep(seconds):
+        waits.append(seconds)
+        clock[0] += seconds
+
+    extractor = GeminiExtractor(
+        api_key="k", sleep=sleep, clock=lambda: clock[0],
+        transport=httpx.MockTransport(handler))
+
+    extractor.blocks("release", "AIRO", "2026-Q2")
+    assert waits == []                       # nothing to wait for on the first
+    clock[0] += 0.5                          # the reply came back fast
+    extractor.blocks("release", "BFRI", "2026-Q2")
+    assert waits and waits[0] == pytest.approx(3.5)   # 4.0s spacing, 0.5 spent
+
+
+def test_a_call_that_took_longer_than_the_spacing_waits_for_nothing():
+    """The pause is a floor on the interval, not a tax on every call. STAA's
+    release is 45,954 characters and takes longer than the spacing on its
+    own."""
+    clock = [1000.0]
+    waits = []
+
+    def handler(request):
+        return httpx.Response(200, json=_reply(["ok"]))
+
+    extractor = GeminiExtractor(
+        api_key="k", sleep=waits.append, clock=lambda: clock[0],
+        transport=httpx.MockTransport(handler))
+    extractor.blocks("release", "STAA", "2026-Q2")
+    clock[0] += 30.0
+    extractor.blocks("release", "STIM", "2026-Q2")
+    assert waits == []
+
+
+def test_a_refusal_repeats_what_the_server_actually_said():
+    """Without this the only record is `the extractor answered 400`, and the
+    reason is gone.
+
+    Measured twice: on 2026-08-17 a 429's body named the daily quota and the
+    bare reason hid it, costing a session to two wrong conclusions about the
+    limit. On 2026-08-18 a 400's body named `thinkingBudget` and the same
+    blank sent the diagnosis to a separate throwaway script.
+    """
+    def handler(request):
+        return httpx.Response(400, json={"error": {
+            "status": "INVALID_ARGUMENT",
+            "message": "Invalid value at 'generation_config.thinking_config'"}})
+
+    with pytest.raises(GeminiUnavailable) as caught:
+        _gemini(handler).blocks("release", "AIRO", "2026-Q2")
+    assert "generation_config.thinking_config" in str(caught.value)
+
+
+def test_a_daily_quota_is_reported_at_once_instead_of_retried():
+    """The server asks for a 23-second retry on a quota that resets in a day.
+
+    Measured 2026-08-18: a 429 for `GenerateRequestsPerDayPerProjectPerModel-
+    FreeTier` carries `retryDelay: 23s`. Honouring it is how three names spent
+    ~465 seconds each on 2026-08-17 re-asking a question already answered for
+    the day. The daily quota is named in the body, so it is knowable, and the
+    run should say so and move on.
+    """
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(429, json={"error": {
+            "message": "Quota exceeded ... limit: 20, model: gemini-2.5-flash",
+            "details": [
+                {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                 "violations": [{"quotaId":
+                                 "GenerateRequestsPerDayPerProjectPerModel-"
+                                 "FreeTier", "quotaValue": "20"}]},
+                {"@type": "type.googleapis.com/google.rpc.RetryInfo",
+                 "retryDelay": "23s"}]}})
+
+    waits = []
+    extractor = GeminiExtractor(api_key="k", sleep=waits.append,
+                                transport=httpx.MockTransport(handler))
+    with pytest.raises(GeminiUnavailable) as caught:
+        extractor.blocks("release", "AIRO", "2026-Q2")
+    assert len(calls) == 1                    # asked once, not four times
+    assert waits == []
+    assert "daily" in str(caught.value).lower()
+
+
+def test_a_momentary_429_is_still_retried():
+    """The per-minute ceiling is a different event from the daily one and
+    clearing it IS just a matter of waiting."""
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(429, json={"error": {
+                "message": "Quota exceeded for ... requests per minute",
+                "details": [
+                    {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                     "violations": [{"quotaId":
+                                     "GenerateRequestsPerMinutePerProject"}]},
+                    {"@type": "type.googleapis.com/google.rpc.RetryInfo",
+                     "retryDelay": "7s"}]}})
+        return httpx.Response(200, json=_reply(["ok"]))
+
+    assert _gemini(handler).blocks("release", "AIRO", "2026-Q2") == ["ok"]
+    assert len(calls) == 2

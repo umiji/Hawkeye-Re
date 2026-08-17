@@ -13,7 +13,7 @@ never a silent pass.
 | Earnings calendar — WHO reports and WHEN (the scan's whole universe) | Finnhub | `/calendar/earnings` | 〃 |
 | **Earnings numbers** — EPS and revenue, actual AND consensus, plus guidance prose and announcement time | **EarningsWhispers** | `earningswhispers.com/api/epsdetails/{t}` | none |
 | **Why the quarter came out where it did** — the company's own earnings release, addressed by the `fileName` the row above states | **EarningsWhispers** | `earningswhispers.com/api/newsarticle/{t}/{fileName}` | none |
-| Cutting that release to the blocks that explain the quarter, copied verbatim and then checked back against it (T-008) | Google Gemini (`gemini-2.5-flash`) | `generativelanguage.googleapis.com` | `GEMINI_API_KEY` (free tier; optional — without it the cause step falls back to the summary, which explained 0 of 30) |
+| Cutting that release to the blocks that explain the quarter, copied verbatim and then checked back against it (T-008) | Google Gemini (`gemini-3.5-flash-lite` since T-011; was `gemini-2.5-flash`, whose free tier is 20 requests/day and could not cover a 30-name scan) | `generativelanguage.googleapis.com` | `GEMINI_API_KEY` (free tier: 500/day, 15/minute; optional — without it the cause step falls back to the summary, which explained 0 of 30) |
 | Consensus pre-registration (distribution and analyst count — the only source for either) | Yahoo via yfinance | `earnings_estimate` / `revenue_estimate` | none |
 | Ticker → SEC registrant number (CIK), company name | EDGAR | `company_tickers.json` | none |
 | Next earnings date | Finnhub | `/calendar/earnings` | 〃 |
