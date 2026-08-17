@@ -339,9 +339,13 @@ def test_both_roles_are_told_they_may_not_invent_a_cause():
     """Invariant 3: a prompt rule and the code enforcing it only mean
     something together. Here the code cannot overturn a sentence, so the
     instruction has to be explicit in both roles' text."""
-    from hawkeye.tribunal.prompts import ADVERSARY_SYSTEM, BULL_SYSTEM
+    from hawkeye.tribunal.prompts import (
+        ADVERSARY_SYSTEM,
+        BULL_SYSTEM,
+        JUDGE_SYSTEM,
+    )
 
-    for prompt in (BULL_SYSTEM, ADVERSARY_SYSTEM):
+    for prompt in (BULL_SYSTEM, ADVERSARY_SYSTEM, JUDGE_SYSTEM):
         assert "UNVERIFIED and must be treated as such" in prompt
     assert "Asserting a specific" in ADVERSARY_SYSTEM
 
