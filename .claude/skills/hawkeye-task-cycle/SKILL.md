@@ -18,7 +18,16 @@ conditions, dependencies). If any field is missing or ambiguous, ask the
 user in a bulleted list — do not guess (see Prohibited, below). This
 includes field 8 (dependencies): don't leave it blank or `-` just because
 nothing obvious comes to mind — confirm 無し explicitly, or the two-form
-`T-001（ブロッカー）` / `T-001（推奨: 理由）` notation if there is one. Once
+`T-001（ブロッカー）` / `T-001（推奨: 理由）` notation if there is one.
+Field 5 (completion criteria) must include **at least one command the
+user or an operational runbook actually runs, with its expected
+output** — criteria built only from tests that call functions directly
+can all go green while the path the user actually takes stays broken
+(T-005, 2026-08-17: all four criteria tested `rerank_after_guidance()`
+directly and never ran `hawkeye case open --from-earnings`, the command
+the `/hawkeye-run` runbook uses). If that command can only run against
+the live environment, the criteria must say so and name who runs it and
+when. Once
 confirmed, add the formal entry to `docs/task-list-hawkeye-re.md`: field 1
 splits across the ID and タスク名 (task name, ~10-40 chars, states the task
 plainly) columns; fields 2-4 (purpose/scope/prohibitions) go into
@@ -65,6 +74,10 @@ Every completion report must state:
 
 - The diff (which files changed, and what changed).
 - Test results (pass/fail counts and the command that was run).
+- The actual output of the user/runbook-facing command(s) named in the
+  task's 完了条件 — the test suite alone does not satisfy this. If such
+  a command could not be run here (live environment only), it goes under
+  "unverified" below with who runs it and when, never silently skipped.
 - The commit SHA.
 - What remains unverified (e.g., not checked against production/live
   data, no real API credentials available in this environment).
