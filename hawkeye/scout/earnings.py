@@ -92,6 +92,15 @@ class EarningsEvent:
     # wrong cut is invisible — the agent would faithfully report a range out
     # of whatever survived it.
     summary: str = ""
+    # How the company's OWN earnings release is addressed (T-008). The
+    # summary above never explains a quarter — 0 of 30 prints yielded a
+    # reason from it (measured 2026-08-17) — because it is generated from the
+    # figures and says only what they were. The release does explain it, and
+    # this id is the only route to it (`hawkeye/marketdata/whispers.py`,
+    # `article()`). Carried here for the same reason `summary` is: the fetch
+    # happens later, in the staging step, and by then the feed's record is
+    # gone.
+    article_id: str = ""
     # The analysts' FULL-YEAR figures, read from the same sentence that named
     # the guidance above. They travel together because they only mean anything
     # together: a full-year range judged against next quarter's consensus is

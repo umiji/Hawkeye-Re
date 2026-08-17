@@ -167,6 +167,9 @@ def _forward_legs(record: WhispersRecord) -> dict:
     """
     consensus = read_consensus(record)
     return {"summary": record.summary or "",
+            # Not prose, and not read here: the address of the company's own
+            # release, which the cause step fetches later (T-008).
+            "article_id": record.file_name or "",
             "full_year_eps_estimate": consensus.full_year_eps,
             "full_year_revenue_estimate": consensus.full_year_revenue,
             "full_year_period": consensus.full_year_period,

@@ -438,7 +438,11 @@ def _dispute_line_en(quality: "EarningsQuality") -> str:
 
 _CAUSE_ABSENCE_EN = {
     "absent_in_source": "the source states none",
-    "source_absent": "the vendor supplied no summary to read",
+    # Widened for T-008: the text this reading comes from is the company's
+    # own earnings release now, not the vendor's summary, and both can be the
+    # thing that never arrived. Naming only the summary here would tell the
+    # tribunal a specific falsehood about which document is missing.
+    "source_absent": "no text about this quarter reached us to read",
     "reader_failed": "the source states one and our reader could not accept it",
     "call_failed": "the extraction call did not complete",
     "not_yet_read": "it has not been read yet",

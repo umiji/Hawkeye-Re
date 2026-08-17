@@ -200,6 +200,72 @@ def _rounded(value):
     return round(value, 1) if value is not None else None
 
 
+def _cause_source(feed):
+    """The release reader, wired from the environment (T-008).
+
+    Built here rather than inline so the scan and the inspection command
+    below cannot drift into reading different text — the whole value of the
+    command is that it shows what the scan would stage.
+    """
+    import os
+
+    from hawkeye.marketdata.gemini import GeminiExtractor
+    from hawkeye.scout.cause_source import ReleaseCauseSource
+
+    return ReleaseCauseSource(
+        feed, GeminiExtractor(api_key=os.environ.get("GEMINI_API_KEY", "")))
+
+
+def cmd_cause_source(args: argparse.Namespace) -> int:
+    """Show what the cause reader would be given for one named stock.
+
+    The reason a quarter came out where it did is not in the vendor's summary
+    — 0 of 30 prints yielded one (measured 2026-08-17) — so it now comes from
+    the company's own earnings release. This command is how that is checked
+    without paying for a scan: it prints the release's size, the excerpt cut
+    from it, and every block the extractor returned that the release does NOT
+    contain.
+
+    That last list is the point. On 2026-08-17 the extractor composed a
+    fluent sentence for AII, under explicit instruction to copy character for
+    character. Blocks that fail the check are shown rather than counted, so a
+    reader inventing text is visible to a person and not just to a metric.
+    """
+    ticker = args.ticker.strip().upper()
+    feed = WhispersSource()
+    source = _cause_source(feed)
+    if not source.available:
+        print("GEMINI_API_KEY が設定されていません（.env.local）。決算理由の"
+              "抜き出しには必要です。", file=sys.stderr)
+        return 1
+
+    record = feed.details(ticker)
+    if record is None:
+        print(f"{ticker}: 決算フィードにこの銘柄の記録がありません。",
+              file=sys.stderr)
+        return 1
+
+    quarter = record.fiscal_quarter or ""
+    built = source.text_for(ticker, record.file_name, quarter)
+    print(f"{ticker}  {quarter}  発表 "
+          f"{record.announced_at.date() if record.announced_at else '不明'}")
+    print(f"  ベンダー要約: {len(record.summary)}文字")
+    print(f"  決算発表文  : {len(built.source_text)}文字 "
+          f"(記事ID {record.file_name or 'なし'})")
+    if built.rejected:
+        print(f"\n原文に無いため却下したブロック {len(built.rejected)}件"
+              "（抜き出し役が文を作った証拠）:")
+        for block in built.rejected:
+            print(f"  ✗ {block}")
+    if not built.excerpt:
+        print(f"\n読み手に渡せる本文はありません: {built.reason}")
+        return 0
+    print(f"\n読み手に渡す抜粋 {len(built.excerpt)}文字 "
+          f"(発表文の{len(built.excerpt) * 100 // max(len(built.source_text), 1)}%):")
+    print(built.excerpt)
+    return 0
+
+
 def _judged_earnings(args: argparse.Namespace):
     """The three-leg reading of a named stock's latest quarter, or None.
 
@@ -444,6 +510,18 @@ def cmd_scout(args: argparse.Namespace) -> int:
     # (hawkeye/scout/numbers.py). A name the feed cannot answer for keeps the
     # calendar's own figures, for BOTH legs, and says so.
     numbers = WhispersSource()
+    # Why the quarter came out where it did is NOT in the feed's summary — 0
+    # of 30 prints yielded a reason from it (measured 2026-08-17) — so the
+    # cause queue is fed from the company's own earnings release, cut to the
+    # blocks that explain it and then checked back against the release
+    # (T-008, hawkeye/scout/cause_source.py). With no GEMINI_API_KEY the
+    # source reports itself unavailable and the scan falls back to the
+    # summary exactly as before: a scan must not stop because an optional
+    # reader has no key, but it must say which text it ended up reading.
+    cause_reader = _cause_source(numbers)
+    if not cause_reader.available:
+        print("注意: GEMINI_API_KEY が無いため、決算理由は従来どおりベンダー"
+              "要約から読み取ります（実測 30件中0件）。", file=sys.stderr)
     # The stock master turns each print into a stored quarter judged against
     # the consensus that was in force before it. Without a pre-registered row
     # the funnel reconstructs one and says so — it never silently treats an
@@ -460,7 +538,8 @@ def cmd_scout(args: argparse.Namespace) -> int:
                            today=today,
                            numbers_source=numbers,
                            stock_store=store,
-                           directory=EdgarDirectory())
+                           directory=EdgarDirectory(),
+                           cause_source=cause_reader)
     except CalendarUnavailable as exc:
         print(f"決算カレンダーを読めなかったため、走査を中止しました: {exc}",
               file=sys.stderr)
@@ -1694,6 +1773,12 @@ def build_parser() -> argparse.ArgumentParser:
     czs.add_argument("--reader", default=None,
                      help="which model read it (recorded on the row)")
     czs.set_defaults(func=cmd_cause_submit)
+    czr = cz_sub.add_parser(
+        "source",
+        help="show the release excerpt the reader would be given, and every "
+             "block the extractor returned that the release does not contain")
+    czr.add_argument("ticker")
+    czr.set_defaults(func=cmd_cause_source)
 
     rep = sub.add_parser("report",
                          help="reports written for the user to read")

@@ -1,0 +1,200 @@
+"""Feeding the cause reader from the company's own release (T-008).
+
+The reader was starved, not broken: 0 of 30 prints yielded a reason, because
+the only text it was ever shown — the vendor's summary — states the result,
+the outlook and the analysts' figure, and never why the quarter came out
+where it did (measured 2026-08-17, sample 30).
+
+The company's own earnings release does say why, but it is ~25,900 characters
+of which most is financial tables. So a cheaper reader is asked first, for
+the BLOCKS that explain the quarter, COPIED VERBATIM — and this module is the
+machinery that refuses to take its word for it.
+
+That refusal is not a formality. Measured 2026-08-17 over 13 names and 81
+blocks: 79 were verbatim, and one (AII) was a fluent English sentence the
+extractor **composed** out of scattered facts while under explicit
+instruction to copy character for character — including a claim ("The
+Company benefitted from...") the release never makes. Had the extractor been
+asked to SUMMARISE instead, that sentence would have reached the tribunal as
+the company's own words, past the one hallucination check this system has.
+
+The second rejection was the opposite error and matters just as much: the
+release wrote a curly quote and the extractor a straight one, so a real
+passage was thrown away over a character nobody can see. Hence the
+normalisation below — loosened for typography, never for words.
+"""
+from __future__ import annotations
+
+import pytest
+
+from hawkeye.scout.cause_source import build_cause_text
+
+# The AII release, trimmed to the sentence the extractor rewrote.
+RELEASE = (
+    "Successfully renewed 2026-2027 catastrophe excess of loss reinsurance "
+    "program on June 1, 2026 with a risk-adjusted rate decrease at the upper "
+    "end of 15-20% declines\n\n"
+    "Gross premiums written grew 14% year-over-year to $327 million during "
+    "the quarter\n\n"
+    "Robert Ritchie, Chief Executive Officer, commented, “We produced "
+    "record voluntary new business policies and pre-tax earnings in the "
+    "second quarter.”")
+
+REAL = ("Gross premiums written grew 14% year-over-year to $327 million "
+        "during the quarter")
+
+# Verbatim except for the quote characters — the DFDV failure, which must NOT
+# be treated as a fabrication.
+CURLY = ("Robert Ritchie, Chief Executive Officer, commented, \"We produced "
+         "record voluntary new business policies and pre-tax earnings in the "
+         "second quarter.\"")
+
+# What the extractor actually returned for AII on 2026-08-17. Every fact in
+# it appears somewhere in the release; the SENTENCE does not.
+FABRICATED = (
+    "The Company benefitted from the upper end of 15-20% CAT XOL "
+    "risk-adjusted rate decreases, while retaining its 1-in-130 year probable "
+    "maximum loss level and reducing its aggregate retention from $95 million "
+    "to $65 million")
+
+
+def test_a_verbatim_block_is_kept():
+    built = build_cause_text(RELEASE, [REAL])
+    assert REAL in built.excerpt
+    assert built.reason == ""
+    assert built.rejected == ()
+
+
+def test_a_composed_sentence_is_refused_even_though_its_facts_are_real():
+    """The AII case. Every number in it is in the release; the claim is not.
+
+    This is the whole reason the extractor is not allowed to summarise.
+    """
+    built = build_cause_text(RELEASE, [REAL, FABRICATED])
+    assert REAL in built.excerpt
+    assert FABRICATED not in built.excerpt
+    assert built.rejected == (FABRICATED,)
+    # Kept, not discarded: an extractor inventing sentences is a measurement,
+    # and one that has to stay visible.
+    assert built.reason == ""
+
+
+def test_every_block_composed_is_named_as_a_reader_failure():
+    """Nothing survived. That is not "the release explains nothing"."""
+    built = build_cause_text(RELEASE, [FABRICATED])
+    assert built.excerpt == ""
+    assert built.reason == "extractor_invented_every_block"
+
+
+def test_an_empty_extraction_says_the_release_explains_nothing():
+    built = build_cause_text(RELEASE, [])
+    assert built.excerpt == ""
+    assert built.reason == "no_cause_in_release"
+
+
+def test_typography_alone_never_rejects_a_real_passage():
+    """The DFDV case: curly vs straight quotes, same words.
+
+    Rejecting this would throw away real explanations over an invisible
+    character, and would teach us to loosen the check that catches AII.
+    """
+    built = build_cause_text(RELEASE, [CURLY])
+    assert built.rejected == ()
+    # Carried in the RELEASE's characters, so the curly quotes come back —
+    # the extractor's straight ones never reach the reader, and a quote taken
+    # from this excerpt therefore still matches the release downstream.
+    assert built.excerpt in RELEASE
+    assert "“We produced" in built.excerpt
+
+
+def test_the_release_itself_travels_beside_the_excerpt():
+    """The quote check downstream matches against the RELEASE, not this cut.
+
+    If it matched the excerpt, a broken extraction step would define what
+    counts as the company's words.
+    """
+    built = build_cause_text(RELEASE, [REAL])
+    assert built.source_text == RELEASE
+
+
+def test_no_release_at_all_is_a_fact_about_us_not_the_company():
+    built = build_cause_text("", [REAL])
+    assert built.excerpt == ""
+    assert built.reason == "no_release_from_feed"
+
+
+def test_blocks_keep_the_order_the_release_states_them_in():
+    """Read back-to-front, an excerpt reads like a different quarter."""
+    built = build_cause_text(RELEASE, [CURLY, REAL])
+    assert built.excerpt.index(REAL) < built.excerpt.index("“We produced")
+
+
+def test_a_duplicate_block_is_only_carried_once():
+    built = build_cause_text(RELEASE, [REAL, REAL])
+    assert built.excerpt.count(REAL) == 1
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\n"])
+def test_a_blank_block_is_ignored_rather_than_counted_as_invented(blank):
+    built = build_cause_text(RELEASE, [REAL, blank])
+    assert built.rejected == ()
+
+
+# --- the excerpt must be the RELEASE's characters, not the extractor's ------
+#
+# Measured 2026-08-17 over the 30-name sample: three blocks failed verbatim
+# matching, and only ONE of them was a rewrite.
+#
+#   HQI  "year-on-year"   where the release says "year-over-year"   ← a rewrite
+#   HLIT ...Rest-of-Market."  where the release says ...Rest-of-Market," said
+#   SGA  "Net revenue decreased"  where the release says "net revenue decreased"
+#
+# The last two are the extractor tidying a fragment into a standalone
+# sentence: same words, changed capital, changed closing punctuation. Thrown
+# away, those are real explanations lost — the DFDV lesson again.
+#
+# Accepting them is not enough either. If the EXCERPT kept the extractor's
+# punctuation, the cause reader would quote it faithfully and the quote check
+# against the release would then fail, discarding the reading one step later
+# for the same invisible reason. So a matched block is carried in the words
+# the RELEASE uses, which makes the excerpt a literal substring of the
+# release and the downstream check true by construction.
+
+TIDIED_PUNCTUATION = ("Our strong business momentum continued in the second "
+                      "quarter.")
+TIDIED_CAPITAL = "Gross premiums written grew 14% year-over-year to $327 million"
+REWORDED = ("Gross premiums written grew 14% year-on-year to $327 million "
+            "during the quarter")
+
+MOMENTUM = ('He said, "Our strong business momentum continued in the second '
+            'quarter," and left.')
+
+
+def test_a_block_the_extractor_repunctuated_is_still_the_companys_words():
+    built = build_cause_text(MOMENTUM, [TIDIED_PUNCTUATION])
+    assert built.rejected == ()
+    # The RELEASE's characters, so it ends with a comma, not a full stop.
+    assert built.excerpt in MOMENTUM
+    assert not built.excerpt.endswith(".")
+
+
+def test_a_block_the_extractor_recapitalised_is_still_the_companys_words():
+    built = build_cause_text(RELEASE, [TIDIED_CAPITAL])
+    assert built.rejected == ()
+    assert built.excerpt in RELEASE
+
+
+def test_a_block_with_a_substituted_word_is_still_a_rewrite():
+    """"year-on-year" for "year-over-year" changes the company's words, and
+    no amount of punctuation tolerance may let that through."""
+    built = build_cause_text(RELEASE, [REWORDED])
+    assert built.rejected == (REWORDED,)
+    assert built.excerpt == ""
+
+
+@pytest.mark.parametrize("block", [REAL, CURLY, TIDIED_CAPITAL])
+def test_every_kept_block_is_a_literal_substring_of_the_release(block):
+    """The property the whole downstream check rests on."""
+    built = build_cause_text(RELEASE, [block])
+    for piece in built.excerpt.split("\n\n"):
+        assert piece in RELEASE
