@@ -198,10 +198,9 @@ Judgeは資料・ゲート結果・主張・反論だけを読み、**新しい�
 
 - **判断ルール1**: **既定はPASS(見送り)。** BUYを出すには積極的な理由が要りますが、見送りに理由は要りません。候補は明日も来るので、迷ったら見送るのが正しく、見送ったことへの減点もありません。
 - **判断ルール2**: **重大な反論(severity 4以上)は、1件残らず名指しで答えなければBUYを出せません。** 反論には内容から機械的に決まるID(`attack_id`)が付いており、Judgeはそれを引用して「反証した」または「撤退条件に変換した」のどちらかを示す必要があります。1件でも引用漏れがあればコード側が自動的にPASSへ転覆させます(不変条件3)。**言い換えても構いません** — 一致を見るのは文言ではなくIDです。
-- **判断ルール3**: **同じ事実から組み立てた空売り側の主張のほうが説得的なら、PASS。**
-- **判断ルール4**: **優位性の正体を名指しできていない(`edge_type=none_identified`)、または「なぜ今売っている側が間違っているのか」に答えられていない場合は、PASS。**
-- **判断ルール5**: **確信度(`conviction`)は「気合い」ではなく確率。** 後で答え合わせされ採点されます。0.55を下回る確信度でBUYと言うのは矛盾なので、どちらかに寄せる必要があります。
-- **判断ルール6**: **採算のハードル(リワード/リスク比・期待値)はJudgeの後段でリスク審査が機械的に検査します。** 数字を通すために判断を曲げてはいけません — Judgeが見るのは論の強さだけです。
+- **判断ルール3**: **優位性の正体を名指しできていない(`edge_type=none_identified`)、または「なぜ今売っている側が間違っているのか」に答えられていない場合は、PASS。**
+- **判断ルール4**: **確信度(`conviction`)は「気合い」ではなく確率。** 後で答え合わせされ採点されます。**弁論の勝ち負けで決めることは禁止**で、反証できずに監視条件(kill criterion)へ転換した重大な指摘は、「起きる確率×起きたときの損失」の分だけ確信度を割り引く形で払います——それだけを理由に自動的にPASSにしてはいけません(2026-08-17に旧ルール3「空売り側の主張のほうが説得的ならPASS」を廃止し、このルールへ統合)。割り引いた後の数字が0.65を下回るならBUYと言うのは矛盾なので、どちらかに寄せる必要があります。この0.65の下限だけは`_judge_rule_check`がコードで機械的に検算します(不変条件3)。
+- **判断ルール5**: **採算のハードル(リワード/リスク比・期待値)はJudgeの後段でリスク審査が機械的に検査します。** 数字を通すために判断を曲げてはいけません — Judgeが見るのは論の強さだけです。
 
 判定文(`rationale`)には、**買う最強の理由 → 生き残った最強の反対理由 →
 なぜ前者が上回るか**を、この順で書かせています。
@@ -225,14 +224,20 @@ Pre-registered decision rules — these bind you:
    (converted_to_kill_criterion=true). An attack whose severity>=4 id is
    missing from `addressed` = PASS, even if you believe you addressed it in
    prose elsewhere.
-3. If the Adversary's short case is more convincing than the Bull's long case
-   on the same facts, PASS.
-4. If the edge_type is none_identified, or the "other side" explanation failed
+3. If the edge_type is none_identified, or the "other side" explanation failed
    the sucker test without rebuttal, PASS.
-5. Conviction is a calibrated probability that this trade beats its base-case
-   scenario, not enthusiasm. You are scored on it. BUY with conviction below
-   0.55 is inconsistent — resolve one way or the other.
-6. Economic hurdles (reward/risk and expected value) are computed and enforced
+4. Conviction is a calibrated probability that this trade beats its base-case
+   scenario, not enthusiasm. You are scored on it, so price the record — do
+   not award the debate. An objection you could not refute but DID convert
+   into a monitored kill criterion is a live risk carrying a probability and a
+   cost, and it is paid for by lowering conviction, never by an automatic
+   veto; "the Adversary's short case still stands" is therefore not by itself
+   a reason to PASS. Set conviction by starting from the strength of the
+   affirmative case and discounting it for each surviving severity >= 4
+   objection, in proportion to how likely it is to be true and how much it
+   would cost if it were, and show that arithmetic in `rationale`. BUY with
+   conviction below 0.65 is inconsistent — resolve one way or the other.
+5. Economic hurdles (reward/risk and expected value) are computed and enforced
    mechanically by the Risk Officer after you — do NOT bend your judgment to
    make the numbers work; judge the argument.
 

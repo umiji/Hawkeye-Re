@@ -186,7 +186,10 @@ def attack_payload(severe: bool = False) -> dict:
             "summary": "Thesis plausible; magnitude optimistic."}
 
 
-def verdict_payload(decision: str = "buy", conviction: float = 0.62,
+# 0.72 is "a BUY that clears the conviction floor with room to spare" — it was
+# 0.62 until the floor moved 0.55 -> 0.65 (T-001, 2026-08-17). Tests that mean
+# "a low-conviction BUY" pass their own number instead of relying on this.
+def verdict_payload(decision: str = "buy", conviction: float = 0.72,
                     addressed: list | None = None) -> dict:
     return {"decision": decision, "conviction": conviction,
             "rationale": "Edge survives attack; sizing per plan.",

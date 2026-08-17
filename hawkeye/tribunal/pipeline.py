@@ -141,6 +141,14 @@ def parse_verdict(raw: dict) -> Verdict:
     )
 
 
+# The conviction floor a BUY has to clear. Raised 0.55 -> 0.65 on 2026-08-17
+# (T-001) in the same change that removed the Judge's separate "whoever argued
+# better wins" rule: a converted-but-unrefuted severe attack now discounts
+# conviction instead of forcing a PASS, so this single floor is what decides
+# whether the discounted number still supports a BUY.
+_MIN_BUY_CONVICTION = 0.65
+
+
 def _judge_rule_check(verdict: Verdict, attacks: AttackReport) -> list[str]:
     """Mechanical enforcement of the judge's pre-registered rules.
 
@@ -156,9 +164,10 @@ def _judge_rule_check(verdict: Verdict, attacks: AttackReport) -> list[str]:
             violations.append(
                 f"severity-{attack.severity} attack not addressed: "
                 f"{attack.statement[:120]}")
-    if verdict.conviction < 0.55:
+    if verdict.conviction < _MIN_BUY_CONVICTION:
         violations.append(
-            f"BUY with conviction {verdict.conviction:.2f} < 0.55 is inconsistent")
+            f"BUY with conviction {verdict.conviction:.2f} < "
+            f"{_MIN_BUY_CONVICTION} is inconsistent")
     return violations
 
 

@@ -47,7 +47,7 @@ def drive_to_verdict(case, decision="pass"):
     casefile.write_package(case)
     casefile.submit(case, attack_payload())
     casefile.write_package(case)
-    casefile.submit(case, verdict_payload(decision, 0.62))
+    casefile.submit(case, verdict_payload(decision, 0.72))
     return case
 
 
