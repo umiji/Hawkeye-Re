@@ -35,8 +35,9 @@ the live environment, the criteria must say so and name who runs it and
 when. Once
 confirmed, register the task in both places: append a row to
 `docs/task-list-hawkeye-re.csv` (ID, 作成日, 更新日 — both today's date —
-タスク名, 状態 `未着手`, 依存タスク in short form) and create
-`docs/tasks/T-XXX.md` with sections `## 目的` / `## 変更範囲` /
+タスク名, 状態 `未着手`, 依存タスク in short form, ドキュメント =
+`docs/tasks/T-XXX.md`) and create `docs/tasks/T-XXX.md` with sections
+`## 目的` / `## 変更範囲` /
 `## 禁止事項` (fields 2-4) / `## 完了条件` (field 5) / `## テスト方法`
 (field 6) / `## 停止条件` (field 7), plus a metadata block carrying 作成日
 / 更新日 / 状態 / 進捗 / 依存 (field 8, full text with reasoning — the CSV
