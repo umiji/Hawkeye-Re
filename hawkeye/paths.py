@@ -68,6 +68,17 @@ def guidance_dir() -> Path:
     return _dir("HAWKEYE_GUIDANCE", "guidance")
 
 
+def cause_dir() -> Path:
+    """Summaries staged for the reported quarter's own explanation (T-003).
+
+    The sibling of `guidance_dir()` and staged from the same sentence, for the
+    same reason: nothing inside a scan process can call an agent. What is
+    asked differs — that queue asks what the company expects NEXT, this one
+    asks what the company said about the quarter it just reported.
+    """
+    return _dir("HAWKEYE_CAUSE", "cause")
+
+
 def reports_dir() -> Path:
     """Rendered run reports."""
     return _dir("HAWKEYE_REPORTS", "reports")

@@ -39,7 +39,7 @@ from hawkeye.scout.earnings import (
     score_candidate,      # re-exported: the ranking score lives with the screen
     screen_events,
 )
-from hawkeye.scout import guidance_case
+from hawkeye.scout import cause_case, guidance_case
 from hawkeye.scout.guidance_agent import GuidanceStats
 from hawkeye.scout.inspection import Inspection, build_inspection, was_asked
 from hawkeye.scout.prereg import resolve_stock
@@ -305,10 +305,16 @@ def _quarter_context(store, directory, event) -> Optional[_QuarterContext]:
                            consensus_id=consensus.id, consensus=consensus)
 
 
-def _read_guidance(store, context: _QuarterContext, event,
-                   stats: GuidanceStats) -> _QuarterContext:
-    """Stage the company's own outlook for an agent to read, or say why
-    there is nothing to stage.
+def _stage_prose_reads(store, context: _QuarterContext, event,
+                       stats: GuidanceStats) -> _QuarterContext:
+    """Stage the two readings only an agent can make, or say why there is
+    nothing to stage.
+
+    Both come out of the same paragraph of vendor prose and neither exists as
+    a number anywhere: what the company expects NEXT quarter, and what it said
+    explains the quarter it just reported (T-003). `stats` counts the first
+    only — the second changes no score, so nothing waits on it, and giving it
+    a second counter in the scan report would imply the run was blocked on it.
 
     Runs BEFORE the row is recorded, so the row is written once. Nothing
     inside a scan process can call an agent itself — the scan only ever
@@ -330,10 +336,10 @@ def _read_guidance(store, context: _QuarterContext, event,
         # publishes no outlook", permanently, in the drop record a later
         # review reads. Same conflation the 未読/開示なし split fixed on
         # 2026-08-10, one layer down.
+        missing = ("no_summary_from_feed" if was_asked(event)
+                   else "feed_not_asked")
         return replace(context, print_row=context.print_row.model_copy(
-            update={"guidance_reason": ("no_summary_from_feed"
-                                        if was_asked(event)
-                                        else "feed_not_asked")}))
+            update={"guidance_reason": missing, "cause_reason": missing}))
     # Nothing is staged for a quarter already on record: `_record_print`
     # will skip it as a repeat, so the case would point at a row this scan
     # never wrote.
@@ -345,8 +351,20 @@ def _read_guidance(store, context: _QuarterContext, event,
             fiscal_quarter=context.print_row.fiscal_quarter,
             summary=event.summary))
         stats.staged += 1
+        # The SAME sentence, staged a second time for a different question:
+        # that queue asks what the company expects next quarter, this one asks
+        # what it said about the quarter just reported (T-003). Two agents
+        # rather than one because an extractor with two jobs can satisfy the
+        # easier one and call it an answer, and because each is checked
+        # against a different set of decoy sentences.
+        cause_case.save_case(cause_case.CauseCase(
+            stock_id=context.stock_id, print_id=context.print_row.id,
+            ticker=event.ticker,
+            fiscal_quarter=context.print_row.fiscal_quarter,
+            summary=event.summary))
     return replace(context, print_row=context.print_row.model_copy(
-        update={"guidance_reason": "pending_extraction"}))
+        update={"guidance_reason": "pending_extraction",
+                "cause_reason": "pending_extraction"}))
 
 
 def _record_print(store, context: _QuarterContext, config=None,
@@ -603,8 +621,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
         # the numbers (task 8.7 layer 2). Before the judgment, because it IS
         # one of the three things being judged.
         if context is not None:
-            context = _read_guidance(stock_store, context, event,
-                                     guidance_stats)
+            context = _stage_prose_reads(stock_store, context, event,
+                                         guidance_stats)
         quality = (assess_earnings(context.print_row, context.consensus, config)
                    if context is not None else None)
         catalyst = Catalyst(

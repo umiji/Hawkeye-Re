@@ -61,8 +61,12 @@ from hawkeye.reports.render_ja import (
     render_scout_ja,
     render_signals_ja,
 )
-from hawkeye.scout import drop_case, drop_cycle, guidance_case
+from hawkeye.scout import cause_case, drop_case, drop_cycle, guidance_case
 from hawkeye.scout.guidance_agent import parse_reply, render_request
+from hawkeye.scout.cause_agent import (
+    parse_reply as parse_cause_reply,
+    render_request as render_cause_request,
+)
 from hawkeye.scout.drop_review import (
     CHECKPOINT_TRADING_DAYS,
     COHORTS,
@@ -798,6 +802,78 @@ def cmd_guidance_submit(args: argparse.Namespace) -> int:
     remaining = len(guidance_case.list_cases())
     print("\n次: " + (f"hawkeye guidance queue (残り {remaining}件)"
                       if remaining else "hawkeye case open ..."))
+    return 0
+
+
+def cmd_cause_queue(args: argparse.Namespace) -> int:
+    """List the summaries waiting to be read for what they explain, or emit
+    one package.
+
+    One at a time, and one agent per print, for the same reason the guidance
+    queue works that way: nothing the reader saw about the previous company
+    may colour how it reads this one's sentence.
+    """
+    cases = cause_case.list_cases()
+    if not cases:
+        print("決算内容の理由の読み取り待ちはありません。")
+        return 0
+    if args.case_id is None:
+        print(f"読み取り待ち {len(cases)}件:")
+        for c in cases:
+            print(f"  {c.id}  {c.ticker:6s} {c.fiscal_quarter}")
+        print(f"\n次: hawkeye cause queue --case-id {cases[0].id}")
+        return 0
+    try:
+        case = cause_case.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    print(render_cause_request(case.request()))
+    print()
+    print(f"submit_with: hawkeye cause submit {case.id} "
+          f"--file <読み取り結果.json>")
+    return 0
+
+
+def cmd_cause_submit(args: argparse.Namespace) -> int:
+    """Validate one reading of why the quarter came out where it did, and
+    attach it to the print row it belongs to.
+
+    Prints the quarter's three legs again afterwards so the reader sees what
+    the tribunal will see. The SCORE is unchanged by this and always will be:
+    the reading is the company's account of the figures, never a correction to
+    them (invariant 1, invariant 6).
+    """
+    try:
+        case = cause_case.load_case(args.case_id)
+    except FileNotFoundError:
+        print(f"case not found: {args.case_id}", file=sys.stderr)
+        return 1
+    try:
+        extraction = parse_cause_reply(cause_case.load_reply(args.file),
+                                       case.request(), model=args.reader or "")
+    except (ValueError, OSError) as exc:
+        print(f"読み取り結果を受け付けられません: {exc}", file=sys.stderr)
+        return 1
+
+    store = _stock_store()
+    if cause_case.attach(store, case, extraction) is None:
+        print(f"{case.ticker}: 読み取り対象の決算行が入れ替わっているため"
+              "反映しませんでした(実績値の訂正が間に入った可能性があります)。"
+              "この銘柄はもう一度走査してください。", file=sys.stderr)
+        return 1
+    # Only now — the staged file is what makes a failed write retryable, the
+    # same ordering the tribunal's case workspaces and the drop reviews use.
+    cause_case.discard(case.id)
+
+    row = store.active_print(case.stock_id, case.fiscal_quarter)
+    consensus = (store.consensus(row.consensus_snapshot_id)
+                 if row.consensus_snapshot_id else None)
+    print(render_quality_ja(assess_earnings(row, consensus,
+                                            HawkeyeConfig.from_env())))
+    remaining = len(cause_case.list_cases())
+    print("\n次: " + (f"hawkeye cause queue (残り {remaining}件)"
+                      if remaining else "hawkeye rank"))
     return 0
 
 
@@ -1579,6 +1655,22 @@ def build_parser() -> argparse.ArgumentParser:
     gds.add_argument("--reader", default=None,
                      help="which model read it (recorded on the row)")
     gds.set_defaults(func=cmd_guidance_submit)
+
+    cz = sub.add_parser("cause",
+                        help="read what the company said explains the quarter "
+                             "it just reported, out of the same prose (T-003)")
+    cz_sub = cz.add_subparsers(dest="cause_command", required=True)
+    czq = cz_sub.add_parser("queue",
+                            help="list what is waiting, or emit one package")
+    czq.add_argument("--case-id", default=None,
+                     help="emit this case's package instead of the list")
+    czq.set_defaults(func=cmd_cause_queue)
+    czs = cz_sub.add_parser("submit", help="attach one reading to its print")
+    czs.add_argument("case_id")
+    czs.add_argument("--file", required=True, help="the agent's JSON reply")
+    czs.add_argument("--reader", default=None,
+                     help="which model read it (recorded on the row)")
+    czs.set_defaults(func=cmd_cause_submit)
 
     rep = sub.add_parser("report",
                          help="reports written for the user to read")

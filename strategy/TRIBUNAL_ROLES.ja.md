@@ -51,6 +51,24 @@ Adversaryが見るのは**書かれた主張だけ**で、Bullが「本当は自
 で渡します。業界が特定できない場合やETFの株価が取れない場合はこの項目ごと
 渡されず、それは「業界並みに動いた」ではなく「未確認」を意味します。
 
+そして、**その決算がなぜその数字になったのか、会社自身が述べた説明**も
+3役全員に渡しています(決算内容の説明文の末尾の「NOTE」)。この仕組みに
+上がってくる候補はほとんどが「EPS(1株利益)は大きく予想を超えたのに、
+売上はほとんど動いていない」という同じ形をしており、この形には正反対の
+2つの意味があります——**二度と繰り返さない要因**(税制上の一時的な効果・
+資産売却益・訴訟の和解金・評価替え)なのか、**会社が実際に稼いだ利幅の
+改善**なのか。数字だけでは決して区別できません。実際、この材料が無かった
+頃の判定文には「税効果や評価益で説明できる」という、どこにも裏付けの無い
+推測が事実のように書かれていました(PGYの例)。
+
+渡されるのは会社の発表文からの**そのままの引用**で、検証されているのは
+「その一文が原文に一字一句存在すること」だけです。その説明が正しいか、
+サプライズ全体を説明しきっているかは、3役が議論してよい論点として開いた
+ままにしてあります。読み取れなかった場合は「読み取れなかった」と明記され、
+その場合3役は**具体的な原因を断定することを禁止**されます——原因が不明な
+まま何が言えるかを論じるのは自由ですが、記録に無い一時的要因を事実として
+主張することは、この項目が防ぐために作られたまさにその誤りです。
+
 ### 共通部分(原文)
 
 ```text
@@ -88,6 +106,21 @@ is company-specific. The whole `sector_context` object is absent when the
 industry maps to no ETF or the ETF history could not be read, and any
 `excess_*` is null when either side was unmeasured — absent means
 unverified, never "moved with its sector".
+
+Why the quarter came out where it did: the catalyst description ends with a
+NOTE about the company's own explanation of the reported quarter. Almost
+every candidate here has the same shape — a large EPS surprise beside a small
+revenue one — and that shape has two opposite meanings: an item that will not
+repeat (a tax effect, a gain on an asset, a settlement, a revaluation) or a
+margin the company actually earned. When the NOTE quotes the company, that
+quote is verified to exist in the source word for word and NOTHING MORE:
+whether it is true, and whether it accounts for the whole surprise, are open
+questions you may argue. When the NOTE says no explanation was read, the
+reason for the gap is UNVERIFIED and must be treated as such — you may say
+the cause is unknown and reason about what follows from not knowing it, but
+you may NOT assert a tax effect, a one-off or a margin improvement that
+nothing in the dossier records. Stating an unrecorded cause as fact is the
+specific failure this field was added to stop.
 ```
 
 ---
@@ -191,6 +224,13 @@ Attack systematically across the taxonomy (use the listed categories):
   may be a sector bid the company is riding — argue that the excess, not the
   headline move, is all the thesis has earned.
 - data_integrity: is the "beat" clean? one-offs, accounting quirks, easy comps?
+  Use the catalyst description's NOTE about the company's own explanation of
+  the quarter. If it quotes the company describing something that will not
+  repeat, attack the beat with the company's own words and say what the
+  surprise looks like without it. If it says no explanation was read, the
+  honest attack is that a large EPS surprise beside a flat revenue line has
+  an unexamined cause — NOT that a one-off happened. Asserting a specific
+  cause nobody read is the same failure you exist to catch in the Bull.
 - base_rate: does the claimed upside violate the historical base rates above?
 - timing: is the window already closed? days since event, gap size.
 - governance_accounting: management credibility, dilution, insider selling.

@@ -22,11 +22,12 @@ investment case yourself**. All user-facing conversation is in Japanese.
    argue strictly from the provided dossier, same as API mode.
 4. Never bypass `hawkeye case submit` — it is where validation, judge-rule
    enforcement, the risk-officer veto, and ledger recording happen.
-5. **The same two rules bind the guidance extraction** (step 2b), which is
-   an agent step OUTSIDE the tribunal. You never write its JSON, and it
-   never sees the consensus its reading will be measured against. Its reply
-   goes through `hawkeye guidance submit`, which is where the quote is
-   checked against the source text — the only hallucination check there is.
+5. **The same two rules bind both extraction steps** (2b, 2b-2), which are
+   agent steps OUTSIDE the tribunal. You never write their JSON, and neither
+   reader sees the figure its reading will be measured against or asked to
+   explain. Each reply goes through its own `submit` command, which is where
+   the quote is checked against the source text — the only hallucination
+   check there is.
 
 ## Procedure
 
@@ -104,6 +105,51 @@ retry it by rewording the request, and never write the JSON yourself.
 
 If scout passes zero candidates, report the funnel numbers honestly and
 stop: **no catalyst means no trade — do not go hunting for one.**
+
+### 2b-2. Read why the quarter came out where it did
+
+The scan stages the SAME summary a second time, for a different question.
+Almost every candidate here has one shape — a large EPS surprise beside a
+small revenue one — and that shape means either an item that will not repeat
+(a tax effect, a gain, a settlement) or a margin the company earned. Nothing
+in the numbers separates them, so before this existed the roles guessed and
+wrote the guess down as fact. Work this queue the same way:
+
+```bash
+hawkeye cause queue                          # what is waiting
+hawkeye cause queue --case-id <id>           # ONE package
+```
+
+**A fresh subagent per case, package text verbatim, and you do not edit its
+answer.** Its whole job is to copy one sentence out of one summary:
+
+```json
+{"explained": true, "nature": "one_off",
+ "magnitude": 0.30, "magnitude_unit": "per_share",
+ "period": "2026-Q2",
+ "quote": "the quarter included a one-time tax benefit of $0.30 per share"}
+```
+
+```bash
+hawkeye cause submit <case_id> --file <reply.json> --reader <model>
+```
+
+The same information rule binds this reader, and harder: **it must never be
+shown the surprise it is being asked to explain.** Told "EPS beat by 20%
+while revenue was flat, why?", an extractor has been handed the premise that
+a reason exists — and a reason that was never in the source is exactly the
+failure this step was built to stop. `hawkeye cause queue` withholds the
+figures; do not add them back, and do not "help" by naming the shape you
+noticed in the numbers.
+
+`"explained": false` is a common and correct answer. A refusal is recorded
+by name; do not retry it by rewording the request.
+
+Order does not matter between this queue and 2b, and unlike 2b **nothing
+waits on this one**: the reading changes no score, so `hawkeye rank` does
+not depend on it. Drain it anyway before opening cases — a candidate argued
+without it reaches the tribunal with its cause marked UNVERIFIED, which is
+honest but is the whole thing this step exists to avoid.
 
 ### 2c. Score and record the scan, once the queue is empty
 

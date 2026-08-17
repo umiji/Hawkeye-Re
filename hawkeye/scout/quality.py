@@ -33,18 +33,20 @@ other vendor's disagreement stated.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Optional
 
 from hawkeye.contracts.models import ScoreBreakdown, now
 from hawkeye.contracts.stocks import (
+    CauseReading,
     ConsensusSnapshot,
     EarningsPrint,
     PrintSource,
     SnapshotKind,
     next_fiscal_quarter,
 )
+from hawkeye.scout.cause_agent import failure_kind
 from hawkeye.scout.earnings import (
     EarningsEvent,
     eps_points,
@@ -175,6 +177,13 @@ class EarningsQuality:
     # when the print carries no guidance reading at all.
     guidance_extractor: str = ""
     guidance_extractor_model: str = ""
+    # The company's own account of this quarter, and — when there is none —
+    # the NAMED reason there is none. Both travel on the verdict because both
+    # have to reach the tribunal: a missing explanation that arrives as
+    # silence reads as "there was nothing to explain", which is the specific
+    # false impression this feature exists to remove (T-003).
+    cause: Optional[CauseReading] = None
+    cause_reason: str = ""
 
     @property
     def legs(self) -> tuple[LegVerdict, LegVerdict, LegVerdict]:
@@ -427,6 +436,56 @@ def _dispute_line_en(quality: "EarningsQuality") -> str:
             f"this system will settle which one the consensus was set on.")
 
 
+_CAUSE_ABSENCE_EN = {
+    "absent_in_source": "the source states none",
+    "source_absent": "the vendor supplied no summary to read",
+    "reader_failed": "the source states one and our reader could not accept it",
+    "call_failed": "the extraction call did not complete",
+    "not_yet_read": "it has not been read yet",
+}
+
+_CAUSE_NATURE_EN = {
+    "one_off": ("an item the company itself describes as not repeating — a "
+                "tax item, a gain or charge, a settlement or a revaluation"),
+    "operating": ("the business itself — pricing, cost, mix or volume — by "
+                  "the company's own description"),
+    "unclear": ("something the company states without saying whether it "
+                "repeats"),
+}
+
+
+def _cause_line_en(quality: "EarningsQuality") -> str:
+    """What the company said explains the quarter — or that nothing does.
+
+    Both halves have to be said out loud. A headline EPS beat beside flat
+    revenue is the shape of almost every candidate that reaches the tribunal,
+    and it has two opposite meanings; with nothing written here the roles
+    filled the gap themselves and wrote the guess down as established fact
+    ("explicable by tax effects or revaluation gains" — PGY). Saying "we did
+    not read one" is what makes that guess visibly a guess.
+    """
+    cause = quality.cause
+    if cause is None:
+        why = _CAUSE_ABSENCE_EN.get(
+            failure_kind(quality.cause_reason) if quality.cause_reason
+            else "not_yet_read", "it has not been read yet")
+        return (f" NOTE: no explanation of this quarter was read from the "
+                f"source ({why}). The reason for any gap between the EPS and "
+                f"the revenue line above is therefore UNVERIFIED: do not "
+                f"argue a one-off, a tax effect or a margin improvement that "
+                f"nothing here recorded.")
+    size = ""
+    if cause.magnitude is not None and cause.magnitude_unit:
+        size = f" It sizes it at {cause.magnitude:g} ({cause.magnitude_unit})."
+    return (f' NOTE: the company\'s own explanation of this quarter, carried '
+            f'on the EPS and revenue legs above, reads: "{cause.source_excerpt}"'
+            f" — which is "
+            f"{_CAUSE_NATURE_EN.get(cause.nature, _CAUSE_NATURE_EN['unclear'])}."
+            f"{size} This is what the company SAID, verified only to exist in "
+            f"the source word for word — nothing here checked whether it is "
+            f"true or whether it accounts for the whole surprise.")
+
+
 def _leg_line_en(leg: LegVerdict) -> str:
     head = f"{_EN_LEG.get(leg.leg, leg.leg)} {_EN_STATUS[leg.status]} consensus"
     if leg.surprise_pct is not None:
@@ -440,7 +499,14 @@ def _leg_line_en(leg: LegVerdict) -> str:
     # The source's own words behind a refusal. The Adversary can only attack
     # "guided above consensus on terms nobody reconciled" if it is told what
     # those terms were.
-    if leg.excerpt:
+    #
+    # Guidance only. The EPS and revenue legs carry an excerpt too — the
+    # company's account of the quarter, which is about both of them at once
+    # (T-003) — and printing it on each would put one long sentence into this
+    # paragraph three times over. It is stated once, in the NOTE below, where
+    # what it is and what it is worth can be said in the same breath. A reader
+    # holding a single `LegVerdict` still finds it on the leg.
+    if leg.excerpt and leg.leg == "guidance":
         head += f' — the company\'s own condition: "{leg.excerpt}"'
     return head
 
@@ -459,7 +525,8 @@ def describe_quality_en(quality: "EarningsQuality") -> str:
             "score and must not be argued as a beat.")
     return (f"Earnings quality on three legs (each percentage is one vendor's "
             f"actual over that same vendor's consensus, never a mix): "
-            f"{legs}. {tail}{_dispute_line_en(quality)}")
+            f"{legs}. {tail}{_dispute_line_en(quality)}"
+            f"{_cause_line_en(quality)}")
 
 
 def print_from_event(event: EarningsEvent, stock_id: str,
@@ -643,6 +710,17 @@ def assess_earnings(print_row: EarningsPrint,
         consensus.revenue_analysts if consensus else None, config,
         source=print_row.source.value)
 
+    # The company's own account of THIS quarter, on both legs it speaks to.
+    # It sits on the legs rather than beside them because the question it
+    # answers — is a headline beat next to flat revenue a margin the company
+    # earned, or an item that will not repeat — is a question about those two
+    # numbers, and the roles read the legs (T-003). It changes no status and
+    # no score: it is what the company said, not a second opinion on whether
+    # the print was good.
+    if print_row.cause is not None and print_row.cause.source_excerpt:
+        eps = replace(eps, excerpt=print_row.cause.source_excerpt)
+        revenue = replace(revenue, excerpt=print_row.cause.source_excerpt)
+
     guidance = _guidance_leg(print_row, consensus, config)
 
     eps_part, revenue_part, gap_part = score_parts(
@@ -692,4 +770,5 @@ def assess_earnings(print_row: EarningsPrint,
         guidance_extractor=(print_row.guidance.extractor
                             if print_row.guidance else ""),
         guidance_extractor_model=(print_row.guidance.extractor_model
-                                  if print_row.guidance else ""))
+                                  if print_row.guidance else ""),
+        cause=print_row.cause, cause_reason=print_row.cause_reason)

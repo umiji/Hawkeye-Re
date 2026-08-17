@@ -16,16 +16,23 @@ from hawkeye.marketdata.whispers import EASTERN, WhispersRecord
 
 
 @pytest.fixture(autouse=True)
-def _isolate_the_guidance_queue(tmp_path_factory, monkeypatch):
-    """No test may write into the developer's own extraction queue.
+def _isolate_the_extraction_queues(tmp_path_factory, monkeypatch):
+    """No test may write into the developer's own extraction queues.
 
-    A scan with no guidance reader stages one file per print for the session
-    to read later (hawkeye/scout/guidance_case.py). Several suites run a whole
-    scan, so without this the queue fills with fixture companies and the next
-    real run asks a subagent to read AMZN's invented summary.
+    A scan stages one file per print for the session to read later — the
+    company's outlook (hawkeye/scout/guidance_case.py) and what it said
+    explains the quarter (hawkeye/scout/cause_case.py). Several suites run a
+    whole scan, so without this the queues fill with fixture companies and the
+    next real run asks a subagent to read AMZN's invented summary.
+
+    BOTH have to be named. The second queue arrived on 2026-08-17 and inherited
+    nothing from this fixture, so every suite that ran a scan wrote into the
+    real `var/cause/` — and then read fixture cases back out of it, which is
+    how it was noticed.
     """
     monkeypatch.setenv("HAWKEYE_GUIDANCE",
                        str(tmp_path_factory.mktemp("guidance")))
+    monkeypatch.setenv("HAWKEYE_CAUSE", str(tmp_path_factory.mktemp("cause")))
 
 
 @pytest.fixture

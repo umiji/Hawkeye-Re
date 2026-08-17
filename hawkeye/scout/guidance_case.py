@@ -42,6 +42,7 @@ from hawkeye import paths
 from hawkeye.contracts.models import new_id, now
 from hawkeye.contracts.stocks import next_fiscal_quarter
 from hawkeye.scout.guidance_agent import GuidanceExtraction, GuidanceRequest
+from hawkeye.scout.revision import target_row
 
 
 class GuidanceCase(BaseModel):
@@ -130,14 +131,21 @@ def attach(store, case: GuidanceCase,
            extraction: GuidanceExtraction) -> Optional[str]:
     """Put the reading (or the named refusal) on the print row.
 
-    Returns the new row's id, or None when the row the case was staged for is
-    no longer the active one — which means a restatement landed in between,
-    and the summary this reading came from described the retired row. Refusing
-    there is the same rule as everywhere else: a reading whose subject moved
-    is not a reading (invariant 6).
+    Returns the new row's id, or None when the row the case was staged for no
+    longer reports what it reported — which means a restatement landed in
+    between, and the summary this reading came from described the retired row.
+    Refusing there is the same rule as everywhere else: a reading whose
+    subject moved is not a reading (invariant 6).
+
+    The test used to be the row's id, which was a proxy for the same question
+    and stopped being one when a second queue began revising the same row for
+    its own reason (`hawkeye/scout/cause_case.py`, T-003): whichever of the
+    two submitted second found a changed id and refused a perfectly good
+    reading. `target_row` asks the real question instead.
     """
-    active = store.active_print(case.stock_id, case.fiscal_quarter)
-    if active is None or active.id != case.print_id:
+    active = target_row(store, case.stock_id, case.fiscal_quarter,
+                        case.print_id)
+    if active is None:
         return None
     # A NEW id, because this is a new row rather than an edit of the old one.
     # Reusing the id would collide with the row being retired in the same
