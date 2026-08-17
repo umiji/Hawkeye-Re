@@ -1,6 +1,6 @@
 ---
 name: hawkeye-task-cycle
-description: Use when a new task/ticket request comes in (even a casual one-liner) and before starting implementation — vet it against docs/task-template.md, ask about missing/ambiguous fields, then register it in docs/task-list-hawkeye-re.md. Also use while executing a confirmed task (implement/test/commit cycle) or writing its completion report.
+description: Use when a new task/ticket request comes in (even a casual one-liner) and before starting implementation — vet it against docs/task-template.md's 8 fields, ask about missing/ambiguous fields, then register it in docs/task-list-hawkeye-re.md. Also use while executing a confirmed task (implement/test/commit cycle) or writing its completion report.
 ---
 
 # Hawkeye task cycle
@@ -12,14 +12,18 @@ the current one reaches a terminal status (`完了` / `保留` / `中止`).
 
 ## 1. Intake — before writing any code
 
-Check the request against the 7 fields in `docs/task-template.md` (ID/task
+Check the request against the 8 fields in `docs/task-template.md` (ID/task
 name, purpose, scope, prohibitions, completion criteria, test plan, stop
-conditions). If any field is missing or ambiguous, ask the user in a
-bulleted list — do not guess (see Prohibited, below). Once confirmed, add
-the formal entry to `docs/task-list-hawkeye-re.md`: field 1 splits across the ID and
-タスク名 (task name, ~10-40 chars, states the task plainly) columns; fields
-2-4 (purpose/scope/prohibitions) go into タスク詳細; field 5 goes into
-完了条件. Get agreement before branching or implementing.
+conditions, dependencies). If any field is missing or ambiguous, ask the
+user in a bulleted list — do not guess (see Prohibited, below). This
+includes field 8 (dependencies): don't leave it blank or `-` just because
+nothing obvious comes to mind — confirm 無し explicitly, or the two-form
+`T-001（ブロッカー）` / `T-001（推奨: 理由）` notation if there is one. Once
+confirmed, add the formal entry to `docs/task-list-hawkeye-re.md`: field 1
+splits across the ID and タスク名 (task name, ~10-40 chars, states the task
+plainly) columns; fields 2-4 (purpose/scope/prohibitions) go into
+タスク詳細; field 5 goes into 完了条件; field 8 goes into 依存. Get
+agreement before branching or implementing.
 
 For the acceptance-criteria judgment calls themselves (how to phrase a
 binary check, when a goal needs a round-trip question before starting),
