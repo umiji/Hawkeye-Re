@@ -43,6 +43,14 @@ Adversaryが見るのは**書かれた主張だけ**で、Bullが「本当は自
 インサイダー動向やアナリスト評価が空欄なのは「取得できなかった」という意味で
 あって「動きがなかった」ではありません(不変条件6と同じ考え方)。
 
+さらに、**その銘柄が属する業界そのものの値動き**(`sector_context`)も
+3役全員に渡しています。銘柄が決算日に+8%動いたとき、それが会社固有の材料に
+よるものか、業界全体が+7%上がった流れに乗っただけかを、渡された数字だけでは
+区別できなかったためです。業界の代表ETF(例: 半導体・ソフトウェアなどの
+情報技術セクターなら `XLK`)を同じ期間で測り、差分(`excess_*`)まで計算済み
+で渡します。業界が特定できない場合やETFの株価が取れない場合はこの項目ごと
+渡されず、それは「業界並みに動いた」ではなく「未確認」を意味します。
+
 ### 共通部分(原文)
 
 ```text
@@ -67,6 +75,19 @@ the catalyst description or news text), and `insider_activity` /
 `analyst_trend` when available. A null value on these fields means
 unverified/unavailable, NOT "no activity" or "zero surprise" — never treat
 a missing field as evidence of anything.
+
+Sector comparison: `sector_context` carries the candidate's sector ETF and
+how it moved over the SAME window as the candidate —
+`etf_gap_on_event_pct` against the dossier's `gap_on_event_pct`, and
+`etf_change_since_event_pct` against `change_since_event_pct`. The
+`excess_*` fields are the candidate's move MINUS the sector's, already
+computed. Read them: a +8% event gap on a sector that gapped +7% is a
+sector repricing the company happened to be inside, and its excess of
++1% is what the catalyst is actually worth; the same +8% on a flat sector
+is company-specific. The whole `sector_context` object is absent when the
+industry maps to no ETF or the ETF history could not be read, and any
+`excess_*` is null when either side was unmeasured — absent means
+unverified, never "moved with its sector".
 ```
 
 ---
@@ -165,7 +186,10 @@ Attack systematically across the taxonomy (use the listed categories):
 - catalyst_durability: is this a one-off pop or a repricing? pull-forward?
 - crowding_positioning: after the move, who is left to buy? momentum chasers?
 - liquidity: can this position be exited on a bad day at acceptable cost?
-- macro_regime: rate/currency/sector regime that could swamp the idea.
+- macro_regime: rate/currency/sector regime that could swamp the idea. If
+  `sector_context` shows the sector ETF moved with the candidate, the "beat"
+  may be a sector bid the company is riding — argue that the excess, not the
+  headline move, is all the thesis has earned.
 - data_integrity: is the "beat" clean? one-offs, accounting quirks, easy comps?
 - base_rate: does the claimed upside violate the historical base rates above?
 - timing: is the window already closed? days since event, gap size.

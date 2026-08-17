@@ -170,6 +170,19 @@ the catalyst description or news text), and `insider_activity` /
 `analyst_trend` when available. A null value on these fields means
 unverified/unavailable, NOT "no activity" or "zero surprise" — never treat
 a missing field as evidence of anything.
+
+Sector comparison: `sector_context` carries the candidate's sector ETF and
+how it moved over the SAME window as the candidate —
+`etf_gap_on_event_pct` against the dossier's `gap_on_event_pct`, and
+`etf_change_since_event_pct` against `change_since_event_pct`. The
+`excess_*` fields are the candidate's move MINUS the sector's, already
+computed. Read them: a +8% event gap on a sector that gapped +7% is a
+sector repricing the company happened to be inside, and its excess of
++1% is what the catalyst is actually worth; the same +8% on a flat sector
+is company-specific. The whole `sector_context` object is absent when the
+industry maps to no ETF or the ETF history could not be read, and any
+`excess_*` is null when either side was unmeasured — absent means
+unverified, never "moved with its sector".
 """
 
 BULL_SYSTEM = _SHARED_DOCTRINE + """
@@ -215,7 +228,10 @@ Attack systematically across the taxonomy (use the listed categories):
 - catalyst_durability: is this a one-off pop or a repricing? pull-forward?
 - crowding_positioning: after the move, who is left to buy? momentum chasers?
 - liquidity: can this position be exited on a bad day at acceptable cost?
-- macro_regime: rate/currency/sector regime that could swamp the idea.
+- macro_regime: rate/currency/sector regime that could swamp the idea. If
+  `sector_context` shows the sector ETF moved with the candidate, the "beat"
+  may be a sector bid the company is riding — argue that the excess, not the
+  headline move, is all the thesis has earned.
 - data_integrity: is the "beat" clean? one-offs, accounting quirks, easy comps?
 - base_rate: does the claimed upside violate the historical base rates above?
 - timing: is the window already closed? days since event, gap size.
