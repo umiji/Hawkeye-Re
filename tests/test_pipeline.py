@@ -64,7 +64,7 @@ def test_hard_gate_failure_skips_llm(config):
 def test_full_buy_path(config):
     brief = make_brief(price=50.0)
     llm = ScriptedLLM([thesis_payload(50.0), attack_payload(),
-                       verdict_payload("buy", 0.62)])
+                       verdict_payload("buy", 0.72)])
     rec = run_tribunal(brief, llm, config, nav=100_000)
     assert rec.verdict.decision == DecisionType.BUY
     assert rec.plan is not None and rec.plan.approved
@@ -78,7 +78,7 @@ def test_full_buy_path(config):
 def test_unaddressed_severe_attack_overturns_buy(config):
     brief = make_brief(price=50.0)
     llm = ScriptedLLM([thesis_payload(50.0), attack_payload(severe=True),
-                       verdict_payload("buy", 0.62, addressed=[])])
+                       verdict_payload("buy", 0.72, addressed=[])])
     rec = run_tribunal(brief, llm, config)
     assert rec.verdict.decision == DecisionType.PASS
     assert "RULE ENFORCEMENT" in rec.verdict.rationale
@@ -95,7 +95,7 @@ def test_addressed_severe_attack_keeps_buy(config):
         "converted_to_kill_criterion": False,
     }]
     llm = ScriptedLLM([thesis_payload(50.0), severe,
-                       verdict_payload("buy", 0.62, addressed=addressed)])
+                       verdict_payload("buy", 0.72, addressed=addressed)])
     rec = run_tribunal(brief, llm, config)
     assert rec.verdict.decision == DecisionType.BUY
 
@@ -117,7 +117,7 @@ def test_addressed_attack_with_paraphrased_statement_keeps_buy(config):
         "converted_to_kill_criterion": False,
     }]
     llm = ScriptedLLM([thesis_payload(50.0), severe,
-                       verdict_payload("buy", 0.62, addressed=addressed)])
+                       verdict_payload("buy", 0.72, addressed=addressed)])
     rec = run_tribunal(brief, llm, config)
     assert rec.verdict.decision == DecisionType.BUY
 
@@ -134,7 +134,7 @@ def test_addressed_attack_with_wrong_id_still_overturns_buy(config):
         "converted_to_kill_criterion": False,
     }]
     llm = ScriptedLLM([thesis_payload(50.0), severe,
-                       verdict_payload("buy", 0.62, addressed=addressed)])
+                       verdict_payload("buy", 0.72, addressed=addressed)])
     rec = run_tribunal(brief, llm, config)
     assert rec.verdict.decision == DecisionType.PASS
     assert "RULE ENFORCEMENT" in rec.verdict.rationale
@@ -148,6 +148,69 @@ def test_low_conviction_buy_overturned(config):
     assert rec.verdict.decision == DecisionType.PASS
 
 
+# --- conviction floor, after the debate rule was folded into it ------------
+# (T-001, 2026-08-17) The Judge used to carry a separate rule: "if the
+# Adversary's short case is more convincing than the Bull's on the same facts,
+# PASS." Converting a severe attack into a monitored kill criterion did not
+# take it off those scales, so a surviving objection argued for PASS no matter
+# what it was worth — 19 of the first 19 decisions came back PASS. That rule is
+# gone; a converted-but-unrefuted severe attack is now paid for by discounting
+# conviction, and the single mechanical gate is the floor, raised 0.55 -> 0.65.
+
+def _converted_severe(severe: dict) -> list[dict]:
+    """An `addressed` entry that CONVERTS the severe attack into a monitored
+    risk instead of refuting it — the case the old rule always PASSed."""
+    return [{
+        "attack_id": parse_attack_report(severe).attacks[-1].id,
+        "attack_statement": severe["attacks"][-1]["statement"],
+        "response": "Not refutable from the record; carried as a kill "
+                    "criterion — exit if the 10-Q shows the tax line drove it.",
+        "converted_to_kill_criterion": True,
+    }]
+
+
+def test_converted_severe_attack_keeps_buy_above_the_floor(config):
+    brief = make_brief(price=50.0)
+    severe = attack_payload(severe=True)
+    llm = ScriptedLLM([thesis_payload(50.0), severe,
+                       verdict_payload("buy", 0.72,
+                                       addressed=_converted_severe(severe))])
+    rec = run_tribunal(brief, llm, config)
+    assert rec.verdict.decision == DecisionType.BUY
+    assert "RULE ENFORCEMENT" not in rec.verdict.rationale
+
+
+def test_converted_severe_attack_overturns_buy_below_the_floor(config):
+    brief = make_brief(price=50.0)
+    severe = attack_payload(severe=True)
+    llm = ScriptedLLM([thesis_payload(50.0), severe,
+                       verdict_payload("buy", 0.60,
+                                       addressed=_converted_severe(severe))])
+    rec = run_tribunal(brief, llm, config)
+    assert rec.verdict.decision == DecisionType.PASS
+    assert "0.65" in rec.verdict.rationale
+
+
+def test_conviction_that_cleared_the_old_floor_no_longer_buys(config):
+    """0.62 was the fixtures' standard BUY conviction and cleared the old 0.55
+    floor. The raise is only real if that exact number now fails."""
+    brief = make_brief(price=50.0)
+    llm = ScriptedLLM([thesis_payload(50.0), attack_payload(),
+                       verdict_payload("buy", 0.62)])
+    rec = run_tribunal(brief, llm, config)
+    assert rec.verdict.decision == DecisionType.PASS
+
+
+def test_conviction_exactly_at_the_floor_still_buys(config):
+    """The floor is a minimum, not a threshold to exceed: the rule reads
+    "below 0.65 is inconsistent", so 0.65 itself is a valid BUY."""
+    brief = make_brief(price=50.0)
+    llm = ScriptedLLM([thesis_payload(50.0), attack_payload(),
+                       verdict_payload("buy", 0.65)])
+    rec = run_tribunal(brief, llm, config)
+    assert rec.verdict.decision == DecisionType.BUY
+
+
 def test_risk_officer_veto_overturns_buy(config):
     brief = make_brief(price=50.0)
     thesis = thesis_payload(50.0)
@@ -155,7 +218,7 @@ def test_risk_officer_veto_overturns_buy(config):
     for s in thesis["scenarios"]:
         if s["name"] == "base":
             s["price_target"] = 51.0
-    llm = ScriptedLLM([thesis, attack_payload(), verdict_payload("buy", 0.62)])
+    llm = ScriptedLLM([thesis, attack_payload(), verdict_payload("buy", 0.72)])
     rec = run_tribunal(brief, llm, config)
     assert rec.verdict.decision == DecisionType.PASS
     assert "RISK OFFICER VETO" in rec.verdict.rationale
@@ -166,7 +229,7 @@ def test_scenario_probabilities_normalized(config):
     thesis = thesis_payload(50.0)
     for s in thesis["scenarios"]:
         s["probability"] = s["probability"] * 2  # sums to 2.0
-    llm = ScriptedLLM([thesis, attack_payload(), verdict_payload("buy", 0.62)])
+    llm = ScriptedLLM([thesis, attack_payload(), verdict_payload("buy", 0.72)])
     rec = run_tribunal(brief, llm, config)
     assert abs(sum(s.probability for s in rec.thesis.scenarios) - 1.0) < 1e-9
 
@@ -179,7 +242,7 @@ def test_adversary_and_judge_see_normalized_thesis_not_raw(config):
     thesis = thesis_payload(50.0)
     for s in thesis["scenarios"]:
         s["probability"] = s["probability"] * 2  # sums to 2.0, un-normalized
-    llm = ScriptedLLM([thesis, attack_payload(), verdict_payload("buy", 0.62)])
+    llm = ScriptedLLM([thesis, attack_payload(), verdict_payload("buy", 0.72)])
     run_tribunal(brief, llm, config)
 
     adversary_payload = json.loads(llm.calls[1][1].split("\n\n", 1)[1])
@@ -195,7 +258,7 @@ def test_adversary_and_judge_see_normalized_thesis_not_raw(config):
 def test_japanese_report_renders_both_outcomes(config):
     brief = make_brief(price=50.0)
     llm = ScriptedLLM([thesis_payload(50.0), attack_payload(),
-                       verdict_payload("buy", 0.62)])
+                       verdict_payload("buy", 0.72)])
     rec = run_tribunal(brief, llm, config)
     report = render_recommendation_ja(rec)
     assert "投資提案" in report and "キル基準" in report and "反証プロセス" in report

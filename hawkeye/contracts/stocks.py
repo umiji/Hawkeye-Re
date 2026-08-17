@@ -304,6 +304,37 @@ def _midpoint(low: Optional[float], high: Optional[float]) -> Optional[float]:
     return sum(values) / len(values) if values else None
 
 
+class CauseReading(BaseModel):
+    """Why the reported quarter came out where it did, in the company's words.
+
+    The reading a system can stand behind here is narrow on purpose. It is a
+    QUOTE plus the little that can be checked about it, never a conclusion:
+    whether a tax benefit means the beat should be discounted is the Judge's
+    call, and it is a call nobody could make from a row that had already
+    decided it.
+
+    `nature` is the extractor's one-word label, and it is the softest field
+    here — no check can confirm it against the text the way the quote itself
+    is confirmed. It is carried because the distinction it names (an item
+    that will not repeat against a margin the company earned) is exactly what
+    the tribunal was guessing at, and it is always shown BESIDE the quote so
+    a reader can disagree with it.
+    """
+    # "one_off" — a tax item, a gain or charge, a settlement, a revaluation;
+    # "operating" — pricing, cost, mix, volume; "unclear" — the summary says
+    # something but not which of the two, which is a real answer here.
+    nature: str = "unclear"
+    magnitude: Optional[float] = None
+    # "per_share", "million", "billion", "percent". Never blank when
+    # `magnitude` is set: a bare 0.12 beside an EPS figure is either twelve
+    # cents or twelve percent, and the two are not close.
+    magnitude_unit: str = ""
+    period: str = ""                      # the quarter this explains
+    source_excerpt: str = ""              # the sentence it was read from
+    extractor: str = "agent"
+    extractor_model: str = ""
+
+
 class ConsensusSnapshot(BaseModel):
     """What analysts expected, as of one moment. APPEND-ONLY.
 
@@ -431,6 +462,21 @@ class EarningsPrint(BaseModel):
     # never completed — and a row that records only the blank cannot tell them
     # apart afterwards (User decision, 2026-08-09).
     guidance_reason: str = ""
+
+    # What the company itself said explains THIS quarter's result, in its own
+    # words. Its sibling above is about the quarter that follows; this one is
+    # about the one just reported, and it exists because a headline EPS beat
+    # standing beside flat revenue has two completely different meanings — a
+    # tax item or a gain that will not repeat, or a margin the company
+    # actually earned — and nothing in the numbers separates them. Without it
+    # the tribunal guessed, and wrote the guess down as though it were a fact
+    # (PGY, UNH; T-003).
+    cause: Optional[CauseReading] = None
+    # Why there is no explanation above. Same three kinds as guidance, for the
+    # same reason: "the summary explains nothing", "the reader could not read
+    # what it did explain" and "the call never completed" are different facts,
+    # and a blank cannot tell them apart.
+    cause_reason: str = ""
     contamination_flags: list[str] = Field(default_factory=list)
     consensus_snapshot_id: str = ""
     notes: str = ""

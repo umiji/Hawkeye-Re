@@ -2,6 +2,48 @@
 
 **読む契機: 数字を根拠に使う前。** ここに無い数字は、まだ測っていない数字です。
 
+## 実際に届く業種名は13種類しかなく、全部GICS11セクターに対応付けられた(2026-08-17実測)
+
+**測る理由**: T-002(業界ETFとの比較材料を審理3役に渡す)には「会社の業種名 →
+その業界を代表するETFの銘柄コード」という変換表が要る。業種名の提供元は
+Finnhub(米国株の企業情報・ニュースを配る無料API)の `finnhubIndustry` という項目で、
+これはGICS(世界共通の業種分類。11の大分類を持つ)より細かく、独自の語彙を使う。
+T-002の停止条件は「どのGICSセクターにも当てはまらない業種名が多数見つかったら
+User確認」だったので、**実際に何が届いているかを数える必要があった**。
+
+**方法**: 過去の審理結果を貯めた台帳(SQLiteファイル
+`var/legacy/hawkeye-20260806-preEW.db` の `recommendations` テーブル)に入っている
+全19件の推奨レコードから、審理3役に渡した資料(`brief`)の `sector` 欄を取り出して
+集計した。実行日 2026-08-17。本番台帳 `var/hawkeye.db` は現在0件のため使えない。
+
+| 業種名(Finnhubの語彙) | 件数 | 対応させたGICSセクター |
+| --- | --- | --- |
+| Health Care | 3 | Health Care |
+| Technology | 3 | Information Technology |
+| Real Estate | 2 | Real Estate |
+| Hotels, Restaurants & Leisure | 2 | Consumer Discretionary |
+| Semiconductors | 1 | Information Technology |
+| Consumer products | 1 | Consumer Staples |
+| Financial Services | 1 | Financials |
+| Insurance | 1 | Financials |
+| Energy | 1 | Energy |
+| Biotechnology | 1 | Health Care |
+| Textiles, Apparel & Luxury Goods | 1 | Consumer Discretionary |
+| Retail | 1 | Consumer Discretionary |
+| Machinery | 1 | Industrials |
+
+**19件・13種類。空欄は0件で、13種類すべてGICSの11セクターに割り当てられた。**
+よってT-002の停止条件(対応先の無い業種が多数)には該当しなかった。
+
+**留保**:
+- **標本が19件しかない。** Finnhubの業種語彙はこの13語よりずっと広く、まだ一度も
+  届いていない語が今後届く。変換表はこの13語に加えてFinnhubの公表語彙のうち
+  対応が一意に決まるものを載せてあるが、**載っていない語が届いたら比較材料は
+  作られず「未確認」になる**(誤ったETFを渡すよりは渡さない方を選んだ)。
+- **`Consumer products` と `Retail` の2語は割り当てが議論の余地あり。**
+  前者は生活必需品(Consumer Staples)に、後者は一般消費財(Consumer Discretionary)に
+  入れたが、実際の会社によっては逆が正しい。運用で実例が出たら見直す。
+
 ## 売上の柱は、決算行が記録される時点ではもう検証できている — 26/26件(2026-08-13実測)
 
 **測る理由**: `docs/backlog/EARNINGS_QUALITY_AUDIT.ja.md` 検証3②(2026-08-04調査)は

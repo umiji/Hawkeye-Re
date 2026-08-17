@@ -16,8 +16,10 @@ from hawkeye.contracts.models import (
     Catalyst,
     MarketSnapshot,
     NewsItem,
+    SectorContext,
 )
 from hawkeye.marketdata.base import Bar, MarketDataProvider
+from hawkeye.marketdata.sector_etf import etf_for_industry
 
 
 def avg_dollar_volume(bars: list[Bar], n: int = 20) -> Optional[float]:
@@ -129,6 +131,53 @@ def _fetch_news(provider: MarketDataProvider, ticker: str,
     return fn(ticker, limit, event_date=event_date, lead_days=lead_days)
 
 
+def _excess(candidate: Optional[float], sector: Optional[float]
+            ) -> Optional[float]:
+    """Candidate move minus sector move — None unless BOTH sides were
+    measured. Treating a missing side as 0 would report an unmeasured stock
+    as having moved exactly with its sector."""
+    if candidate is None or sector is None:
+        return None
+    return round(candidate - sector, 2)
+
+
+def build_sector_context(raw_sector: str, snapshot: MarketSnapshot,
+                         provider: MarketDataProvider,
+                         event_date: Optional[date]) -> Optional[SectorContext]:
+    """The candidate's sector move over the same window, via its SPDR ETF.
+
+    Returns None — no comparison material, read downstream as unverified —
+    when the industry label maps to no ETF, when there is no catalyst date
+    to measure a window against, or when the ETF's history cannot be
+    fetched. None of those may cost us the candidate itself, so the fetch
+    failure is swallowed here rather than raised into build_brief().
+    """
+    if event_date is None:
+        return None
+    resolved = etf_for_industry(raw_sector)
+    if resolved is None:
+        return None
+    sector, etf = resolved
+    try:
+        bars = provider.daily_history(etf)
+    except Exception:
+        return None
+    if not bars:
+        return None
+    etf_gap, etf_change, _ = event_stats(bars, event_date)
+    return SectorContext(
+        sector=sector,
+        raw_sector=raw_sector,
+        etf_ticker=etf,
+        etf_gap_on_event_pct=(round(etf_gap, 2) if etf_gap is not None else None),
+        etf_change_since_event_pct=(round(etf_change, 2)
+                                    if etf_change is not None else None),
+        excess_gap_on_event_pct=_excess(snapshot.gap_on_event_pct, etf_gap),
+        excess_change_since_event_pct=_excess(
+            snapshot.change_since_event_pct, etf_change),
+    )
+
+
 def build_brief(ticker: str, catalyst: Catalyst, provider: MarketDataProvider,
                 notes: str = "", overrides: Optional[dict] = None,
                 config: Optional[HawkeyeConfig] = None) -> CandidateBrief:
@@ -137,15 +186,18 @@ def build_brief(ticker: str, catalyst: Catalyst, provider: MarketDataProvider,
     profile = provider.profile(ticker)
     snapshot = build_snapshot(ticker, bars, profile,
                               event_date=catalyst.event_date, overrides=overrides)
+    raw_sector = profile.get("sector", "")
     return CandidateBrief(
         ticker=ticker,
         company_name=profile.get("name", ""),
-        sector=profile.get("sector", ""),
+        sector=raw_sector,
         snapshot=snapshot,
         catalyst=catalyst,
         news=_fetch_news(provider, ticker, catalyst.event_date,
                          config.news_max_items, config.news_lead_days),
         insider_activity=_optional_call(provider, "insider_activity", ticker),
         analyst_trend=_optional_call(provider, "analyst_trend", ticker),
+        sector_context=build_sector_context(raw_sector, snapshot, provider,
+                                            catalyst.event_date),
         notes=notes,
     )

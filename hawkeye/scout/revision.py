@@ -41,6 +41,54 @@ _EPS_STEP = 0.005                # published to the cent
 _REVENUE_RELATIVE_STEP = 0.0001  # a hundredth of a percent
 
 
+def reports_the_same_figures(a: Optional[EarningsPrint],
+                             b: Optional[EarningsPrint]) -> bool:
+    """Whether two rows for one quarter report the same thing.
+
+    Not a general equality: a row that gained a guidance reading, or the
+    explanation of its own quarter, reports exactly what it reported before —
+    only a note about it was added. What makes two rows different SUBJECTS is
+    the figures, the date and the vendor.
+
+    This exists because two extraction queues now revise the same row (the
+    company's outlook, and the reason this quarter came out where it did).
+    Each stages against the row the scan wrote, so whichever submits second
+    finds a different active row id and would refuse a reading that is
+    perfectly valid. Pinning the id was always a proxy for the real question —
+    "is this still the print the summary described?" — and that is what this
+    answers directly (T-003).
+    """
+    if a is None or b is None:
+        return False
+    return (a.fiscal_quarter == b.fiscal_quarter
+            and a.report_date == b.report_date
+            and a.source == b.source
+            and a.eps_actual == b.eps_actual
+            and list(a.eps_actual_rows) == list(b.eps_actual_rows)
+            and a.revenue_actual == b.revenue_actual)
+
+
+def target_row(store, stock_id: str, fiscal_quarter: str,
+               staged_print_id: str) -> Optional[EarningsPrint]:
+    """The row a staged reading may be attached to, or None to refuse.
+
+    The row the reading belongs on is the ACTIVE one — attaching to a retired
+    row would put the reading somewhere no reader looks. It is returned only
+    when it still reports what the staged row reported: a vendor restatement
+    landing in between means the summary this reading came from described a
+    print that no longer stands, and a reading whose subject moved is not a
+    reading (invariant 6).
+    """
+    active = store.active_print(stock_id, fiscal_quarter)
+    if active is None:
+        return None
+    if active.id == staged_print_id:
+        return active
+    staged = next((p for p in store.prints(stock_id)
+                   if p.id == staged_print_id), None)
+    return active if reports_the_same_figures(active, staged) else None
+
+
 @dataclass(frozen=True)
 class Revision:
     """One figure that moved, named in the terms the reader needs: which

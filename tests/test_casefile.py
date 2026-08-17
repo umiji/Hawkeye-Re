@@ -49,7 +49,7 @@ def test_role_sequence_and_information_separation(config):
     judge_input = open(package["input"], encoding="utf-8").read()
     assert "thesis" in judge_input and "attack_report" in judge_input
 
-    casefile.submit(case, verdict_payload("buy", 0.62))
+    casefile.submit(case, verdict_payload("buy", 0.72))
     assert casefile.next_role(case) is None
 
 
@@ -63,7 +63,7 @@ def test_invalid_submission_rejected_and_state_unchanged(config):
 
 def test_session_and_api_drivers_produce_identical_decisions(config):
     payloads = [thesis_payload(50.0), attack_payload(severe=True),
-                verdict_payload("buy", 0.62, addressed=[])]
+                verdict_payload("buy", 0.72, addressed=[])]
 
     # API driver
     rec_api = run_tribunal(make_brief(price=50.0), ScriptedLLM(list(payloads)),
@@ -115,7 +115,7 @@ def test_finalize_does_not_mark_case_complete_until_mark_complete(config):
     case = open_test_case(config)
     casefile.submit(case, thesis_payload(50.0))
     casefile.submit(case, attack_payload())
-    casefile.submit(case, verdict_payload("buy", 0.62))
+    casefile.submit(case, verdict_payload("buy", 0.72))
 
     rec = casefile.finalize(case, config)
     assert case.recommendation_id is None

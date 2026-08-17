@@ -139,6 +139,29 @@ class AnalystTrend(BaseModel):
     prior_strong_sell: Optional[int] = None
 
 
+class SectorContext(BaseModel):
+    """How the candidate's sector moved over the same window as the candidate.
+
+    Without it the tribunal can see that a stock gapped 8% on its catalyst
+    but not whether its whole sector gapped 7% that day, so a sector-wide
+    repricing and a company-specific one are indistinguishable in the
+    record. The `excess_*` fields are the candidate's own move minus the
+    sector ETF's, pre-computed here so no role has to do arithmetic to get
+    at the distinction.
+
+    Every number is nullable and null means unverified, never zero — a
+    candidate whose own move was never measured must not be reported as
+    having exactly matched its sector.
+    """
+    sector: str                  # GICS-11 sector the raw label resolved to
+    raw_sector: str = ""         # the provider's own industry label
+    etf_ticker: str
+    etf_gap_on_event_pct: Optional[float] = None
+    etf_change_since_event_pct: Optional[float] = None
+    excess_gap_on_event_pct: Optional[float] = None
+    excess_change_since_event_pct: Optional[float] = None
+
+
 class CandidateBrief(BaseModel):
     """Facts-only dossier handed to the tribunal. No recommendation, no spin."""
     id: str = Field(default_factory=lambda: new_id("cnd"))
@@ -150,6 +173,7 @@ class CandidateBrief(BaseModel):
     news: list[NewsItem] = Field(default_factory=list)
     insider_activity: Optional[InsiderActivity] = None
     analyst_trend: Optional[AnalystTrend] = None
+    sector_context: Optional[SectorContext] = None
     notes: str = ""
 
 

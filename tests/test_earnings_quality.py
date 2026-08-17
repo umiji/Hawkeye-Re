@@ -763,7 +763,7 @@ def test_a_feed_that_returned_no_summary_is_not_recorded_as_no_guidance():
 
     from hawkeye.scout.earnings import EarningsEvent
     from hawkeye.scout.guidance_agent import GuidanceStats
-    from hawkeye.scout.scout import _QuarterContext, _read_guidance
+    from hawkeye.scout.scout import _QuarterContext, _stage_prose_reads
 
     asked = EarningsEvent(ticker="AAA", day=date(2026, 8, 7),
                           eps_actual=1.20, eps_estimate=1.00,
@@ -776,10 +776,10 @@ def test_a_feed_that_returned_no_summary_is_not_recorded_as_no_guidance():
             stock_id="stk_1", print_row=a_print(eps_actual=1.20),
             consensus_id="con_1", consensus=a_consensus())
 
-    out = _read_guidance(None, context(), asked, GuidanceStats())
+    out = _stage_prose_reads(None, context(), asked, GuidanceStats())
     assert out.print_row.guidance_reason == "no_summary_from_feed"
 
-    out = _read_guidance(None, context(), never_asked, GuidanceStats())
+    out = _stage_prose_reads(None, context(), never_asked, GuidanceStats())
     assert out.print_row.guidance_reason == "feed_not_asked"
 
     # And the leg built from it no longer claims the company said nothing.

@@ -42,20 +42,40 @@ and a genuinely persuasive `strongest_short_case` (no strawmen).
 Severity 5 = "if true, the trade is dead". Fewer, deadlier attacks score
 better than volume; conceding a strong thesis scores better than noise.
 
-## Judgment rules (pre-registered, enforced twice)
+## Judgment rules (pre-registered; two of the five re-checked in code)
 
-The Judge's prompt states the rules; `_judge_rule_check()` enforces them in
-code, because prompts are instructions and code is law:
+The Judge's prompt states all five rules. Two of them — and only two — are
+re-checked mechanically by `_judge_rule_check()`, which flips a BUY to PASS
+on violation. Those two are law; the rest bind the Judge by prompt alone.
+Read the annotations below rather than assuming everything here is enforced
+twice.
 
-1. Default PASS. BUY requires an affirmative surviving case.
+1. Default PASS. BUY requires an affirmative surviving case. *(prompt only)*
 2. Every severity ≥ 4 attack must appear in `addressed` — refuted from the
    record, or converted into a kill criterion / monitored risk. An
    unaddressed severe attack mechanically overturns a BUY.
-3. BUY with conviction < 0.55 is mechanically overturned.
-4. The Risk Officer then applies reward/risk ≥ 2 and EV ≥ +5% hurdles and
+   *(**enforced in code**, matched by `Attack.id`)*
+3. `edge_type = none_identified`, or an unrebutted failure of the sucker
+   test, is a PASS. *(prompt only)*
+4. Conviction is a calibrated probability, not the score of a debate. A
+   severe objection that was converted into a monitored kill criterion rather
+   than refuted discounts conviction in proportion to its probability and its
+   cost; it never forces a PASS by itself. BUY with conviction < 0.65 is
+   mechanically overturned. *(the **floor is enforced in code**; the discount
+   itself is prompt only)*
+5. The Risk Officer then applies reward/risk ≥ 2 and EV ≥ +5% hurdles and
    portfolio limits; any veto overturns the BUY with the reason appended to
    the rationale. The judge is explicitly told NOT to bend its judgment to
    the economics — the two checks are independent by design.
+   *(deterministic code, run after the Judge)*
+
+Until 2026-08-17 there was a sixth rule: "if the Adversary's short case is
+more convincing than the Bull's long case on the same facts, PASS." It had no
+code behind it, and it decided outcomes by debate rather than by expected
+value — converting a severe attack into a monitored risk still left it on the
+scales against the thesis. Every one of the first 19 tribunal decisions came
+back PASS. It was removed and folded into rule 4 as a conviction discount, and
+rule 4's floor was raised 0.55 → 0.65 in the same change (T-001).
 
 ## Pre-registration and scoring loop
 
