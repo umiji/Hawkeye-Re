@@ -149,3 +149,4 @@ reports and the user guide — is Japanese.
 uv venv && uv pip install -e ".[dev]"
 .venv/bin/python -m pytest
 ```
+# Lottttto
