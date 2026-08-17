@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 
 from hawkeye.config import HawkeyeConfig
 from hawkeye.paths import db_path, reports_dir
@@ -31,6 +31,7 @@ from hawkeye.contracts.models import (
     Recommendation,
     RecommendationStatus,
     ScreenedCandidateStage,
+    to_jst,
     utc_date,
 )
 from hawkeye.ledger.scoring import (
@@ -169,7 +170,9 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
               else RecommendationStatus.SYSTEM_PASS)
     ledger.record_recommendation(rec, status)
     print(render_recommendation_ja(rec))
+    report_path = _write_tribunal_report(rec)
     print(f"\n(記録済み: {rec.id} / status={status.value} / DB={db_path()})")
+    print(f"(レポート保存先: {report_path})")
     return 0
 
 
@@ -211,6 +214,17 @@ def _judged_earnings(args: argparse.Namespace):
                      if args.event_date else None),
         numbers_source=numbers,
         stock_store=_stock_store(), directory=EdgarDirectory())
+
+
+def _write_tribunal_report(rec: Recommendation) -> pathlib.Path:
+    """Save the rendered report to disk so a completed round leaves a
+    document behind, not just terminal output that scrolls away."""
+    out_dir = reports_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = to_jst(datetime.now(timezone.utc)).strftime("%y%m%d-%H%M%S")
+    path = out_dir / f"{stamp}-tribunal-report.md"
+    path.write_text(render_recommendation_ja(rec), encoding="utf-8")
+    return path
 
 
 def cmd_case_open(args: argparse.Namespace) -> int:
@@ -260,7 +274,9 @@ def cmd_case_open(args: argparse.Namespace) -> int:
         rec = gate_only_recommendation(brief, gates)
         ledger.record_recommendation(rec, RecommendationStatus.SYSTEM_PASS)
         print(render_recommendation_ja(rec))
+        report_path = _write_tribunal_report(rec)
         print(f"\n(ゲートで却下 — LLM不要。記録済み: {rec.id})")
+        print(f"(レポート保存先: {report_path})")
         return 0
     case = casefile.open_case(brief, gates, nav=args.nav,
                               open_position_count=len(ledger.open_positions()))
@@ -288,7 +304,9 @@ def _case_finalize_and_record(case: "casefile.Case", config: HawkeyeConfig) -> i
     casefile.mark_complete(case, rec.id)
     print()
     print(render_recommendation_ja(rec))
+    report_path = _write_tribunal_report(rec)
     print(f"\n(記録済み: {rec.id} / status={status.value})")
+    print(f"(レポート保存先: {report_path})")
     return 0
 
 
@@ -531,7 +549,9 @@ def cmd_rank(args: argparse.Namespace) -> int:
                       else RecommendationStatus.SYSTEM_PASS)
             ledger.record_recommendation(rec, status)
             print(render_recommendation_ja(rec))
+            report_path = _write_tribunal_report(rec)
             print(f"\n(記録済み: {rec.id} / status={status.value})")
+            print(f"(レポート保存先: {report_path})")
 
     scan_store.discard_scan_result()
     return 0
