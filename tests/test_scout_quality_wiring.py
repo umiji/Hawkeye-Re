@@ -506,6 +506,71 @@ def test_the_reason_reaches_the_reading_of_the_quarter_after_rerank(
     assert "no_guidance_in_source" in guidance.flags
 
 
+# --- and what the TRIBUNAL is told once that reading exists (T-005) --------
+#
+# Re-scoring the leg is only half of it. The three roles never see a
+# `LegVerdict`: they see one English paragraph on the candidate's brief
+# (`Catalyst.description`), written by `describe_quality_en`. `run_scout`
+# writes that paragraph while the guidance leg still reads "not yet read",
+# because in session mode nothing has read it yet — so unless `rerank` writes
+# it again, every role argues from a dossier saying the company disclosed no
+# outlook, however clearly it did (found 2026-08-17, T-005).
+
+
+def test_the_tribunal_is_told_the_guidance_that_was_read_after_the_scan(
+        tmp_path, monkeypatch):
+    result, store = _scan(tmp_path, monkeypatch, summary=_QUARTERLY_GUIDANCE)
+    before = result.passed[0].brief.catalyst.description
+    assert "pending_extraction" in before        # the scan-time paragraph
+
+    _read_staged_guidance(store, {
+        "guided": True, "period": "2026-Q3",
+        "eps_low": 2.50, "eps_high": 2.70,
+        "quote": "third quarter earnings of $2.50 to $2.70 per share"})
+    rerank_after_guidance(store, result, _config())
+
+    description = result.passed[0].brief.catalyst.description
+    assert "pending_extraction" not in description
+    assert "Guidance beat consensus" in description
+
+
+def test_a_company_that_guided_nothing_says_so_to_the_tribunal(
+        tmp_path, monkeypatch):
+    """"we have not read it yet" and "the company published nothing" render
+    identically and mean opposite things — the distinction the 未読/開示なし
+    split exists for is worth nothing if only the leg carries it."""
+    result, store = _scan(tmp_path, monkeypatch)
+
+    _read_staged_guidance(store, {"guided": False})
+    rerank_after_guidance(store, result, _config())
+
+    description = result.passed[0].brief.catalyst.description
+    assert "pending_extraction" not in description
+    assert "no_guidance_in_source" in description
+
+
+def test_rewriting_the_paragraph_touches_nothing_else_on_the_brief(
+        tmp_path, monkeypatch):
+    """Only the sentence is rewritten. The structured figures beside it were
+    fixed when the scan stood behind them, and the roles are told to prefer
+    those over prose — a paragraph rewrite that moved them would be laundering
+    a second reading into a fact."""
+    result, store = _scan(tmp_path, monkeypatch, summary=_QUARTERLY_GUIDANCE)
+    brief = result.passed[0].brief
+    before = brief.model_dump(exclude={"catalyst"})
+    catalyst_before = brief.catalyst.model_dump(exclude={"description"})
+
+    _read_staged_guidance(store, {
+        "guided": True, "period": "2026-Q3",
+        "eps_low": 2.50, "eps_high": 2.70,
+        "quote": "third quarter earnings of $2.50 to $2.70 per share"})
+    rerank_after_guidance(store, result, _config())
+
+    assert result.passed[0].brief.model_dump(exclude={"catalyst"}) == before
+    assert (result.passed[0].brief.catalyst.model_dump(exclude={"description"})
+            == catalyst_before)
+
+
 def test_a_scan_always_stages_rather_than_reading_inline(tmp_path, monkeypatch):
     """Nothing inside a scan process can reach an agent, so the sentence is
     always queued for `hawkeye guidance queue` / `submit` to close the loop —

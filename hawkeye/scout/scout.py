@@ -758,6 +758,22 @@ def rerank_after_guidance(store, result: ScoutResult, config: HawkeyeConfig
             candidate.quality = assess_earnings(
                 fresh_print, candidate.consensus, config, gap)
             candidate.score = candidate.quality.score
+            # The score is only half of what the reading changes. No role ever
+            # sees the verdict above — the Bull, the Adversary and the Judge
+            # see one English paragraph on the brief, and `run_scout` wrote it
+            # while this leg still read "not yet read", because in session mode
+            # nothing had read it yet. Left alone, every role argues from a
+            # dossier saying the company disclosed no outlook however clearly
+            # it did, while the score beside it says otherwise (T-005).
+            #
+            # ONLY the paragraph. The structured figures next to it were fixed
+            # when the scan stood behind them, and the prompts tell both roles
+            # to prefer those over prose — moving one here would launder a
+            # second reading into a fact.
+            if candidate.brief is not None:
+                candidate.brief.catalyst = candidate.brief.catalyst.model_copy(
+                    update={"description":
+                            describe_quality_en(candidate.quality)})
     result.passed.sort(key=lambda c: -c.score)
     return result
 
