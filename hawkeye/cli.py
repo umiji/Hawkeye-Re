@@ -94,7 +94,7 @@ from hawkeye.reports.quality_ja import (
     render_quality_ja,
     render_stock_history_ja,
 )
-from hawkeye.scout.single import judge_ticker
+from hawkeye.scout.single import StoredPrintMismatch, judge_ticker
 from hawkeye.scout.drift import (
     DriftStatus,
     measure_consensus_drift,
@@ -231,9 +231,32 @@ def _write_tribunal_report(rec: Recommendation) -> pathlib.Path:
     return path
 
 
+def _print_stored_print_mismatch(mismatch: StoredPrintMismatch) -> None:
+    """Both readings of the figure, side by side, and no case.
+
+    Either could be the corrected one — a vendor restatement or a feed
+    glitch — and picking a side here would decide the tribunal's evidence
+    silently. The human chooses (User decision, 2026-08-17, T-006).
+    """
+    print(f"{mismatch.ticker} {mismatch.fiscal_quarter}: 銘柄マスタに保存済みの"
+          f"決算行と、決算カレンダー/フィードから今回取り直した数値が"
+          f"食い違っています。", file=sys.stderr)
+    for d in mismatch.differences:
+        print(f"  {d.field}: 保存済み {d.stored!r} / 今回取得 {d.fetched!r}",
+              file=sys.stderr)
+    print("案件は開きません。どちらが正しいかは自動で選ばず、人間の確認に"
+          "委ねます。ベンダーの実績値訂正であれば、発表からの監視期間内に"
+          "`hawkeye scout` を再実行すると訂正として取り込まれます(task 8.5)。",
+          file=sys.stderr)
+
+
 def cmd_case_open(args: argparse.Namespace) -> int:
     config = HawkeyeConfig.from_env()
-    judged = _judged_earnings(args) if args.from_earnings else None
+    try:
+        judged = _judged_earnings(args) if args.from_earnings else None
+    except StoredPrintMismatch as mismatch:
+        _print_stored_print_mismatch(mismatch)
+        return 1
     if args.from_earnings:
         if judged is None:
             print(f"{args.ticker}: 決算カレンダーに実績のある行が見つかりません"

@@ -14,13 +14,17 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 from hawkeye.config import HawkeyeConfig
-from hawkeye.contracts.stocks import ConsensusSnapshot, SnapshotKind, Stock
+from hawkeye.contracts.models import new_id
+from hawkeye.contracts.stocks import (ConsensusSnapshot, GuidanceReading,
+                                      SnapshotKind, Stock)
 from hawkeye.ledger.stocks import StockStore
 from tests.conftest import FakeWhispers, make_whispers
 
 from hawkeye.scout.quality import LegStatus
-from hawkeye.scout.single import judge_ticker
+from hawkeye.scout.single import StoredPrintMismatch, judge_ticker
 
 JST = timezone(timedelta(hours=9))
 
@@ -141,3 +145,111 @@ def test_the_calendar_is_asked_around_the_named_day(tmp_path):
 
     start, end = calendar.windows[0]
     assert start < day < end
+
+
+# --- the quarter already on record (T-006) ---------------------------------
+
+def _amzn_feed(day: date, **overrides) -> FakeWhispers:
+    fields = dict(eps_actual=5.75, eps_consensus=1.83,
+                  revenue_actual=1.68e11, revenue_consensus=1.62e11)
+    fields.update(overrides)
+    return FakeWhispers({"AMZN": make_whispers("AMZN", announced=day,
+                                               **fields)})
+
+
+def _judge(store, day: date, feed: FakeWhispers):
+    return judge_ticker("AMZN", FakeCalendar(_amzn_rows(day)), _config(),
+                        report_date=day, stock_store=store,
+                        numbers_source=feed)
+
+
+def test_a_stored_reading_reaches_a_named_stocks_catalyst_text(tmp_path):
+    """The scan reads the company's own outlook and its account of the
+    quarter and stores both on the active print row. Rebuilding the row from
+    the calendar threw both away, so the tribunal was told 'guidance not
+    disclosed' about a company the ranking had just scored on its guidance
+    (T-006, seen live on HLIT/SDRL 2026-08-17)."""
+    day = date(2026, 7, 31)
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    stock_id = store.put_stock(Stock(cik="0001018724", ticker="AMZN"))
+    store.capture_consensus(ConsensusSnapshot(
+        stock_id=stock_id, ticker="AMZN", fiscal_quarter="2026-Q2",
+        captured_at=datetime.combine(day - timedelta(days=1),
+                                     datetime.min.time(), tzinfo=JST),
+        kind=SnapshotKind.PRE_REGISTERED, eps_avg=1.83, eps_calendar=1.83,
+        revenue_avg=1.62e11, next_quarter_eps_avg=1.90))
+    feed = _amzn_feed(day)
+    _judge(store, day, feed)          # the scan's own recording of the quarter
+    # The two agent readings land afterwards, exactly as `guidance submit` /
+    # `cause submit` put them there: a revised row carrying the readings.
+    active = store.active_print(stock_id, "2026-Q2")
+    store.revise_print(active.model_copy(update={
+        "id": new_id("ern"),
+        "guidance": GuidanceReading(period="2026-Q3", eps_low=2.0,
+                                    eps_high=2.2, extractor="agent",
+                                    source_excerpt="sees Q3 EPS of $2.00-$2.20"),
+        "guidance_reason": "",
+        "cause_reason": "no_cause_in_source"}))
+
+    judged = _judge(store, day, feed)
+
+    text = judged.catalyst_description
+    assert "Guidance beat consensus" in text
+    assert "guidance_not_published" not in text
+    assert "the source states none" in text
+    assert "it has not been read yet" not in text
+
+
+def test_a_restated_figure_stops_the_judgment_instead_of_picking_a_side(tmp_path):
+    """When the quarter on record and the fresh fetch disagree on a reported
+    figure, either side could be the corrected one — so nothing here decides.
+    The judgment refuses, names the figures, and a human chooses (User
+    decision, 2026-08-17)."""
+    day = date(2026, 7, 31)
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    first = _judge(store, day, _amzn_feed(day))
+
+    with pytest.raises(StoredPrintMismatch) as caught:
+        _judge(store, day, _amzn_feed(day, eps_actual=6.10))
+
+    mismatch = caught.value
+    assert mismatch.ticker == "AMZN"
+    assert mismatch.fiscal_quarter == "2026-Q2"
+    assert {d.field: (d.stored, d.fetched) for d in mismatch.differences} == {
+        "eps_actual": (5.75, 6.10)}
+    # The row on record was not touched: refusing is not revising.
+    row = store.active_print(first.stock_id, "2026-Q2")
+    assert row.eps_actual == 5.75
+
+
+class FakeFinnhub(FakeCalendar):
+    available = True
+
+
+def test_case_open_reports_the_difference_and_opens_no_case(
+        tmp_path, monkeypatch, capsys):
+    """What the operator actually sees: `hawkeye case open --from-earnings`
+    prints both readings of the figure and exits without creating a case."""
+    import hawkeye.cli as cli
+
+    day = date(2026, 7, 31)
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    _judge(store, day, _amzn_feed(day))
+    monkeypatch.setattr(cli, "FinnhubProvider",
+                        lambda: FakeFinnhub(_amzn_rows(day)))
+    monkeypatch.setattr(cli, "WhispersSource",
+                        lambda: _amzn_feed(day, eps_actual=6.10))
+    monkeypatch.setattr(cli, "_stock_store", lambda: store)
+    monkeypatch.setattr(cli, "EdgarDirectory", lambda: None)
+
+    def _no_case(*args, **kwargs):
+        raise AssertionError("a mismatched print must not open a case")
+    monkeypatch.setattr(cli.casefile, "open_case", _no_case)
+
+    rc = cli.main(["case", "open", "AMZN", "--from-earnings",
+                   "--event-date", day.isoformat(), "--nav", "10000"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "eps_actual" in err
+    assert "5.75" in err and "6.1" in err
