@@ -328,3 +328,98 @@ def test_the_report_can_be_rebuilt_from_the_ledger_alone(tmp_path):
     assert "AAA" in out and "BBB" in out
     assert "囁き予想の上回り +2.5" in out       # the breakdown survived the JSON
     assert ledger.verify_chain()               # invariant 2
+
+
+# --- how the company's own release was cut (T-013) ---------------------------
+#
+# The rescue that repairs a near-miss block cuts the RELEASE's characters, so
+# the excerpt is correct whether or not anything went wrong on the way. That
+# is exactly why these counts have to be printed: without them a scan where
+# our HTML conversion broke 13 real explanations (T-012) and a scan where
+# nothing went wrong render identically.
+
+def test_the_report_says_how_the_release_was_cut_for_each_ranked_name():
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", rank=1, gate_report=gate_report(),
+        cause_blocks_kept=5, cause_blocks_repaired=2,
+        cause_blocks_altered=1, cause_blocks_refused=3)], top_n=1)
+    assert "採用 5件" in out
+    assert "こちらの変換ミスを修正して採用 2件" in out
+    assert "抜き出し役が語句を改変 1件" in out
+    assert "原文に無く却下 3件" in out
+
+
+def test_a_clean_read_still_prints_its_zeros():
+    """A count that only appears when it is non-zero is a count nobody can
+    trust — its absence would read as "the step is fine" and as "the step
+    never ran" at the same time."""
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", rank=1, gate_report=gate_report(),
+        cause_blocks_kept=4)], top_n=1)
+    assert "採用 4件" in out
+    assert "こちらの変換ミスを修正して採用 0件" in out
+    assert "抜き出し役が語句を改変 0件" in out
+    assert "原文に無く却下 0件" in out
+
+
+def test_a_name_whose_release_was_never_read_says_so_rather_than_zero():
+    """Dropped before enrichment, or no extractor key. Printing "却下0件"
+    there would claim the release had been read and found clean."""
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", rank=1, gate_report=gate_report())], top_n=1)
+    assert "この銘柄では読んでいません" in out
+    assert "採用 0件" not in out
+
+
+def test_an_alteration_is_called_out_not_just_counted():
+    """The extractor changed a letter or a digit of the company's sentence.
+    The excerpt is correct — the release's characters were used — so this
+    line is the only place the user can learn it happened."""
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", rank=1, gate_report=gate_report(),
+        cause_blocks_kept=3, cause_blocks_altered=1)], top_n=1)
+    assert "改変あり" in out
+    assert "hawkeye cause source AAA" in out
+
+
+def test_every_row_carries_the_cut_counts_in_the_csv():
+    """Not only the ranked three: which names we keep failing to read is a
+    question about the whole scan."""
+    text = scan_report_csv([make_candidate(
+        "ZZZ", stage=ScreenedCandidateStage.GATE_REJECT,
+        cause_blocks_kept=2, cause_blocks_repaired=1,
+        cause_blocks_altered=0, cause_blocks_refused=4)])
+    row = list(csv.DictReader(io.StringIO(text)))[0]
+    assert row["発表文 採用ブロック数"] == "2"
+    assert row["発表文 変換ミスを修正した数"] == "1"
+    assert row["発表文 抜き出し役が改変した数"] == "0"
+    assert row["発表文 却下した数"] == "4"
+
+
+def test_the_scan_wide_release_tally_is_printed_even_at_zero():
+    """Section ② carries this per name, but only for the tribunal names —
+    and a day when nothing clears the gates is exactly a day when a defect
+    on our side would run unnoticed."""
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", stage=ScreenedCandidateStage.GATE_REJECT,
+        cause_blocks_kept=6)], top_n=3)
+    assert "## ⑤ 決算発表文の読み取り" in out
+    assert "そのまま採用: **6件**" in out
+    assert "こちらの文章変換のミスを直して採用: **0件**" in out
+
+
+def test_the_scan_wide_tally_names_the_tickers_behind_a_repair():
+    out = render_scan_report_ja(SCAN, [
+        make_candidate("AAA", stage=ScreenedCandidateStage.GATE_REJECT,
+                       cause_blocks_kept=4, cause_blocks_repaired=2),
+        make_candidate("BBB", stage=ScreenedCandidateStage.GATE_REJECT,
+                       cause_blocks_kept=3, cause_blocks_altered=1),
+    ], top_n=3)
+    assert "こちら側の不具合の疑い**: AAA" in out
+    assert "抜き出し役による改変**: BBB" in out
+
+
+def test_a_scan_that_read_no_release_says_so_in_the_tally():
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", stage=ScreenedCandidateStage.GATE_REJECT)], top_n=3)
+    assert "1銘柄も読んでいません" in out

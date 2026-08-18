@@ -290,6 +290,23 @@ class ScreenedCandidate(BaseModel):
     # later: "which NAMES are we persistently unable to read, and is the
     # reason a property of the company or of one bad afternoon?"
     numbers_reason: str = ""
+    # How the company's own earnings release was cut into the excerpt the
+    # tribunal reads (T-013), as four counts and no text. `repaired` means
+    # the block and the release differed only in spacing, punctuation or
+    # typography — almost always OUR HTML conversion, which is how T-012 was
+    # found. `altered` means a LETTER OR DIGIT differed: the extractor
+    # changed the company's own sentence, and the excerpt still carries the
+    # release's characters, so this count is the only place that shows it.
+    # `refused` means the block resembled no passage in the release at all.
+    #
+    # All four zero means the release was never read for this name — dropped
+    # before enrichment, or the scan ran with no extractor key. Optional-free
+    # ints with a zero default so records written before T-013 still load
+    # (invariant 1); the report tells the two apart by the stage.
+    cause_blocks_kept: int = 0
+    cause_blocks_repaired: int = 0
+    cause_blocks_altered: int = 0
+    cause_blocks_refused: int = 0
     calendar_eps_surprise_pct: Optional[float] = None
     score: float
     score_version: str            # "full" (gap-aware) or "partial_no_gap"

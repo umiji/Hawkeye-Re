@@ -477,6 +477,26 @@ class EarningsPrint(BaseModel):
     # what it did explain" and "the call never completed" are different facts,
     # and a blank cannot tell them apart.
     cause_reason: str = ""
+    # How the company's own release was cut into the excerpt above (T-013),
+    # as four counts and no text. The blocks themselves are deliberately NOT
+    # stored: the release can be fetched again and `hawkeye cause source
+    # TICKER` reproduces them, so keeping them here would be a second copy
+    # that ages badly.
+    #
+    # All four zero means the release was never read for this print — a name
+    # dropped before enrichment, or a scan run with no extractor key. That is
+    # a different fact from "read it and refused everything", and two counts
+    # could not have told them apart.
+    #
+    # `cause_altered` is the one to watch: it counts blocks where the
+    # extractor changed a LETTER OR DIGIT of the company's own sentence. The
+    # excerpt still carries the release's characters, so nothing wrong
+    # reaches the tribunal — which is exactly why it has to be counted, since
+    # nothing else on the page would ever show it happened.
+    cause_blocks_kept: int = 0
+    cause_blocks_repaired: int = 0
+    cause_blocks_altered: int = 0
+    cause_blocks_refused: int = 0
     contamination_flags: list[str] = Field(default_factory=list)
     consensus_snapshot_id: str = ""
     notes: str = ""

@@ -83,6 +83,15 @@ class ScoutCandidate:
     # Why the feed's figures are not the ones above (hawkeye/scout/numbers.py).
     numbers_reason: str = ""
     calendar_eps_surprise_pct: Optional[float] = None
+    # How the company's own release was cut into the cause excerpt, carried
+    # here so the scan report the USER reads can show it per ticker (T-013).
+    # All four zero means the release was never read for this name — dropped
+    # before enrichment, or no extractor key — which is why the report says
+    # "not read" there rather than "refused 0".
+    cause_blocks_kept: int = 0
+    cause_blocks_repaired: int = 0
+    cause_blocks_altered: int = 0
+    cause_blocks_refused: int = 0
     # Why this print could not be ranked at all, and whether the wait for its
     # numbers has run out (hawkeye/scout/waiting.py). "" for every candidate
     # that WAS judged — a held name never reaches enrichment or the gates, so
@@ -306,8 +315,10 @@ def _quarter_context(store, directory, event) -> Optional[_QuarterContext]:
                            consensus_id=consensus.id, consensus=consensus)
 
 
-def _stage_cause(context: _QuarterContext, event, cause_source) -> str:
-    """Stage the cause reading, and return the reason it could not be.
+def _stage_cause(context: _QuarterContext, event,
+                 cause_source) -> tuple[str, dict]:
+    """Stage the cause reading, and return the reason it could not be, plus
+    how the release was cut.
 
     Split from the guidance staging beside it because the two no longer read
     the same text (T-008). Guidance is in the vendor's summary; the reason
@@ -318,7 +329,9 @@ def _stage_cause(context: _QuarterContext, event, cause_source) -> str:
     With no `cause_source` wired the old behaviour stands exactly: the
     summary is staged as before. That path is what every offline test and
     every scan without an extractor key still takes, and it must keep
-    yielding the same rows.
+    yielding the same rows — and it returns no counts at all, which is how
+    "the release was never read" stays distinguishable from "it was read and
+    nothing survived" (T-013).
     """
     if cause_source is None or not getattr(cause_source, "available", False):
         cause_case.save_case(cause_case.CauseCase(
@@ -326,11 +339,24 @@ def _stage_cause(context: _QuarterContext, event, cause_source) -> str:
             ticker=event.ticker,
             fiscal_quarter=context.print_row.fiscal_quarter,
             summary=event.summary))
-        return "pending_extraction"
+        return "pending_extraction", {}
 
     built = cause_source.text_for(event.ticker,
                                   getattr(event, "article_id", ""),
                                   context.print_row.fiscal_quarter)
+    counts = {"cause_blocks_kept": built.kept,
+              "cause_blocks_repaired": len(built.repaired),
+              "cause_blocks_altered": len(built.altered),
+              "cause_blocks_refused": len(built.rejected)}
+    if built.altered:
+        # Said while the scan is running, because it is the one thing here
+        # that no later column explains on its own: the excerpt is CORRECT
+        # (the release's characters were used), so without this line an
+        # extractor quietly rewriting figures looks exactly like a clean run.
+        for sent, actual in built.altered:
+            print(f"  {event.ticker}: the extractor altered the company's "
+                  f"words — sent {sent[-60:]!r}, release says "
+                  f"{actual[-60:]!r}", file=sys.stderr)
     if not built.excerpt:
         # Nothing to read. WHICH nothing it is has already been decided by
         # the source and must survive to the row: "no release reached us",
@@ -343,13 +369,13 @@ def _stage_cause(context: _QuarterContext, event, cause_source) -> str:
             # leave it to be inferred from a column a day later (T-011).
             print(f"  {event.ticker}: {built.reason} — {built.detail}",
                   file=sys.stderr)
-        return built.reason
+        return built.reason, counts
     cause_case.save_case(cause_case.CauseCase(
         stock_id=context.stock_id, print_id=context.print_row.id,
         ticker=event.ticker,
         fiscal_quarter=context.print_row.fiscal_quarter,
         summary=built.excerpt, source_text=built.source_text))
-    return "pending_extraction"
+    return "pending_extraction", counts
 
 
 def _stage_prose_reads(store, context: _QuarterContext, event,
@@ -409,12 +435,13 @@ def _stage_prose_reads(store, context: _QuarterContext, event,
         # No longer the same sentence, since T-008: guidance IS in the
         # vendor's summary and the reason for the quarter is not, so this
         # queue is fed from the company's own release instead.
-        cause_reason = _stage_cause(context, event, cause_source)
+        cause_reason, cause_counts = _stage_cause(context, event,
+                                                  cause_source)
     else:
-        cause_reason = "pending_extraction"
+        cause_reason, cause_counts = "pending_extraction", {}
     return replace(context, print_row=context.print_row.model_copy(
         update={"guidance_reason": "pending_extraction",
-                "cause_reason": cause_reason}))
+                "cause_reason": cause_reason, **cause_counts}))
 
 
 def _record_print(store, context: _QuarterContext, config=None,
@@ -679,6 +706,13 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
         if context is not None:
             context = _stage_prose_reads(stock_store, context, event,
                                          guidance_stats, cause_source)
+            # Carried onto the candidate as well as the print row, because
+            # the two are read by different people: the row is the permanent
+            # record, and the candidate is what the user's scan report is
+            # built from (T-013).
+            for field in ("cause_blocks_kept", "cause_blocks_repaired",
+                          "cause_blocks_altered", "cause_blocks_refused"):
+                setattr(candidate, field, getattr(context.print_row, field))
         quality = (assess_earnings(context.print_row, context.consensus, config)
                    if context is not None else None)
         catalyst = Catalyst(
@@ -885,6 +919,15 @@ def _measured(c: ScoutCandidate) -> dict:
             # and the report must say that rather than print five zeros.
             "score_breakdown": (c.quality.breakdown if c.quality is not None
                                 else None),
+            # How the company's own release was cut for this name (T-013).
+            # Recorded on every dropped candidate, not only the ranked ones,
+            # because "which names do we keep failing to read, and is the
+            # reason ours or the extractor's" is a question about the whole
+            # scan and cannot be answered from the top three.
+            "cause_blocks_kept": c.cause_blocks_kept,
+            "cause_blocks_repaired": c.cause_blocks_repaired,
+            "cause_blocks_altered": c.cause_blocks_altered,
+            "cause_blocks_refused": c.cause_blocks_refused,
             "price": c.price, "price_asof": c.price_asof}
 
 

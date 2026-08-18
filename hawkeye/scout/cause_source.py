@@ -16,26 +16,37 @@ given. Put a SUMMARY in front of it and the words become the summariser's:
 the check still passes, and a machine-written sentence reaches the tribunal
 as the company's own. The check would be measuring the wrong document.
 
-**This is not hypothetical.** Measured 2026-08-17 over 13 names / 81 blocks:
-79 verbatim, and AII returned
+**This is not hypothetical.** Measured 2026-08-17 over 13 names / 81 blocks,
+one block did not match: AII returned a sentence ending
 
-    "The Company benefitted from the upper end of 15-20% CAT XOL
-     risk-adjusted rate decreases, while retaining its 1-in-130 year probable
-     maximum loss level and reducing its aggregate retention from $95 million
-     to $65 million"
+    "...reducing its aggregate retention from $95 million to $65 million"
 
-where the release says only that the program was renewed "with a risk-adjusted
-rate decrease at the upper end of 15-20% declines". Longest verbatim run: 25
-of 220 characters. Every fact in it is somewhere in the release; the sentence
-— and the claim that the company *benefitted* — is not. It was composed while
-under explicit instruction to copy character for character, which is the
-whole argument for checking mechanically instead of instructing harder.
+where the release says `$75 million`. **The rest of that 220-character
+sentence is the company's own, character for character** (longest verbatim
+run 210; re-measured 2026-08-18 against the same article, id 2608116636).
+`$65 million` appears nowhere in the release. So the failure this step
+actually catches is not a composed sentence — it is the extractor restating a
+real passage and changing a FIGURE inside it, under explicit instruction to
+copy. That is harder to spot than invention and lands straight on a number
+the tribunal reasons about, which is the whole argument for checking
+mechanically instead of instructing harder.
+
+(Until 2026-08-18 this file, three task records and two documents described
+that block as invented "out of scattered facts", on a longest run of 25
+characters. It was wrong: the sentence had been compared against a bullet in
+the release's opening summary and the other 38,000 characters were never
+searched. Corrected by T-013, whose threshold measurement is what surfaced
+it — the claim it was built on could not be reproduced.)
 
 **The opposite error costs just as much.** DFDV's block differed from the
 release by curly versus straight quotes and nothing else. Thrown away, that
-is a real explanation lost to an invisible character — and the lesson learned
-would be to loosen the check that catches AII. So the comparison is normalised
-for typography (quotes, dashes, non-breaking spaces) and for nothing else.
+is a real explanation lost to an invisible character. So the comparison is
+normalised for typography (quotes, dashes, non-breaking spaces) and for
+nothing else — and where even that is not enough, the passage is found by
+alignment and the RELEASE's characters are cut at it (T-013, `_RESCUE_BAR`).
+Nothing the extractor typed ever reaches the excerpt, on any path through
+this module, which is what makes rescuing safe: AII rescued puts `$75
+million` in front of the tribunal, not `$65 million`.
 
 What leaves here is a pair, never a single text: the EXCERPT the reader is
 shown, and the RELEASE it was cut from. The quote check downstream matches
@@ -47,6 +58,7 @@ from __future__ import annotations
 import re
 import string
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 # Typographic variants that carry no meaning. The extractor normalises them
 # on its own (measured: DFDV), and a release that writes “SPS” is saying the
@@ -69,6 +81,27 @@ _TYPOGRAPHY = str.maketrans({
 _EDGE_PUNCTUATION = string.whitespace + "\"'`.,;:!?-()[]\u2013\u2014\u2026"
 _BLOCK_SEPARATOR = "\n\n"
 
+# How closely a block must align to a release passage before that passage is
+# cut and used (T-013). The bar answers ONE question \u2014 is this the same
+# passage, or a different one \u2014 so it was set from the two populations that
+# can make that answer wrong, measured 2026-08-18 over five releases
+# (AII/ALCO/FOSL/MSGE/SDRL, 89 sampled passages):
+#
+#   0.7018  the highest a passage scored against a DIFFERENT company's
+#           release (356 pairs). Earnings releases share their vocabulary and
+#           their boilerplate, so this is the hard negative, not a strawman.
+#   0.8951  the highest a passage scored against a different passage of its
+#           OWN release, once its true home was blanked out (86 cases). This
+#           is the confusion that would actually hurt: ALCO states the same
+#           line for "three months ended" and "nine months ended", and that
+#           particular pair reached only 0.7636.
+#   0.9932  the LOWEST of the 13 blocks refused for our own defect (T-012).
+#
+# The window is therefore (0.8951, 0.9932]; 0.95 sits near its middle, four
+# points clear on each side. Below the bar nothing is cut and the block is
+# refused exactly as before.
+_RESCUE_BAR = 0.95
+
 
 @dataclass(frozen=True)
 class CauseText:
@@ -79,10 +112,27 @@ class CauseText:
     together rather than derived from one another because the entire point is
     that the excerpt is NOT trusted to represent the release.
 
-    `rejected` holds the blocks that failed verbatim matching, kept rather
+    `rejected` holds the blocks that matched no passage at all, kept rather
     than counted. An extractor composing sentences is a measurement about the
     extractor, and a bare count would say it happened without ever saying
     what it invented.
+
+    `repaired` and `altered` hold what was rescued, and they are two fields
+    rather than one because they are two different pieces of news (T-013).
+    `repaired` means the block and the release differed only in whitespace,
+    punctuation or typography — almost always OUR conversion, which is how
+    T-012 was found. `altered` means a letter or a digit differed: the
+    extractor changed the company's words, and AII's `$75 million` returned
+    as `$65 million` is what that looks like. Both were rescued, and in both
+    the excerpt carries the RELEASE's characters — the alteration never
+    reaches a reader. Merging the two counts would hide the second inside the
+    first, which is the one thing this rescue must not do.
+
+    `kept` counts the blocks that reached the excerpt by any route. It is
+    stored rather than derived from `excerpt` because a cut passage may
+    itself contain a blank line, so splitting the excerpt back apart
+    undercounts — and this number is the denominator every verbatim-rate
+    measurement in `docs/knowledge/MEASUREMENTS.ja.md` is quoted against.
 
     `reason` is empty when there is an excerpt to read. When it is set it
     names WHY there is none, and the three ways that happens are deliberately
@@ -105,6 +155,9 @@ class CauseText:
     reason: str = ""
     rejected: tuple[str, ...] = ()
     detail: str = ""
+    repaired: tuple[str, ...] = ()
+    altered: tuple[tuple[str, str], ...] = ()
+    kept: int = 0
 
 
 def _said(exc: BaseException) -> str:
@@ -160,6 +213,70 @@ def _indexed(text: str) -> tuple[str, list[int]]:
     return "".join(chars), positions
 
 
+def _closest_span(hay: str, needle: str) -> tuple[int, int, float] | None:
+    """Where in `hay` the passage most nearly sits, and how nearly, or None.
+
+    Both arguments are already `_comparable`. The span is returned in `hay`'s
+    coordinates so the caller can cut the RELEASE's characters at it — the
+    extractor's text is never what comes back, which is what keeps a rescued
+    excerpt a literal substring of the release (T-013 prohibition 1).
+
+    The score is the usual similarity ratio, but taken between the needle and
+    the ALIGNED SPAN rather than the whole release: matched characters over
+    the mean length of the two. Scoring against the release would make every
+    block look equally unlike a 25,900-character document.
+
+    A window is cut around the longest shared run before the alignment is
+    computed, because the alignment is quadratic and the release is not
+    small. The slack lets the span breathe by a quarter of the block's length
+    at each end, which is far more than the differences this is for (a
+    stray space, a curly quote) and far less than a neighbouring paragraph.
+    """
+    if not needle or not hay:
+        return None
+    anchor = SequenceMatcher(None, hay, needle,
+                             autojunk=False).find_longest_match(
+                                 0, len(hay), 0, len(needle))
+    if not anchor.size:
+        return None
+    slack = max(len(needle) // 4, 40)
+    start = max(0, anchor.a - anchor.b - slack)
+    end = min(len(hay), anchor.a - anchor.b + len(needle) + slack)
+    local = SequenceMatcher(None, hay[start:end], needle, autojunk=False)
+    runs = [run for run in local.get_matching_blocks() if run.size]
+    if not runs:
+        return None
+    span_start = runs[0].a
+    span_end = runs[-1].a + runs[-1].size
+    matched = sum(run.size for run in runs)
+    score = 2 * matched / ((span_end - span_start) + len(needle))
+    return start + span_start, start + span_end, score
+
+
+def _differs_in_a_word(release_span: str, block: str) -> bool:
+    """Does any LETTER OR DIGIT differ between the two?
+
+    This is the line between the two kinds of rescue, and it is drawn on the
+    character class rather than on a similarity number because the two mean
+    different things no matter how small they are. A missing space is our
+    conversion; a changed digit is the extractor rewriting the company's
+    figures, and one is worth chasing while the other is worth counting.
+
+    Measured 2026-08-18: all 13 blocks refused for the T-012 defect differ
+    only by a deleted space (False here), while AII's block differs by one
+    digit (True). No threshold separates those two sets — AII scored 0.9955
+    against a lowest legitimate 0.9932 — and that is why this question is
+    asked of the characters instead.
+    """
+    for op, i1, i2, j1, j2 in SequenceMatcher(
+            None, release_span, block, autojunk=False).get_opcodes():
+        if op == "equal":
+            continue
+        if any(char.isalnum() for char in release_span[i1:i2] + block[j1:j2]):
+            return True
+    return False
+
+
 def build_cause_text(release: str, blocks) -> CauseText:
     """Keep the blocks the release actually contains, in the release's order.
 
@@ -180,6 +297,8 @@ def build_cause_text(release: str, blocks) -> CauseText:
     hay, origin = _indexed(source)
     kept: list[tuple[int, str]] = []
     rejected: list[str] = []
+    repaired: list[str] = []
+    altered: list[tuple[str, str]] = []
     seen: set[str] = set()
     for block in blocks or []:
         text = str(block or "")
@@ -192,33 +311,61 @@ def build_cause_text(release: str, blocks) -> CauseText:
             # passage often returns a fragment tidied into a sentence, and a
             # trailing full stop the release spells as a comma is not a
             # rewrite. Nothing inside the passage is touched.
-            needle = needle.strip(_EDGE_PUNCTUATION)
-            position = hay.find(needle) if needle else -1
-        if position < 0:
-            rejected.append(text)
+            trimmed = needle.strip(_EDGE_PUNCTUATION)
+            position = hay.find(trimmed) if trimmed else -1
+            if position >= 0:
+                needle = trimmed
+        if position >= 0:
+            start, stop, outcome = position, position + len(needle), "exact"
+        else:
+            # Third chance, and the last: where does this passage MOST NEARLY
+            # sit? Refusing here has never once meant the extractor invented
+            # something — every refusal measured so far was our own conversion
+            # (12 of 13) or a single digit the extractor changed (AII). Both
+            # cost the tribunal a real explanation, so the passage is found
+            # and the RELEASE's characters are cut at it.
+            found = _closest_span(hay, needle)
+            if found is None or found[2] < _RESCUE_BAR:
+                rejected.append(text)
+                continue
+            start, stop, _score = found
+            outcome = "altered" if _differs_in_a_word(
+                hay[start:stop], needle) else "repaired"
+        # Deduplicated on the RELEASE span rather than on what the extractor
+        # sent: two blocks that resolve to the same passage ARE the same
+        # passage, however differently they were typed.
+        span = hay[start:stop]
+        if span in seen:
             continue
-        if needle in seen:
-            continue
-        seen.add(needle)
+        seen.add(span)
         # The RELEASE's characters, sliced at the match, NOT the extractor's.
         # This is what makes the excerpt a literal substring of the release,
-        # and the downstream quote check true by construction.
-        start = origin[position]
-        end = origin[position + len(needle) - 1] + 1
-        kept.append((position, source[start:end]))
+        # and the downstream quote check true by construction. It holds for a
+        # rescued block exactly as for an exact one, which is what lets the
+        # rescue exist at all (T-013).
+        cut = source[origin[start]:origin[stop - 1] + 1]
+        kept.append((start, cut))
+        if outcome == "repaired":
+            repaired.append(cut)
+        elif outcome == "altered":
+            altered.append((text, cut))
 
     if not kept:
         # Both of these mean "no excerpt", and they are not the same event.
         # An extractor that returned only inventions is broken; one that
         # returned nothing is reporting that the release is silent, which is
-        # a normal and common answer.
+        # a normal and common answer. The first name means more since T-013:
+        # a refusal now says the block resembles NO passage in the release,
+        # rather than that it differed from one by a space.
         reason = ("extractor_invented_every_block" if rejected
                   else "no_cause_in_release")
         return CauseText("", source, reason, tuple(rejected))
 
     kept.sort(key=lambda pair: pair[0])
     return CauseText(_BLOCK_SEPARATOR.join(text for _, text in kept),
-                     source, "", tuple(rejected))
+                     source, "", tuple(rejected),
+                     repaired=tuple(repaired), altered=tuple(altered),
+                     kept=len(kept))
 
 
 class ReleaseCauseSource:

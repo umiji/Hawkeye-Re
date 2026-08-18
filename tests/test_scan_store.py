@@ -105,3 +105,40 @@ def test_discard_then_has_pending_scan(tmp_path, monkeypatch):
     assert discard_scan_result() is True
     assert has_pending_scan() is False
     assert discard_scan_result() is False   # nothing left to discard
+
+
+def test_the_release_cut_counts_survive_the_round_trip(tmp_path,
+                                                       monkeypatch):
+    """The scan writes this file and `hawkeye rank` reads it back hours
+    later. A count lost here reaches the ledger as a zero, and a zero is how
+    the report says "the release was never read" — so the loss would be
+    reported as a fact about the scan rather than about the file (T-013)."""
+    from hawkeye.scout.scan_store import _candidate_from_dict, _candidate_to_dict
+    from hawkeye.scout.scout import ScoutCandidate
+
+    candidate = ScoutCandidate(
+        ticker="AAA", event_date=date(2026, 8, 14),
+        eps_surprise_pct=12.5, revenue_surprise_pct=3.0,
+        cause_blocks_kept=8, cause_blocks_repaired=2,
+        cause_blocks_altered=1, cause_blocks_refused=3)
+    back = _candidate_from_dict(_candidate_to_dict(candidate))
+    assert (back.cause_blocks_kept, back.cause_blocks_repaired,
+            back.cause_blocks_altered, back.cause_blocks_refused) \
+        == (8, 2, 1, 3)
+
+
+def test_a_pending_file_written_before_the_counts_existed_still_loads():
+    """Invariant 1 in miniature: an older file is read as "never counted",
+    which is what it is."""
+    from hawkeye.scout.scan_store import _candidate_from_dict, _candidate_to_dict
+    from hawkeye.scout.scout import ScoutCandidate
+
+    older = _candidate_to_dict(ScoutCandidate(
+        ticker="AAA", event_date=date(2026, 8, 14),
+        eps_surprise_pct=12.5, revenue_surprise_pct=3.0))
+    for key in list(older):
+        if key.startswith("cause_blocks_"):
+            del older[key]
+    back = _candidate_from_dict(older)
+    assert back.cause_blocks_kept == 0
+    assert back.cause_blocks_refused == 0

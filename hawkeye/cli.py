@@ -259,9 +259,22 @@ def cmd_cause_source(args: argparse.Namespace) -> int:
     print(f"  ベンダー要約: {len(record.summary)}文字")
     print(f"  決算発表文  : {len(built.source_text)}文字 "
           f"(記事ID {record.file_name or 'なし'})")
+    if built.repaired:
+        # Our own text conversion, not the extractor's doing. Shown because
+        # this is the only place it surfaces: the excerpt is correct, so a
+        # conversion defect would otherwise be invisible until someone
+        # measured the refusal rate by hand (which is how T-012 was found).
+        print(f"\nこちらの変換ミスを直して採用したブロック "
+              f"{len(built.repaired)}件（原文とは空白・記号だけの差）")
+    if built.altered:
+        print(f"\n抜き出し役が会社の語句を書き換えたブロック "
+              f"{len(built.altered)}件（審理に渡すのは原文の文字の方です）:")
+        for sent, actual in built.altered:
+            print(f"  抜き出し役: {sent}")
+            print(f"  発表文    : {actual}")
     if built.rejected:
-        print(f"\n原文に無いため却下したブロック {len(built.rejected)}件"
-              "（抜き出し役が文を作った証拠）:")
+        print(f"\n原文のどこにも近い箇所が無く却下したブロック "
+              f"{len(built.rejected)}件:")
         for block in built.rejected:
             print(f"  ✗ {block}")
     if not built.excerpt:
