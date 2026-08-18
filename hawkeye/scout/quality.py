@@ -37,7 +37,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Optional
 
-from hawkeye.contracts.models import ScoreBreakdown, now
+from hawkeye.contracts.models import GuidanceState, ScoreBreakdown, now
 from hawkeye.contracts.stocks import (
     CauseReading,
     ConsensusSnapshot,
@@ -184,10 +184,57 @@ class EarningsQuality:
     # false impression this feature exists to remove (T-003).
     cause: Optional[CauseReading] = None
     cause_reason: str = ""
+    # Whether the company's outlook was obtained at all, and the named reason
+    # when it was not (T-014). Deliberately NOT read off the guidance leg's
+    # status: that leg reads ABSENT both when the company published nothing
+    # and when it published a range this system declined to compare (a
+    # qualifier it attached, no yardstick to compare against). Those are
+    # opposite answers to "did we get the outlook", and the user's table has
+    # to give the first one.
+    guidance_disclosed: bool = False
+    guidance_reason: str = ""
 
     @property
     def legs(self) -> tuple[LegVerdict, LegVerdict, LegVerdict]:
         return (self.eps, self.revenue, self.guidance)
+
+
+# Which named reasons mean the COMPANY said nothing, and which mean nobody
+# asked. Everything else that leaves a print without an outlook is a failure
+# on our side — the feed returned no prose, the reader could not quote the
+# sentence, the extraction call never completed — and belongs in one pile the
+# user can act on, not folded into 開示なし where it would look routine.
+_GUIDANCE_COMPANY_SILENT = frozenset((
+    "no_guidance_in_source",      # the release says nothing about next quarter
+    "guidance_not_published",     # no reason recorded; most companies guide none
+))
+_GUIDANCE_NEVER_ASKED = frozenset((
+    "feed_not_asked",             # ranked below the request budget
+))
+
+
+def guidance_state(quality: Optional["EarningsQuality"]) -> GuidanceState:
+    """The four-state answer to "did we get the company's outlook?" (T-014).
+
+    No reading at all — the name sat below the enrichment budget, or the
+    funnel ran without a stock store — is NOT_ATTEMPTED. It is emphatically
+    not NOT_PUBLISHED: saying "this company published no outlook" because
+    nobody went to look would be a claim about them made out of a gap in us,
+    and that exact conflation is why this is four states and not two.
+
+    UNKNOWN is never returned here. It is the stored default, and it means
+    one thing only: a record written before this field existed.
+    """
+    if quality is None:
+        return GuidanceState.NOT_ATTEMPTED
+    if quality.guidance_disclosed:
+        return GuidanceState.DISCLOSED
+    reason = quality.guidance_reason
+    if reason in _GUIDANCE_NEVER_ASKED:
+        return GuidanceState.NOT_ATTEMPTED
+    if reason in _GUIDANCE_COMPANY_SILENT or not reason:
+        return GuidanceState.NOT_PUBLISHED
+    return GuidanceState.UNREADABLE
 
 
 def _pct(actual: Optional[float], estimate: Optional[float]) -> Optional[float]:
@@ -775,4 +822,6 @@ def assess_earnings(print_row: EarningsPrint,
                             if print_row.guidance else ""),
         guidance_extractor_model=(print_row.guidance.extractor_model
                                   if print_row.guidance else ""),
-        cause=print_row.cause, cause_reason=print_row.cause_reason)
+        cause=print_row.cause, cause_reason=print_row.cause_reason,
+        guidance_disclosed=print_row.guidance is not None,
+        guidance_reason=print_row.guidance_reason)

@@ -21,6 +21,7 @@ from hawkeye.contracts.models import (
     AnalystTrend,
     GateReport,
     GateResult,
+    GuidanceState,
     InsiderActivity,
     NewsItem,
     ScoreBreakdown,
@@ -264,7 +265,7 @@ def test_retrieval_failures_are_listed_by_ticker():
                            numbers_reason="consensus_missing"),
             make_candidate("CCC")]
     out = render_scan_report_ja(SCAN, rows, top_n=0)
-    errors = out.split("取得できなかったもの")[1]
+    errors = out.split("取得・読み取りに失敗したもの")[1]
     assert "AAA" in errors and "BBB" in errors
     assert "CCC" not in errors
 
@@ -272,7 +273,7 @@ def test_retrieval_failures_are_listed_by_ticker():
 def test_no_failures_still_prints_the_section():
     """A section that disappears at zero reads as a check that was not run."""
     out = render_scan_report_ja(SCAN, [make_candidate("AAA")], top_n=0)
-    assert "取得できなかったもの" in out
+    assert "取得・読み取りに失敗したもの" in out
     assert "0件" in out
 
 
@@ -423,3 +424,146 @@ def test_a_scan_that_read_no_release_says_so_in_the_tally():
     out = render_scan_report_ja(SCAN, [make_candidate(
         "AAA", stage=ScreenedCandidateStage.GATE_REJECT)], top_n=3)
     assert "1銘柄も読んでいません" in out
+
+
+# --- T-014: the figures behind the percentages, the outlook, what failed -----
+
+def _table_rows(out: str) -> list[str]:
+    """The data rows of §③, in the order they are printed."""
+    body = out.split("## ③")[1].split("## ④")[0]
+    return [line for line in body.splitlines()
+            if line.startswith("|") and not line.startswith("| ---")
+            and not line.startswith("| ティッカー")]
+
+
+def test_the_table_shows_the_figures_each_percentage_was_computed_from():
+    """A ratio alone cannot be argued with; +675% on a $0.04 consensus can."""
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", eps_actual=0.21, eps_estimate=0.17,
+        revenue_actual=133462000.0, revenue_estimate=120880000.0)], top_n=0)
+    row = _table_rows(out)[0]
+    assert "0.21 / 0.17" in row
+    assert "133.5M / 120.9M" in row
+
+
+def test_a_revenue_in_the_billions_keeps_its_own_unit():
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", revenue_actual=1.504e9, revenue_estimate=1.494e9)], top_n=0)
+    assert "1.50B / 1.49B" in _table_rows(out)[0]
+
+
+def test_a_missing_figure_reads_as_a_dash_rather_than_a_zero():
+    """Zero is a figure the company reported. A dash is us not having it."""
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", eps_actual=0.31, eps_estimate=None)], top_n=0)
+    assert "0.31 / -" in _table_rows(out)[0]
+
+
+def test_a_row_recorded_before_the_figures_were_kept_still_renders():
+    out = render_scan_report_ja(SCAN, [make_candidate("AAA")], top_n=0)
+    row = _table_rows(out)[0]
+    assert "- / -" in row
+    assert "記録なし" in row          # the guidance cell, for the same reason
+
+
+@pytest.mark.parametrize("state,word", [
+    (GuidanceState.DISCLOSED, "開示あり"),
+    (GuidanceState.NOT_PUBLISHED, "開示なし"),
+    (GuidanceState.UNREADABLE, "読めず"),
+    (GuidanceState.NOT_ATTEMPTED, "未取得"),
+])
+def test_each_guidance_state_has_its_own_word(state, word):
+    """Collapsing these to a yes/no hides our own defects inside 開示なし."""
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", guidance_state=state)], top_n=0)
+    assert word in _table_rows(out)[0]
+
+
+def test_the_vendor_is_named_rather_than_described():
+    rows = [make_candidate("AAA", numbers_source="whispers"),
+            make_candidate("BBB", numbers_source="calendar",
+                           numbers_reason="whispers_server_error")]
+    out = render_scan_report_ja(SCAN, rows, top_n=0)
+    printed = _table_rows(out)
+    assert "| EW |" in printed[0]
+    assert "| Finnhub |" in printed[1]
+
+
+def test_the_error_column_names_every_kind_that_fired():
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", numbers_reason="whispers_server_error",
+        guidance_state=GuidanceState.UNREADABLE,
+        cause_blocks_refused=2)], top_n=0)
+    assert "数値・見通し・発表文" in _table_rows(out)[0]
+
+
+def test_a_row_with_nothing_wrong_shows_a_dash_in_the_error_column():
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", guidance_state=GuidanceState.DISCLOSED)], top_n=0)
+    assert "| - |" in _table_rows(out)[0]
+
+
+def test_a_repaired_block_alone_is_not_called_an_error():
+    """Our own conversion broke it, we repaired it, the excerpt is the
+    release's own characters — §⑤ reports it; the error column does not."""
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", guidance_state=GuidanceState.DISCLOSED,
+        cause_blocks_kept=4, cause_blocks_repaired=3)], top_n=0)
+    assert "発表文" not in _table_rows(out)[0]
+
+
+def test_the_table_reads_from_rank_one_down_then_by_score():
+    rows = [make_candidate("LOW", score=10.0),
+            make_candidate("TWO", rank=2),
+            make_candidate("HIGH", score=90.0),
+            make_candidate("ONE", rank=1)]
+    out = render_scan_report_ja(SCAN, rows, top_n=0)
+    assert [r.split("|")[1].strip() for r in _table_rows(out)] == [
+        "ONE", "TWO", "HIGH", "LOW"]
+
+
+def test_an_unreadable_outlook_is_explained_in_its_own_words():
+    rows = [make_candidate("AAA", guidance_state=GuidanceState.UNREADABLE,
+                           guidance_reason="no_summary_from_feed"),
+            make_candidate("BBB", guidance_state=GuidanceState.NOT_PUBLISHED,
+                           guidance_reason="no_guidance_in_source")]
+    errors = render_scan_report_ja(SCAN, rows, top_n=0).split(
+        "取得・読み取りに失敗したもの")[1]
+    assert "AAA" in errors
+    assert "no_summary_from_feed" not in errors      # translated, not raw
+    assert "BBB" not in errors        # guiding nothing is not a failure
+
+
+def test_a_refused_release_block_is_explained_per_ticker():
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", cause_blocks_kept=2, cause_blocks_refused=3,
+        cause_blocks_altered=1)], top_n=0)
+    errors = out.split("取得・読み取りに失敗したもの")[1]
+    assert "却下 3件" in errors and "改変" in errors
+    assert "hawkeye cause source AAA" in errors
+
+
+def test_the_failure_section_counts_tickers_not_failures():
+    """One name failing three ways is one name to look at, not three."""
+    out = render_scan_report_ja(SCAN, [make_candidate(
+        "AAA", numbers_reason="whispers_server_error",
+        guidance_state=GuidanceState.UNREADABLE,
+        guidance_reason="no_summary_from_feed",
+        cause_blocks_refused=1)], top_n=0)
+    assert "## ④ 取得・読み取りに失敗したもの(1銘柄)" in out
+
+
+def test_the_csv_carries_the_figures_the_state_and_the_errors():
+    text = scan_report_csv([make_candidate(
+        "AAA", eps_actual=0.21, eps_estimate=0.17,
+        revenue_actual=133462000.0, revenue_estimate=120880000.0,
+        guidance_state=GuidanceState.DISCLOSED,
+        numbers_reason="whispers_server_error")])
+    header, row = list(csv.reader(io.StringIO(text)))[:2]
+    cells = dict(zip(header, row))
+    assert cells["EPS 実績/予想"] == "0.21 / 0.17"
+    # Whole figures, not the screen's 133.5M: a spreadsheet has to divide them.
+    assert cells["売上 実績/予想"] == "133462000 / 120880000"
+    assert cells["ガイダンス"] == "開示あり"
+    assert cells["エラー"] == "数値"
+    assert cells["数値の出所"] == "EW"

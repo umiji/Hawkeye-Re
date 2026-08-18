@@ -50,6 +50,7 @@ from hawkeye.scout.quality import (
     EarningsQuality,
     assess_earnings,
     describe_quality_en,
+    guidance_state,
     print_from_event,
     reconstructed_consensus,
 )
@@ -912,6 +913,20 @@ def _measured(c: ScoutCandidate) -> dict:
             "numbers_source": c.numbers_source,
             "numbers_reason": c.numbers_reason,
             "calendar_eps_surprise_pct": c.calendar_eps_surprise_pct,
+            # The figures the percentages above were computed from, exactly as
+            # the ranking read them (T-014). Taken off the three-leg reading
+            # rather than re-derived, so the table the user approves shows the
+            # numbers the ranking was actually made on. All None when the
+            # funnel ran without a stock store — the reading never happened.
+            "eps_actual": c.quality.eps.actual if c.quality else None,
+            "eps_estimate": c.quality.eps.estimate if c.quality else None,
+            "revenue_actual": c.quality.revenue.actual if c.quality else None,
+            "revenue_estimate": (c.quality.revenue.estimate if c.quality
+                                 else None),
+            # Whether the company's outlook was obtained, and the named reason
+            # when it was not (T-014).
+            "guidance_state": guidance_state(c.quality),
+            "guidance_reason": c.quality.guidance_reason if c.quality else "",
             "score": c.score, "score_version": c.score_version,
             # What earned the score. None when the funnel ran without a stock
             # store, i.e. when the three-leg reading never happened — the

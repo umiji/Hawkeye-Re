@@ -30,6 +30,7 @@ from typing import Iterable, Optional
 from hawkeye.contracts.models import (
     AnalystTrend,
     GateReport,
+    GuidanceState,
     InsiderActivity,
     NewsItem,
     ScreenedCandidate,
@@ -49,7 +50,22 @@ _GATE_JA = {
     "volatility_sane": "値動きの荒さ(14日ATR)",
     "earnings_proximity": "次の決算までの日数",
 }
-_SOURCE_JA = {"whispers": "決算専門サイト", "calendar": "決算カレンダー"}
+# The vendor by name, not by description (T-014). The user knows these two as
+# EW and Finnhub and reads the table by vendor; "決算専門サイト" made them
+# translate back on every row. The prose sections keep the plain-Japanese
+# description and introduce the abbreviation once, so a reader who has never
+# heard of either still knows what they are.
+_SOURCE_JA = {"whispers": "EW", "calendar": "Finnhub"}
+# What the four-state guidance answer says in the table (T-014). The three
+# ways of having no outlook are kept apart here for the same reason they are
+# kept apart in the record: only the first is a fact about the company.
+_GUIDANCE_STATE_JA = {
+    GuidanceState.DISCLOSED: "開示あり",
+    GuidanceState.NOT_PUBLISHED: "開示なし",
+    GuidanceState.UNREADABLE: "読めず",
+    GuidanceState.NOT_ATTEMPTED: "未取得",
+    GuidanceState.UNKNOWN: "記録なし",
+}
 # How far the funnel carried a name. Same vocabulary as the check sheet, so a
 # reader holding both documents is not learning two sets of words.
 _STAGE_JA = {
@@ -75,8 +91,14 @@ _CSV_COLUMNS: tuple[tuple[str, str], ...] = (
     ("順位", "rank"),
     ("到達段階", "stage"),
     ("数値の出所", "numbers_source"),
+    # The same two cells the screen shows, with the display abbreviation
+    # removed — full figures, so a spreadsheet can still divide them (T-014).
+    ("EPS 実績/予想", "eps_pair"),
     ("EPSサプライズ率", "eps_surprise_pct"),
+    ("売上 実績/予想", "revenue_pair"),
     ("売上サプライズ率", "revenue_surprise_pct"),
+    ("ガイダンス", "guidance_state"),
+    ("エラー", "errors"),
     ("点数", "score"),
     ("EPSで得た点", "eps"),
     ("売上で得た点", "revenue"),
@@ -86,6 +108,7 @@ _CSV_COLUMNS: tuple[tuple[str, str], ...] = (
     ("株価", "price"),
     ("落選理由", "drop_reason"),
     ("取得できなかった理由", "numbers_reason"),
+    ("見通しが読めなかった理由", "guidance_reason"),
     # How the company's own release was cut (T-013). On every row rather than
     # only the ranked ones: "which names do we keep failing to read, and is
     # the fault ours or the extractor's" is a question about the whole scan.
@@ -391,25 +414,47 @@ def _looked_at_closely(c: ScreenedCandidate) -> bool:
                            ScreenedCandidateStage.ACTUAL_TIMEOUT))
 
 
+def _reading_order(c: ScreenedCandidate) -> tuple[int, int, float]:
+    """Rank first and in rank order, then everything else by score (T-014).
+
+    The ledger's own order is the order the scan dropped names in, which put
+    50 above 5.76 above 0 above 60 above 85 on the first live run — a column
+    of numbers in no order at all. A reader scanning for "what nearly made
+    it" has to be able to read down.
+    """
+    if c.rank is not None:
+        return (0, c.rank, 0.0)
+    return (1, 0, -c.score)
+
+
 def _table_section(rows: list[ScreenedCandidate]) -> list[str]:
-    shown = [c for c in rows if _looked_at_closely(c)]
+    shown = sorted((c for c in rows if _looked_at_closely(c)),
+                   key=_reading_order)
     hidden = len(rows) - len(shown)
     lines = [f"## ③ 走査した銘柄({len(shown)}件)", ""]
     if not shown:
         lines += [f"表に出せる銘柄は **0件** です"
                   f"(この回に記録された銘柄は {len(rows)}件)。", ""]
         return lines
-    lines += ["決算専門サイトに数字を問い合わせた銘柄と、入口ゲートまで進んだ"
-              "銘柄の全件です。「落選理由」はどの段階で外れたかを示します。",
+    lines += ["決算専門サイト(EW)に数字を問い合わせた銘柄と、入口ゲートまで"
+              "進んだ銘柄の全件です。順位の付いた銘柄が上、付かなかった銘柄が"
+              "その下(点数の高い順)に並びます。「落選理由」はどの段階で外れたか、"
+              "「エラー」はこの銘柄で何の取得・読み取りが失敗したかを示し、"
+              "その中身は次の④に書いてあります。",
               "",
-              "| ティッカー | 発表日 | 順位 | EPSサプライズ | 売上サプライズ "
-              "| 数値の出所 | 点数 | 落選理由 |",
-              "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+              "| ティッカー | 発表日 | 順位 | EPS 実績/予想 | EPSサプライズ "
+              "| 売上 実績/予想 | 売上サプライズ | ガイダンス | 数値の出所 "
+              "| エラー | 点数 | 落選理由 |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- "
+              "| --- | --- |"]
     for c in shown:
         lines.append(
             f"| {c.ticker} | {c.event_date} | {c.rank or '-'} "
-            f"| {_pct(c.eps_surprise_pct)} | {_pct(c.revenue_surprise_pct)} "
+            f"| {_eps_pair(c)} | {_pct(c.eps_surprise_pct)} "
+            f"| {_revenue_pair(c)} | {_pct(c.revenue_surprise_pct)} "
+            f"| {_GUIDANCE_STATE_JA.get(c.guidance_state, '記録なし')} "
             f"| {_SOURCE_JA.get(c.numbers_source, c.numbers_source)} "
+            f"| {_errors_cell(c)} "
             f"| {c.score:g} | {_drop_reason_ja(c)} |")
     lines.append("")
     if hidden:
@@ -448,36 +493,110 @@ def _drop_reason_ja(c: ScreenedCandidate) -> str:
 # --- ④ what could not be retrieved ------------------------------------------
 
 def _errors_section(candidates: list[ScreenedCandidate]) -> list[str]:
-    """Named failures, per ticker.
+    """Every failure the table's エラー column flags, said in words (T-014).
+
+    Three kinds, each with its own subsection, because the reader's next move
+    differs: the earnings feed declining to supply figures is a vendor gap the
+    ranking already worked around, an unreadable outlook is usually a defect
+    on our side, and a refused or altered release block changes what the
+    tribunal is handed. One list would flatten all three into "some things
+    failed".
 
     Printed at zero as well: a section that vanishes when nothing failed reads
     as a check nobody ran, and this is the one place a silent data outage
     would otherwise be invisible to the user.
     """
-    failures = [c for c in candidates if c.numbers_reason]
+    numbers = [c for c in candidates if c.numbers_reason]
     conflicts = [c for c in candidates if c.conflicting_estimates]
-    lines = [f"## ④ 取得できなかったもの({len(failures) + len(conflicts)}件)",
-             ""]
-    if not failures and not conflicts:
-        lines += ["**0件** — この回はどの銘柄でも数値の取得に失敗していません。",
-                  ""]
+    guidance = [c for c in candidates
+                if c.guidance_state is GuidanceState.UNREADABLE]
+    release = [c for c in candidates
+               if c.cause_blocks_refused or c.cause_blocks_altered]
+    affected = {c.ticker for c in numbers + conflicts + guidance + release}
+    lines = [f"## ④ 取得・読み取りに失敗したもの({len(affected)}銘柄)", ""]
+    if not affected:
+        lines += ["**0件** — この回はどの銘柄でも、決算数値・会社の見通し・"
+                  "決算発表文のいずれの取得・読み取りにも失敗していません。", ""]
         return lines
-    if failures:
-        lines += ["決算専門サイトが数字を出せなかった銘柄です。"
-                  "いずれも決算カレンダーの数字で順位を付けています。", ""]
-    # Grouped by reason, not listed per ticker: the reason sentences are long,
-    # and thirteen repetitions of three sentences hide which reason is the
-    # common one. The grouping is what says "the site was down" rather than
-    # "these thirteen companies are odd".
-    by_reason: dict[str, list[str]] = {}
-    for c in failures:
-        by_reason.setdefault(c.numbers_reason, []).append(c.ticker)
-    for reason, tickers in by_reason.items():
-        lines.append(f"- {_flag_ja(reason)} — **{len(tickers)}件**: "
-                     f"{'、'.join(tickers)}")
+    lines += _numbers_failures(numbers, conflicts)
+    lines += _guidance_failures(guidance)
+    lines += _release_failures(release)
+    return lines
+
+
+def _by_reason(candidates: list[ScreenedCandidate], attr: str) -> list[str]:
+    """Reason-first, tickers after — never one paragraph per ticker.
+
+    The reason sentences are long, and thirteen repetitions of three sentences
+    hide which reason is the common one. The grouping is what says "the site
+    was down" rather than "these thirteen companies are odd".
+    """
+    grouped: dict[str, list[str]] = {}
+    for c in candidates:
+        grouped.setdefault(getattr(c, attr), []).append(c.ticker)
+    return [f"- {_flag_ja(reason)} — **{len(tickers)}件**: "
+            f"{'、'.join(tickers)}"
+            for reason, tickers in grouped.items()]
+
+
+def _numbers_failures(numbers: list[ScreenedCandidate],
+                      conflicts: list[ScreenedCandidate]) -> list[str]:
+    if not numbers and not conflicts:
+        return []
+    lines = ["### 決算数値(EPS・売上)", ""]
+    if numbers:
+        lines += ["決算専門サイト(EW)が数字を出せなかった銘柄です。"
+                  "いずれも決算カレンダー(Finnhub)の数字で順位を付けています。",
+                  ""]
+        lines += _by_reason(numbers, "numbers_reason")
     for c in conflicts:
-        lines.append(f"- **{c.ticker}**: 決算カレンダーが同じ決算に矛盾する行を"
-                     f"返しました(最も保守的な読みを採用しています)")
+        lines.append(f"- **{c.ticker}**: 決算カレンダー(Finnhub)が同じ決算に"
+                     f"矛盾する行を返しました"
+                     f"(最も保守的な読みを採用しています)")
+    lines.append("")
+    return lines
+
+
+def _guidance_failures(guidance: list[ScreenedCandidate]) -> list[str]:
+    """Only the readings that FAILED — never the companies that guided nothing.
+
+    Most companies publish no outlook and that costs them no points; listing
+    them here would bury the handful where we asked, the company had spoken,
+    and we came away with nothing.
+    """
+    if not guidance:
+        return []
+    return (["### 会社の見通し(ガイダンス)", "",
+             "会社が来期の見通しに触れているのに読み取れなかった、または"
+             "読み取り自体が終わっていない銘柄です。**会社が何も言っていない"
+             "という意味ではありません** — 点数のガイダンス欄は0点になって"
+             "いますが、それはこちら側が読めていないためです。", ""]
+            + _by_reason(guidance, "guidance_reason") + [""])
+
+
+def _release_failures(release: list[ScreenedCandidate]) -> list[str]:
+    """Blocks that never reached the excerpt, and words the extractor changed.
+
+    Both are stated per ticker rather than grouped: there is no shared reason
+    to group by — what happened is a count, and the count is the finding.
+    """
+    if not release:
+        return []
+    lines = ["### 決算発表文からの抜粋", "",
+             "会社自身がその決算を説明した文から抜粋を作る工程で、審理3役に"
+             "渡らなかった、または書き換えられていた箇所がある銘柄です。"
+             "抜粋に載るのは常に発表文そのものの文字なので中身は正しいですが、"
+             "却下された分だけ3役の材料は薄くなっています。", ""]
+    for c in release:
+        parts = []
+        if c.cause_blocks_refused:
+            parts.append(f"発表文のどこにも近い箇所が無く却下 "
+                         f"{c.cause_blocks_refused}件")
+        if c.cause_blocks_altered:
+            parts.append(f"抜き出し役が会社の語句を改変(原文の文字に置換して"
+                         f"採用) {c.cause_blocks_altered}件")
+        lines.append(f"- **{c.ticker}**: {' / '.join(parts)} — "
+                     f"`hawkeye cause source {c.ticker}` で中身を確認できます")
     lines.append("")
     return lines
 
@@ -506,6 +625,19 @@ def _csv_cell(attr: str, c: ScreenedCandidate) -> str:
         return _SOURCE_JA.get(c.numbers_source, c.numbers_source)
     if attr == "numbers_reason":
         return _flag_ja(c.numbers_reason) if c.numbers_reason else ""
+    if attr == "guidance_reason":
+        return _flag_ja(c.guidance_reason) if c.guidance_reason else ""
+    if attr == "guidance_state":
+        return _GUIDANCE_STATE_JA.get(c.guidance_state, "記録なし")
+    if attr == "errors":
+        return "・".join(_failure_kinds(c))
+    # The screen's two combined cells, with the abbreviation removed: the file
+    # is the same surface without the translation, so the figures arrive whole
+    # and a spreadsheet can still divide one by the other.
+    if attr == "eps_pair":
+        return f"{_plain(c.eps_actual)} / {_plain(c.eps_estimate)}"
+    if attr == "revenue_pair":
+        return f"{_plain(c.revenue_actual)} / {_plain(c.revenue_estimate)}"
     if attr == "drop_reason":
         return _drop_reason_ja(c)
     if attr in ("eps_surprise_pct", "revenue_surprise_pct"):
@@ -521,6 +653,82 @@ def _csv_cell(attr: str, c: ScreenedCandidate) -> str:
 
 def _pct(value: Optional[float]) -> str:
     return "-" if value is None else f"{value:+.1f}%"
+
+
+# --- the figures behind the percentages (T-014) ------------------------------
+
+def _eps(value: Optional[float]) -> str:
+    """An EPS figure as the vendor stated it. `-` is "not obtained", never 0."""
+    return "-" if value is None else f"{value:g}"
+
+
+def _plain(value: Optional[float]) -> str:
+    """A figure written out in full, for the spreadsheet.
+
+    `:g` turns revenue into 1.33462e+08, which a spreadsheet reads as text and
+    a person reads as nothing.
+    """
+    if value is None:
+        return "-"
+    return f"{value:f}".rstrip("0").rstrip(".") or "0"
+
+
+def _money(value: Optional[float]) -> str:
+    """A revenue figure, abbreviated so the column stays readable.
+
+    Revenue arrives in dollars — 133462000 — and a table of nine-digit numbers
+    beside three-digit percentages is a table nobody reads across. The CSV
+    keeps the full figures.
+    """
+    if value is None:
+        return "-"
+    size = abs(value)
+    if size >= 1e9:
+        return f"{value / 1e9:.2f}B"
+    if size >= 1e6:
+        return f"{value / 1e6:.1f}M"
+    if size >= 1e3:
+        return f"{value / 1e3:.1f}K"
+    return f"{value:,.0f}"
+
+
+def _eps_pair(c: ScreenedCandidate) -> str:
+    return f"{_eps(c.eps_actual)} / {_eps(c.eps_estimate)}"
+
+
+def _revenue_pair(c: ScreenedCandidate) -> str:
+    return f"{_money(c.revenue_actual)} / {_money(c.revenue_estimate)}"
+
+
+# --- what failed, per name (T-014) ------------------------------------------
+#
+# Three kinds, and they are three separate mechanisms rather than three
+# severities of one: the earnings feed declining to supply figures, the
+# company's outlook not being readable, and the release excerpt losing blocks.
+# The table names which one fired; §④ says what it actually was.
+
+_ERROR_NUMBERS = "数値"
+_ERROR_GUIDANCE = "見通し"
+_ERROR_RELEASE = "発表文"
+
+
+def _failure_kinds(c: ScreenedCandidate) -> list[str]:
+    kinds = []
+    if c.numbers_reason:
+        kinds.append(_ERROR_NUMBERS)
+    if c.guidance_state is GuidanceState.UNREADABLE:
+        kinds.append(_ERROR_GUIDANCE)
+    # A repaired block is not listed here: it was OUR text conversion, it was
+    # repaired, and the excerpt carries the release's own characters — §⑤
+    # already reports it as the defect on our side that it is. Refused and
+    # altered are the two that changed what the tribunal receives.
+    if c.cause_blocks_refused or c.cause_blocks_altered:
+        kinds.append(_ERROR_RELEASE)
+    return kinds
+
+
+def _errors_cell(c: ScreenedCandidate) -> str:
+    return "・".join(_failure_kinds(c)) or "-"
 
 
 def _split(candidates: list[ScreenedCandidate], top_n: int
