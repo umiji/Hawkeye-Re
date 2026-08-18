@@ -593,6 +593,40 @@ def cmd_scout(args: argparse.Namespace) -> int:
     return 0
 
 
+def _unread_guidance_ja(
+        unread: list[guidance_case.GuidanceCase]) -> str:
+    """Why the ranking stopped, and the two ways forward.
+
+    Names every ticker rather than a bare count: the operator's next move is
+    `hawkeye guidance queue`, and knowing WHICH company is waiting is what
+    tells them whether the reading is one they already tried and failed.
+    """
+    names = "、".join(c.ticker for c in unread)
+    return "\n".join([
+        f"会社の見通し(ガイダンス)の読み取り待ちが {len(unread)}件 "
+        f"あります({names})。",
+        "このまま順位付けすると、その銘柄の見通しの点数がゼロのまま順位が"
+        "決まり、審理に送る銘柄の顔ぶれが変わります。",
+        "  hawkeye guidance queue   で読み切ってから hawkeye rank を"
+        "実行してください。",
+        "  読み取りがどうしても通らない場合のみ:",
+        "  hawkeye rank --allow-unread-guidance"
+        "  (見通しを読まずに順位を決めたことが台帳に残ります)",
+    ])
+
+
+def _ranked_unread_ja(
+        unread: list[guidance_case.GuidanceCase]) -> str:
+    """The escape hatch, said out loud. Printed whenever it is taken."""
+    names = "、".join(c.ticker for c in unread)
+    return "\n".join([
+        f"⚠️ 見通しを読まずに順位を決めました: 読み取り待ち {len(unread)}件"
+        f"({names})を残したまま --allow-unread-guidance で実行しています。",
+        "   この銘柄は見通しの点数がゼロのまま順位付けされています。"
+        "台帳の走査記録にも同じことを書きました。",
+    ])
+
+
 def cmd_rank(args: argparse.Namespace) -> int:
     """Re-score the pending scan now that guidance can actually be known, sort
     it, and only THEN commit it to the ledger (docs/design/RANK_AFTER_GUIDANCE.ja.md).
@@ -608,12 +642,30 @@ def cmd_rank(args: argparse.Namespace) -> int:
         print("順位付け待ちの走査がありません。先に hawkeye scout を"
               "実行してください。", file=sys.stderr)
         return 1
+    # The one leg that can still move between `scout` and here (T-016). Both
+    # `scout`'s closing line and `hawkeye guidance queue` already SAY the
+    # readings are outstanding, but saying it is advice, and CLAUDE.md
+    # invariant 3 asks code to enforce what the prompt requests: until this
+    # guard existed the whole shortlist could be scored with that leg at zero
+    # for every name, sorted on it, and committed — silently. Checked before
+    # anything is loaded or written, so a refusal costs nothing and leaves the
+    # pending scan exactly where it was.
+    unread = guidance_case.list_cases()
+    if unread and not args.allow_unread_guidance:
+        print(_unread_guidance_ja(unread), file=sys.stderr)
+        return 1
     config = HawkeyeConfig.from_env()
     finnhub = FinnhubProvider()
     store = _stock_store()
     ledger = _ledger()
     result = scan_store.load_scan_result()
     rerank_after_guidance(store, result, config)
+    if unread:
+        # Twice, on purpose, and for two different readers: stderr now, before
+        # the several hundred lines of report that would bury it, and stdout
+        # at the very end (below), which is what gets scrolled back to and
+        # what a redirected run keeps on disk.
+        print(_ranked_unread_ja(unread), file=sys.stderr)
 
     # Whatever isn't sent to the tribunal THIS run — from result.passed's
     # tail onward — is the ranking-cutoff tier (docs/design/MASTER_OVERVIEW.ja.md
@@ -631,6 +683,12 @@ def cmd_rank(args: argparse.Namespace) -> int:
                 "days_back_override": None,
                 "duplicates_skipped": result.duplicates,
                 "min_eps_surprise": config.scout_min_eps_surprise_pct,
+                # Recorded on every scan, zero included: a key that only
+                # appears when something went wrong cannot be told apart from
+                # a row written before the key existed (T-016).
+                "ranked_with_unread_guidance": bool(unread),
+                "guidance_unread_at_rank": len(unread),
+                "guidance_unread_tickers": [c.ticker for c in unread],
                 **result.numbers.as_dict()},
         scanned=result.scanned, screened=result.screened,
         enriched=result.enriched, gate_passed=len(result.passed),
@@ -687,6 +745,10 @@ def cmd_rank(args: argparse.Namespace) -> int:
             report_path = _write_tribunal_report(rec)
             print(f"\n(記録済み: {rec.id} / status={status.value})")
             print(f"(レポート保存先: {report_path})")
+
+    if unread:
+        print()
+        print(_ranked_unread_ja(unread))
 
     scan_store.discard_scan_result()
     return 0
@@ -1782,6 +1844,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="open session-mode cases for the top N candidates "
                          "(no API key; driven by /hawkeye-run)")
     rk.add_argument("--nav", type=float, default=100_000.0)
+    rk.add_argument("--allow-unread-guidance", action="store_true",
+                    help="rank even with guidance readings still queued "
+                         "(recorded on the scan row; use only when a reading "
+                         "cannot be made to pass)")
     rk.set_defaults(func=cmd_rank)
 
     cn = sub.add_parser("consensus",

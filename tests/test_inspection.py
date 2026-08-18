@@ -290,3 +290,16 @@ def test_every_reason_the_feed_can_decline_for_has_a_japanese_gloss(reason):
     per-name reason was not."""
     from hawkeye.reports.quality_ja import _FLAG
     assert reason in _FLAG
+
+
+def test_the_sheet_says_it_describes_the_moment_of_the_scan():
+    """T-016. The table is assembled during `hawkeye scout` and stored as-is,
+    so a guidance read afterwards (`hawkeye guidance queue`) never reaches it —
+    the cell keeps saying 未読 while `hawkeye report scan` shows the reading.
+    Both are right; only the heading, which claimed to describe "now", was
+    wrong."""
+    page = render_inspection_ja(build_inspection([an_event()], a_result()))
+    assert "走査時点" in page
+    assert "hawkeye report scan" in page, (
+        "a reader told the sheet is stale needs to be told where the "
+        "current state is")

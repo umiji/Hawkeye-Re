@@ -105,7 +105,12 @@ def render_inspection_ja(inspection: Inspection) -> str:
              "",
              "この表は、**この回のデータが正しく取れているかを目視で確認する"
              "ための点検表**です。順位や採否とは無関係に、決算専門サイトに"
-             "問い合わせた銘柄を全件載せています。"]
+             "問い合わせた銘柄を全件載せています。",
+             "",
+             "**この表は走査時点(hawkeye scout を実行した瞬間)の状態です。**"
+             "その後の読み取り(hawkeye guidance queue / hawkeye cause queue)"
+             "で埋まった内容は反映されません — 現在の状態は "
+             "`hawkeye report scan` を見てください。"]
     if not inspection.rows:
         lines.append("")
         lines.append("該当なし(この回は決算専門サイトへの問い合わせが"
