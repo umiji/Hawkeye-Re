@@ -62,10 +62,13 @@ from hawkeye.reports.render_ja import (
     render_signals_ja,
 )
 from hawkeye.scout import cause_case, drop_case, drop_cycle, guidance_case
-from hawkeye.scout.guidance_agent import parse_reply, render_request
+from hawkeye.scout.guidance_agent import (
+    failure_kind as guidance_failure_kind,
+    parse_reply,
+)
 from hawkeye.scout.cause_agent import (
+    failure_kind as cause_failure_kind,
     parse_reply as parse_cause_reply,
-    render_request as render_cause_request,
 )
 from hawkeye.scout.drop_review import (
     CHECKPOINT_TRADING_DAYS,
@@ -863,6 +866,57 @@ def cmd_stocks_prune_revisions(args: argparse.Namespace) -> int:
     return 0
 
 
+# The two refusals worth re-reading, and the reason the distinction is not a
+# new list: `reader_failed` means the reply broke a MECHANICAL check of ours
+# (the quote is not in the release, the unit is not one we accept, the period
+# is unreadable) and `call_failed` means the call never completed. Both are
+# ours to fix and both are retryable. Everything else — chiefly the reader
+# reporting that the release states no reason — is a final answer, and keeping
+# it staged would invite a reworded retry, which is exactly what the run skill
+# forbids. The mapping itself stays in each gate's own `_FAILURE_KIND`.
+_RETRYABLE_REFUSALS = ("reader_failed", "call_failed")
+
+
+def _keep_staged(reason: str, classify) -> bool:
+    """Whether a refusal leaves the material where the reader can try again."""
+    return bool(reason) and classify(reason) in _RETRYABLE_REFUSALS
+
+
+def _report_kept_package(ticker: str, reason: str, queue_command: str,
+                         case_id: str) -> None:
+    """Say plainly that nothing was lost, and what to do next.
+
+    Before T-015 this path deleted the staged summary on its way out, so a
+    reply that merely used the wrong word for a unit ended the reading for
+    that whole scan — AMBQ, 2026-08-18.
+    """
+    print(f"{ticker}: 読み取り結果は形式検査を通りませんでした"
+          f"(理由: {reason})。材料は残してあるので、指示文を読み直して"
+          "同じ case-id で再提出してください:", file=sys.stderr)
+    print(f"  hawkeye {queue_command} queue --case-id {case_id}",
+          file=sys.stderr)
+
+
+def _print_reader_package(package: dict, case, submit_command: str) -> None:
+    """Name the four files a reader subagent needs, the way `case step` does.
+
+    Paths, not the text itself. The text is in `input`, and printing it here
+    as well is what made the orchestrating session treat the reading as
+    something to compose out of what it had seen rather than something to
+    hand over — which is how the instruction that cost AMBQ's reading got
+    written in the first place (T-015).
+    """
+    print(f"case: {case.id}  ticker: {case.ticker}  "
+          f"quarter: {case.fiscal_quarter}")
+    print(f"next_role: {package['role']}")
+    print(f"system: {package['system']}")
+    print(f"input: {package['input']}")
+    print(f"schema: {package['schema']}")
+    print(f"write_reply_to: {package['output']}")
+    print(f"submit_with: hawkeye {submit_command} submit {case.id} "
+          f"--file {package['output']}")
+
+
 def cmd_guidance_queue(args: argparse.Namespace) -> int:
     """List the forward statements waiting to be read, or emit one package.
 
@@ -885,10 +939,7 @@ def cmd_guidance_queue(args: argparse.Namespace) -> int:
     except FileNotFoundError:
         print(f"case not found: {args.case_id}", file=sys.stderr)
         return 1
-    print(render_request(case.request()))
-    print()
-    print(f"submit_with: hawkeye guidance submit {case.id} "
-          f"--file <読み取り結果.json>")
+    _print_reader_package(guidance_case.write_package(case), case, "guidance")
     return 0
 
 
@@ -920,13 +971,20 @@ def cmd_guidance_submit(args: argparse.Namespace) -> int:
         return 1
     # Only now — the staged file is what makes a failed write retryable, the
     # same ordering the tribunal's case workspaces and the drop reviews use.
-    guidance_case.discard(case.id)
+    # A refusal that is OURS rather than the company's keeps it (T-015).
+    kept = _keep_staged(extraction.reason, guidance_failure_kind)
+    if not kept:
+        guidance_case.discard(case.id)
 
     row = store.active_print(case.stock_id, case.fiscal_quarter)
     consensus = (store.consensus(row.consensus_snapshot_id)
                  if row.consensus_snapshot_id else None)
     print(render_quality_ja(assess_earnings(row, consensus,
                                             HawkeyeConfig.from_env())))
+    if kept:
+        _report_kept_package(case.ticker, extraction.reason, "guidance",
+                             case.id)
+        return 1
     remaining = len(guidance_case.list_cases())
     print("\n次: " + (f"hawkeye guidance queue (残り {remaining}件)"
                       if remaining else "hawkeye case open ..."))
@@ -956,10 +1014,7 @@ def cmd_cause_queue(args: argparse.Namespace) -> int:
     except FileNotFoundError:
         print(f"case not found: {args.case_id}", file=sys.stderr)
         return 1
-    print(render_cause_request(case.request()))
-    print()
-    print(f"submit_with: hawkeye cause submit {case.id} "
-          f"--file <読み取り結果.json>")
+    _print_reader_package(cause_case.write_package(case), case, "cause")
     return 0
 
 
@@ -992,13 +1047,20 @@ def cmd_cause_submit(args: argparse.Namespace) -> int:
         return 1
     # Only now — the staged file is what makes a failed write retryable, the
     # same ordering the tribunal's case workspaces and the drop reviews use.
-    cause_case.discard(case.id)
+    # A refusal that is OURS rather than the company's keeps it (T-015).
+    kept = _keep_staged(extraction.reason, cause_failure_kind)
+    if not kept:
+        cause_case.discard(case.id)
 
     row = store.active_print(case.stock_id, case.fiscal_quarter)
     consensus = (store.consensus(row.consensus_snapshot_id)
                  if row.consensus_snapshot_id else None)
     print(render_quality_ja(assess_earnings(row, consensus,
                                             HawkeyeConfig.from_env())))
+    if kept:
+        _report_kept_package(case.ticker, extraction.reason, "cause",
+                             case.id)
+        return 1
     remaining = len(cause_case.list_cases())
     print("\n次: " + (f"hawkeye cause queue (残り {remaining}件)"
                       if remaining else "hawkeye rank"))

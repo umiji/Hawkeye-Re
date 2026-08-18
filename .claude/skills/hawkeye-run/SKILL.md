@@ -28,6 +28,12 @@ investment case yourself**. All user-facing conversation is in Japanese.
    explain. Each reply goes through its own `submit` command, which is where
    the quote is checked against the source text — the only hallucination
    check there is.
+6. **You never write a reader's instructions either.** Both queue commands
+   emit a `system` file; hand the subagent that file's contents verbatim. It
+   holds the same text the metered API path sends, and that is the only
+   reason the two engines' answers can be compared at all. Writing your own
+   version once cost a reading outright (AMBQ, 2026-08-18: the improvised
+   instruction named a unit the gate does not accept).
 
 ## Procedure
 
@@ -73,23 +79,25 @@ hawkeye guidance queue                       # what is waiting
 hawkeye guidance queue --case-id <id>        # ONE package
 ```
 
-For each case, **spawn a fresh subagent** and give it the package text
-verbatim. Its whole job is to copy one range out of one sentence. It must
-answer with JSON in exactly this shape, and **you must not edit its
-answer** — the CLI is what validates it:
+The `--case-id` form names four files, exactly as `hawkeye case step`
+does for the tribunal roles:
 
-```json
-{"guided": true, "period": "FY2026",
- "eps_low": null, "eps_high": null,
- "revenue_low": 2.60, "revenue_high": 2.70, "revenue_unit": "billion",
- "open_ended": false, "qualifier": "excluding its barge business",
- "quote": "2026 revenue of $2.60 billion to $2.70 billion"}
+```
+system:         <...>/guidance.system.md   what the reader is told
+input:          <...>/guidance.input.md    what it reads
+schema:         <...>/guidance.schema.json the shape its reply must take
+write_reply_to: <...>/guidance.out.json    where its reply goes
 ```
 
-Write the reply to a file and submit it:
+**Spawn a fresh subagent and give it the contents of `system` and `input`,
+verbatim.** Do not summarise them, do not add to them, and above all do not
+write your own version of the instruction — `system` is the same constant the
+metered API path sends, and a run driven by different words cannot be compared
+with one driven by these. Its whole job is to copy one range out of one
+sentence. Write its reply to `write_reply_to` **unmodified**, then:
 
 ```bash
-hawkeye guidance submit <case_id> --file <reply.json> --reader <model>
+hawkeye guidance submit <case_id> --file <write_reply_to> --reader <model>
 ```
 
 The submit prints the quarter's three legs again, because the guidance leg
@@ -100,8 +108,13 @@ shown the consensus figure its reading will be measured against — an
 extractor that can see the bar it is about to clear has stopped
 extracting. `hawkeye guidance queue` already withholds it; do not add it.
 
-A refused reading is a normal outcome and is recorded by name. Do not
-retry it by rewording the request, and never write the JSON yourself.
+**Two kinds of refusal, and they end differently.** A company that guided
+nothing is a normal outcome, is recorded by name, and clears the queue —
+never retry that by rewording the request, and never write the JSON yourself.
+A reply that fails a MECHANICAL check (the quote is not in the source, the
+period is unreadable) is OUR failure: the command exits non-zero, says so, and
+**leaves the material staged**. Re-read the same `system` file, give it to a
+fresh subagent, and submit against the same case id.
 
 If scout passes zero candidates, report the funnel numbers honestly and
 stop: **no catalyst means no trade — do not go hunting for one.**
@@ -120,18 +133,16 @@ hawkeye cause queue                          # what is waiting
 hawkeye cause queue --case-id <id>           # ONE package
 ```
 
-**A fresh subagent per case, package text verbatim, and you do not edit its
-answer.** Its whole job is to copy one sentence out of one summary:
-
-```json
-{"explained": true, "nature": "one_off",
- "magnitude": 0.30, "magnitude_unit": "per_share",
- "period": "2026-Q2",
- "quote": "the quarter included a one-time tax benefit of $0.30 per share"}
-```
+The `--case-id` form names the same four files (`cause.system.md`,
+`cause.input.md`, `cause.schema.json`, `cause.out.json`). **A fresh subagent
+per case; give it `system` and `input` verbatim and write its reply to
+`write_reply_to` unmodified.** Its whole job is to copy one sentence out of
+one summary. The instruction it needs is already written — including the four
+unit names the gate accepts, which are `per_share`, `million`, `billion` and
+`percent` and nothing else. Do not compose an instruction of your own.
 
 ```bash
-hawkeye cause submit <case_id> --file <reply.json> --reader <model>
+hawkeye cause submit <case_id> --file <write_reply_to> --reader <model>
 ```
 
 The same information rule binds this reader, and harder: **it must never be
@@ -142,8 +153,10 @@ failure this step was built to stop. `hawkeye cause queue` withholds the
 figures; do not add them back, and do not "help" by naming the shape you
 noticed in the numbers.
 
-`"explained": false` is a common and correct answer. A refusal is recorded
-by name; do not retry it by rewording the request.
+`"explained": false` is a common and correct answer: the release states no
+reason, it is recorded by name, and the queue clears. Do not retry that by
+rewording the request. A mechanical failure behaves as in 2b — non-zero exit,
+material kept, same case id, fresh subagent.
 
 Order does not matter between this queue and 2b, and unlike 2b **nothing
 waits on this one**: the reading changes no score, so `hawkeye rank` does
