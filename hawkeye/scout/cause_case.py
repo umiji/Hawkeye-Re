@@ -30,14 +30,22 @@ modes could drift into accepting different answers.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
+from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
 
 from hawkeye import paths
 from hawkeye.contracts.models import new_id, now
-from hawkeye.scout.cause_agent import CauseExtraction, CauseRequest
+from hawkeye.scout.cause_agent import (
+    CAUSE_SYSTEM,
+    CauseExtraction,
+    CauseRequest,
+    build_schema,
+    render_request,
+)
 from hawkeye.scout.revision import target_row
 
 
@@ -114,9 +122,61 @@ def list_cases() -> list[CauseCase]:
     return sorted(cases, key=lambda c: c.ticker)
 
 
+def _package_dir(case_id: str) -> Path:
+    """Where one case's instruction files live.
+
+    A SUBDIRECTORY, not four files beside the case JSON, because `list_cases`
+    finds work by globbing `cau_*.json` — a `cau_x.schema.json` sitting next
+    to `cau_x.json` would be counted as a second company waiting to be read.
+    """
+    return paths.cause_dir() / case_id
+
+
+def write_package(case: CauseCase) -> dict:
+    """Materialize what one reader is told, what it reads, and the shape its
+    reply must take, as files. Returns their paths.
+
+    The mirror of `hawkeye/tribunal/casefile.py::write_package`, and it exists
+    for the reason that one does: in session mode the reader is a throwaway
+    subagent, and the only thing that can tell it its job is a file. Until
+    T-015 nothing wrote one, so the orchestrating session improvised the
+    instruction — and on 2026-08-18 improvised a unit name (`pct`) the gate
+    does not accept, which cost AMBQ's reading for that scan.
+
+    What is written is `CAUSE_SYSTEM` ITSELF, never a restatement of it. The
+    API path sends that same constant, and two engines reading different text
+    produce answers that cannot be compared (`CLAUDE.md` invariant 4).
+
+    The reply target is named but deliberately not created: an empty file
+    sitting there before the reader has answered is a file a later step can
+    mistake for an answer.
+    """
+    d = _package_dir(case.id)
+    d.mkdir(parents=True, exist_ok=True)
+    files = {
+        "system": d / "cause.system.md",
+        "input": d / "cause.input.md",
+        "schema": d / "cause.schema.json",
+        "output": d / "cause.out.json",   # where to write the reply
+    }
+    files["system"].write_text(CAUSE_SYSTEM, encoding="utf-8")
+    files["input"].write_text(render_request(case.request()), encoding="utf-8")
+    files["schema"].write_text(json.dumps(build_schema(), indent=2),
+                               encoding="utf-8")
+    return {"role": "cause", **{k: str(v) for k, v in files.items()}}
+
+
 def discard(case_id: str) -> bool:
-    """Delete a staged case. Only after its ledger write is confirmed — the
-    staged file is what makes a failed write retryable."""
+    """Delete a staged case and its instruction files. Only after its ledger
+    write is confirmed — the staged file is what makes a failed write
+    retryable.
+
+    The package goes with it: an instruction file outliving the case it was
+    written for points a reader at work nobody is waiting for.
+    """
+    d = _package_dir(case_id)
+    if d.is_dir():
+        shutil.rmtree(d)
     p = _case_path(case_id)
     if not p.exists():
         return False
