@@ -86,6 +86,13 @@ _CSV_COLUMNS: tuple[tuple[str, str], ...] = (
     ("株価", "price"),
     ("落選理由", "drop_reason"),
     ("取得できなかった理由", "numbers_reason"),
+    # How the company's own release was cut (T-013). On every row rather than
+    # only the ranked ones: "which names do we keep failing to read, and is
+    # the fault ours or the extractor's" is a question about the whole scan.
+    ("発表文 採用ブロック数", "cause_blocks_kept"),
+    ("発表文 変換ミスを修正した数", "cause_blocks_repaired"),
+    ("発表文 抜き出し役が改変した数", "cause_blocks_altered"),
+    ("発表文 却下した数", "cause_blocks_refused"),
 )
 
 
@@ -98,7 +105,63 @@ def render_scan_report_ja(scan: dict, candidates: list[ScreenedCandidate],
     lines += _material_section(ranked)
     lines += _table_section(ranked + others)
     lines += _errors_section(candidates)
+    lines += _release_reading_section(candidates)
     return "\n".join(lines)
+
+
+# --- ⑤ how the companies' own releases were cut (T-013) ---------------------
+
+def _release_reading_section(candidates: list[ScreenedCandidate]) -> list[str]:
+    """The whole scan's tally, printed at zero as well.
+
+    Section ② carries this per name, but only for the names going to the
+    tribunal — and on a day when nothing clears the entry gates that section
+    is empty, which is exactly a day when a defect on our side could run
+    unnoticed. The T-012 case was found only because someone measured the
+    refusal rate by hand; this section is that measurement, taken every run.
+
+    The two middle numbers are the ones worth reading. A repair is almost
+    always OUR text conversion having broken the release, and an alteration
+    is the extractor having changed a letter or digit of the company's own
+    sentence. Neither shows up anywhere else, because the excerpt the
+    tribunal reads is cut from the release and is correct either way.
+    """
+    read = [c for c in candidates
+            if (c.cause_blocks_kept + c.cause_blocks_repaired
+                + c.cause_blocks_altered + c.cause_blocks_refused)]
+    kept = sum(c.cause_blocks_kept for c in read)
+    repaired = sum(c.cause_blocks_repaired for c in read)
+    altered = sum(c.cause_blocks_altered for c in read)
+    refused = sum(c.cause_blocks_refused for c in read)
+    lines = ["## ⑤ 決算発表文の読み取り", ""]
+    if not read:
+        lines += ["この回は、会社の決算発表文を1銘柄も読んでいません"
+                  "(抜き出し役が使えなかったか、詳細取得まで進んだ銘柄が"
+                  "ありませんでした)。", ""]
+        return lines
+    lines += [f"{len(read)}銘柄の決算発表文から、審理に渡す抜粋を作りました。"
+              f"抜粋に入った文の数は **{kept + repaired + altered}件** です。",
+              "",
+              f"- そのまま採用: **{kept}件**",
+              f"- こちらの文章変換のミスを直して採用: **{repaired}件**",
+              f"- 抜き出し役が会社の語句を改変していたので原文の文字に"
+              f"置き換えて採用: **{altered}件**",
+              f"- 発表文のどこにも近い箇所が無く却下: **{refused}件**",
+              ""]
+    if repaired:
+        names = "、".join(c.ticker for c in read if c.cause_blocks_repaired)
+        lines += [f"⚠️ **こちら側の不具合の疑い**: {names} で、発表文を"
+                  "文章に直す処理が原文を壊していた可能性があります。"
+                  "抜粋の中身は原文の文字なので正しいですが、"
+                  "`hawkeye cause source ティッカー` で確認してください。", ""]
+    if altered:
+        names = "、".join(c.ticker for c in read if c.cause_blocks_altered)
+        lines += [f"⚠️ **抜き出し役による改変**: {names} で、抜き出し役が"
+                  "会社の文の英数字を書き換えていました。審理に渡すのは"
+                  "発表文の文字に置き換えたものなので中身は正しいですが、"
+                  "何を書き換えたかは "
+                  "`hawkeye cause source ティッカー` で見られます。", ""]
+    return lines
 
 
 # --- header -----------------------------------------------------------------
@@ -234,8 +297,39 @@ def _material_section(ranked: list[ScreenedCandidate]) -> list[str]:
         lines += _news_lines(c.news)
         lines.append(_insider_line(c.insider_activity))
         lines.append(_analyst_line(c.analyst_trend))
+        lines.append(_cause_source_line(c))
         lines.append("")
     return lines
+
+
+def _cause_source_line(c: ScreenedCandidate) -> str:
+    """How the company's own release was cut into the excerpt (T-013).
+
+    Printed for every ranked name including the all-zero case, because the
+    two numbers this line exists for only mean something when they are always
+    there. "修正" is our own text conversion having broken the release (the
+    T-012 defect, 13 real explanations lost before it was found); "改変" is
+    the extractor having changed a letter or a digit of the company's own
+    sentence. The excerpt is correct either way — the release's characters
+    are what get cut — so if this line were omitted when it read zero, a run
+    where the extractor rewrote a figure would look identical to a clean one.
+    """
+    read = (c.cause_blocks_kept + c.cause_blocks_repaired
+            + c.cause_blocks_altered + c.cause_blocks_refused)
+    if not read:
+        return ("- 決算発表文からの抜粋: この銘柄では読んでいません"
+                "(順位が下位で詳細を取得しなかったか、抜き出し役が"
+                "使えませんでした)")
+    line = (f"- 決算発表文からの抜粋: 採用 {c.cause_blocks_kept}件 / "
+            f"こちらの変換ミスを修正して採用 {c.cause_blocks_repaired}件 / "
+            f"抜き出し役が語句を改変 {c.cause_blocks_altered}件 / "
+            f"原文に無く却下 {c.cause_blocks_refused}件")
+    if c.cause_blocks_altered:
+        line += ("\n  - ⚠️ **改変あり**: 抜き出し役が会社の文の英数字を"
+                 "書き換えました。審理に渡す抜粋は発表文の文字で置き換えて"
+                 "あるので中身は正しいですが、`hawkeye cause source "
+                 f"{c.ticker}` で何が書き換えられたか確認できます。")
+    return line
 
 
 def _news_lines(news: list[NewsItem]) -> list[str]:

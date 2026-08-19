@@ -130,6 +130,14 @@ def _candidate_to_dict(c: ScoutCandidate) -> dict:
         "conflicting_estimates": c.conflicting_estimates,
         "numbers_source": c.numbers_source, "numbers_reason": c.numbers_reason,
         "calendar_eps_surprise_pct": c.calendar_eps_surprise_pct,
+        # How the company's own release was cut (T-013). The scan writes the
+        # pending file and `hawkeye rank` reads it back hours later, so a
+        # count missing from this pair reaches the ledger as a zero — which
+        # the report renders as "the release was never read".
+        "cause_blocks_kept": c.cause_blocks_kept,
+        "cause_blocks_repaired": c.cause_blocks_repaired,
+        "cause_blocks_altered": c.cause_blocks_altered,
+        "cause_blocks_refused": c.cause_blocks_refused,
         "held_reason": c.held_reason, "held_expired": c.held_expired,
         "price": c.price,
         "price_asof": c.price_asof.isoformat() if c.price_asof else None,
@@ -155,6 +163,13 @@ def _candidate_from_dict(d: dict) -> ScoutCandidate:
         conflicting_estimates=d["conflicting_estimates"],
         numbers_source=d["numbers_source"], numbers_reason=d["numbers_reason"],
         calendar_eps_surprise_pct=d["calendar_eps_surprise_pct"],
+        # `.get` with a zero default: a pending file written before T-013 has
+        # no counts, and zero there is the truth — that scan never read a
+        # release with this step in it.
+        cause_blocks_kept=d.get("cause_blocks_kept", 0),
+        cause_blocks_repaired=d.get("cause_blocks_repaired", 0),
+        cause_blocks_altered=d.get("cause_blocks_altered", 0),
+        cause_blocks_refused=d.get("cause_blocks_refused", 0),
         held_reason=d["held_reason"], held_expired=d["held_expired"],
         price=d["price"],
         price_asof=(date.fromisoformat(d["price_asof"])

@@ -200,20 +200,27 @@ def _rounded(value):
     return round(value, 1) if value is not None else None
 
 
-def _cause_source(feed):
+def _cause_source(feed, model: str = ""):
     """The release reader, wired from the environment (T-008).
 
     Built here rather than inline so the scan and the inspection command
     below cannot drift into reading different text — the whole value of the
     command is that it shows what the scan would stage.
+
+    `model` overrides the extractor for one invocation and is never set by
+    the scan: the scan must read what the doctrine says it reads. It exists
+    so a person can put two models on the same release and compare, which is
+    how the 2.5-to-3.5 switch was decided (T-011).
     """
     import os
 
     from hawkeye.marketdata.gemini import GeminiExtractor
     from hawkeye.scout.cause_source import ReleaseCauseSource
 
-    return ReleaseCauseSource(
-        feed, GeminiExtractor(api_key=os.environ.get("GEMINI_API_KEY", "")))
+    key = os.environ.get("GEMINI_API_KEY", "")
+    extractor = (GeminiExtractor(api_key=key, model=model) if model
+                 else GeminiExtractor(api_key=key))
+    return ReleaseCauseSource(feed, extractor)
 
 
 def cmd_cause_source(args: argparse.Namespace) -> int:
@@ -233,7 +240,7 @@ def cmd_cause_source(args: argparse.Namespace) -> int:
     """
     ticker = args.ticker.strip().upper()
     feed = WhispersSource()
-    source = _cause_source(feed)
+    source = _cause_source(feed, getattr(args, "model", "") or "")
     if not source.available:
         print("GEMINI_API_KEY が設定されていません（.env.local）。決算理由の"
               "抜き出しには必要です。", file=sys.stderr)
@@ -252,13 +259,32 @@ def cmd_cause_source(args: argparse.Namespace) -> int:
     print(f"  ベンダー要約: {len(record.summary)}文字")
     print(f"  決算発表文  : {len(built.source_text)}文字 "
           f"(記事ID {record.file_name or 'なし'})")
+    if built.repaired:
+        # Our own text conversion, not the extractor's doing. Shown because
+        # this is the only place it surfaces: the excerpt is correct, so a
+        # conversion defect would otherwise be invisible until someone
+        # measured the refusal rate by hand (which is how T-012 was found).
+        print(f"\nこちらの変換ミスを直して採用したブロック "
+              f"{len(built.repaired)}件（原文とは空白・記号だけの差）")
+    if built.altered:
+        print(f"\n抜き出し役が会社の語句を書き換えたブロック "
+              f"{len(built.altered)}件（審理に渡すのは原文の文字の方です）:")
+        for sent, actual in built.altered:
+            print(f"  抜き出し役: {sent}")
+            print(f"  発表文    : {actual}")
     if built.rejected:
-        print(f"\n原文に無いため却下したブロック {len(built.rejected)}件"
-              "（抜き出し役が文を作った証拠）:")
+        print(f"\n原文のどこにも近い箇所が無く却下したブロック "
+              f"{len(built.rejected)}件:")
         for block in built.rejected:
             print(f"  ✗ {block}")
     if not built.excerpt:
         print(f"\n読み手に渡せる本文はありません: {built.reason}")
+        if built.detail:
+            # What the failing step said. Without it the line above is the
+            # whole record, and "extractor_call_failed" has been the entire
+            # evidence behind two wrong conclusions about a rate limit whose
+            # answer was in the discarded reply (T-011).
+            print(f"  失敗の内容: {built.detail}")
         return 0
     print(f"\n読み手に渡す抜粋 {len(built.excerpt)}文字 "
           f"(発表文の{len(built.excerpt) * 100 // max(len(built.source_text), 1)}%):")
@@ -1778,6 +1804,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="show the release excerpt the reader would be given, and every "
              "block the extractor returned that the release does not contain")
     czr.add_argument("ticker")
+    czr.add_argument("--model", default="",
+                     help="which extractor to ask (default: the one the scan "
+                          "uses). Comparing two models on the same release, "
+                          "and seeing what a refused one actually says, are "
+                          "the reasons this exists")
     czr.set_defaults(func=cmd_cause_source)
 
     rep = sub.add_parser("report",

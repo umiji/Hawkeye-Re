@@ -579,3 +579,86 @@ def test_a_scan_always_stages_rather_than_reading_inline(tmp_path, monkeypatch):
 
     assert result.guidance.attempted == 0
     assert result.guidance.staged == 1
+
+
+# --- how the release was cut, from the scan to the user's report (T-013) -----
+#
+# The rescue that repairs a near-miss block emits the RELEASE's characters, so
+# a run where our HTML conversion broke 13 real explanations produces exactly
+# the same excerpt as a clean one. The counts are the only thing that differs,
+# so they have to survive every hop: source -> print row -> candidate ->
+# dropped-candidate record, which is what the user's scan report is built from.
+
+class FakeCauseSource:
+    """Stands in for the release fetch and the extractor, with fixed counts."""
+
+    available = True
+
+    def __init__(self, built):
+        self._built = built
+
+    def text_for(self, ticker, article_id, fiscal_quarter):
+        return self._built
+
+
+def _cause_scan(tmp_path, built):
+    from hawkeye.scout.scout import build_screened_candidates
+
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    # A vendor summary has to exist for the prose-reading step to run at all;
+    # the cause excerpt itself comes from the company's release, not from it.
+    result = run_scout(FakeCalendar(_entries(event_day)),
+                       _provider(), _config(), today=today, stock_store=store,
+                       numbers_source=_feed(event_day, "The company said so."),
+                       cause_source=FakeCauseSource(built))
+    candidates = build_screened_candidates(result, scan_id=1)
+    stock = store.stock_by_ticker("AMZN")
+    return store.active_print(stock.id, "2026-Q2"), result, candidates
+
+
+def test_the_cut_counts_reach_the_print_row_and_the_dropped_record(tmp_path):
+    from hawkeye.scout.cause_source import CauseText
+
+    built = CauseText(excerpt="the company said so", source_text="release",
+                      rejected=("nowhere near it",),
+                      repaired=("one we broke",),
+                      altered=(("sent $65", "release says $75"),), kept=3)
+    row, result, candidates = _cause_scan(tmp_path, built)
+
+    assert (row.cause_blocks_kept, row.cause_blocks_repaired,
+            row.cause_blocks_altered, row.cause_blocks_refused) == (3, 1, 1, 1)
+    assert result.passed[0].cause_blocks_altered == 1
+    # `build_screened_candidates` records what the run did NOT forward, so
+    # with no tribunal slots taken the passed name lands there too.
+    assert [c.cause_blocks_repaired for c in candidates] == [1]
+
+
+def test_a_scan_with_no_extractor_records_no_counts_at_all(tmp_path):
+    """Zero everywhere means "never read", and it must not be reachable from
+    a run that DID read the release — otherwise the report cannot tell the
+    two apart."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    run_scout(FakeCalendar(_entries(event_day)), _provider(),
+              _config(), today=today, stock_store=store,
+              numbers_source=_feed(event_day, "The company said so."))
+    stock = store.stock_by_ticker("AMZN")
+    row = store.active_print(stock.id, "2026-Q2")
+    assert (row.cause_blocks_kept, row.cause_blocks_repaired,
+            row.cause_blocks_altered, row.cause_blocks_refused) == (0, 0, 0, 0)
+
+
+def test_a_release_read_and_wholly_refused_is_not_zero_everywhere(tmp_path):
+    """The refusals still count when no excerpt survived — that run read the
+    release, and saying nothing would file it as never looked at."""
+    from hawkeye.scout.cause_source import CauseText
+
+    built = CauseText(excerpt="", source_text="release",
+                      reason="extractor_invented_every_block",
+                      rejected=("nowhere near it", "nor this"))
+    row, _result, _candidates = _cause_scan(tmp_path, built)
+    assert row.cause_blocks_refused == 2
+    assert row.cause_reason == "extractor_invented_every_block"
