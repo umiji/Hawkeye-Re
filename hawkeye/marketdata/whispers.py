@@ -318,6 +318,40 @@ def _last_amounts(segment: str) -> tuple[Optional[float], Optional[float]]:
             if rev else None)
 
 
+# How far ahead of its own `fY1Ref` the prose is allowed to be, in years.
+#
+# `fY1Ref` names the fiscal year the feed currently treats as "year 1", and it
+# does not turn over the moment a company reports — it keeps naming the year
+# that just CLOSED for some days afterwards, while the consensus sentence in
+# the same response has already moved to the year ahead. Measured 2026-08-19
+# over four June-year companies: JKHY, read the day after its print, still
+# answered 2026-06-30 against prose naming 2027; AIT, COHR and HRB, read 6-8
+# days after theirs, had all turned over. Hawkeye reads a print within a day
+# or two of it, so it meets the stale value more often than the settled one,
+# and refusing it threw away yardsticks the feed had plainly stated (T-021).
+#
+# ONE step, and the fiscal month still has to match. Two steps apart is not a
+# reference lagging a print, and the refusal this widens still has to catch it.
+_YEAR_REFERENCE_LAG = 1
+
+
+def _year_agrees(year_end: Optional[date],
+                 stated: Optional[tuple[int, int]]) -> bool:
+    """Whether the prose year and the feed's own `fY1Ref` name one year.
+
+    They agree when the fiscal month is the same and the prose is either on
+    that year or up to `_YEAR_REFERENCE_LAG` years ahead of it. Never behind:
+    the reference lags a print, it never runs ahead of one, so a prose year
+    earlier than the reference is a real disagreement.
+    """
+    if stated is None:
+        return False
+    if year_end is None:
+        return True
+    return (year_end.month == stated[1]
+            and 0 <= stated[0] - year_end.year <= _YEAR_REFERENCE_LAG)
+
+
 def _quarter_after(quarter_end: Optional[date]) -> Optional[tuple[int, int]]:
     """(year, month) of the quarter end three months after `quarter_end`."""
     if quarter_end is None:
@@ -360,6 +394,11 @@ def read_consensus(record: "WhispersRecord") -> ConsensusReadout:
     its quarter-end field (`q1Ref`) — two independent statements of one fact
     in each case, and a disagreement yields nothing rather than the likelier
     of the two (EW移行 §2, the rule already used for the quarter label).
+
+    The year's check allows the one disagreement that is not one: `fY1Ref`
+    turns over some days AFTER the print, so the prose is legitimately a year
+    ahead of it on a freshly-read record (`_year_agrees`, T-021). The
+    quarter's check has no such allowance — `q1Ref` was not observed to lag.
     """
     clause = _consensus_clause(record.summary)
     if not clause:
@@ -382,9 +421,7 @@ def read_consensus(record: "WhispersRecord") -> ConsensusReadout:
     if "year" not in figures:
         return ConsensusReadout(reason="no_full_year_consensus",
                                 excerpt=clause, **bar)
-    if year_stated is None or (
-            record.year_end is not None
-            and (record.year_end.year, record.year_end.month) != year_stated):
+    if not _year_agrees(record.year_end, year_stated):
         return ConsensusReadout(reason="full_year_period_disputed",
                                 excerpt=clause, **bar)
 

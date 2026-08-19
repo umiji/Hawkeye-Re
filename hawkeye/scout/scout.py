@@ -84,6 +84,13 @@ class ScoutCandidate:
     numbers_source: str = "calendar"
     # Why the feed's figures are not the ones above (hawkeye/scout/numbers.py).
     numbers_reason: str = ""
+    # Why the analysts' FULL-YEAR / next-quarter yardsticks are missing, when
+    # the response stated a consensus sentence that could not be used
+    # (T-021). Kept apart from `numbers_reason`, which is about the SURPRISE
+    # figures: the two fail independently, and the same response routinely
+    # supplies one and refuses the other.
+    full_year_consensus_reason: str = ""
+    next_quarter_consensus_reason: str = ""
     calendar_eps_surprise_pct: Optional[float] = None
     # How the company's own release was cut into the cause excerpt, carried
     # here so the scan report the USER reads can show it per ticker (T-013).
@@ -252,6 +259,9 @@ def _candidate_from(screened: ScreenedEvent,
         conflicting_estimates=screened.event.conflicting_estimates,
         numbers_source=screened.event.numbers_source,
         numbers_reason=screened.event.numbers_reason,
+        full_year_consensus_reason=screened.event.full_year_consensus_reason,
+        next_quarter_consensus_reason=(
+            screened.event.next_quarter_consensus_reason),
         calendar_eps_surprise_pct=screened.event.calendar_eps_surprise_pct,
         reject_reason=reject_reason)
 
@@ -913,6 +923,12 @@ def _measured(c: ScoutCandidate) -> dict:
             "conflicting_estimates": c.conflicting_estimates,
             "numbers_source": c.numbers_source,
             "numbers_reason": c.numbers_reason,
+            # Why the yardstick the guidance is judged against is missing
+            # (T-021). On the dropped record rather than only in the run's
+            # output, because "how often does this fire, and on which names"
+            # is asked of the ledger months later.
+            "full_year_consensus_reason": c.full_year_consensus_reason,
+            "next_quarter_consensus_reason": c.next_quarter_consensus_reason,
             "calendar_eps_surprise_pct": c.calendar_eps_surprise_pct,
             # The figures the percentages above were computed from, exactly as
             # the ranking read them (T-014). Taken off the three-leg reading

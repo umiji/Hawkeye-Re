@@ -632,13 +632,42 @@ def scan_report_csv(candidates: Iterable[ScreenedCandidate]) -> str:
     return buffer.getvalue()
 
 
+# The refusals a consensus reading can hand back. `no_consensus_clause` and
+# its siblings are deliberately absent: those mean the vendor's sentence never
+# stated a yardstick, which 29 of the 47-name corpus do (measured 2026-08-09),
+# and printing them would fill this column on nearly every row and bury the
+# refusals it exists to show. A REFUSAL is different in kind — the figures
+# were there and we declined them (T-021).
+_CONSENSUS_REFUSALS = frozenset({
+    "full_year_period_disputed", "full_year_amount_unreadable",
+    "next_quarter_period_disputed", "next_quarter_amount_unreadable"})
+
+
+def _reasons_cell(c: ScreenedCandidate) -> str:
+    """Everything this scan could not use from the earnings feed, in one cell.
+
+    Two independent failures share this column: the SURPRISE figures falling
+    back to the calendar (`numbers_reason`) and a YARDSTICK being refused
+    (T-021). One response routinely does both, so they are joined rather than
+    one overwriting the other — the column gains a fact, it does not trade one
+    for another. A new column would have moved the header row T-018 is still
+    settling (User decision 2026-08-19).
+    """
+    named = [c.numbers_reason,
+             c.full_year_consensus_reason if c.full_year_consensus_reason
+             in _CONSENSUS_REFUSALS else "",
+             c.next_quarter_consensus_reason
+             if c.next_quarter_consensus_reason in _CONSENSUS_REFUSALS else ""]
+    return "／".join(_flag_ja(r) for r in named if r)
+
+
 def _csv_cell(attr: str, c: ScreenedCandidate) -> str:
     if attr == "stage":
         return _STAGE_JA.get(c.stage, str(c.stage))
     if attr == "numbers_source":
         return _SOURCE_JA.get(c.numbers_source, c.numbers_source)
     if attr == "numbers_reason":
-        return _flag_ja(c.numbers_reason) if c.numbers_reason else ""
+        return _reasons_cell(c)
     if attr == "guidance_reason":
         return _flag_ja(c.guidance_reason) if c.guidance_reason else ""
     if attr == "guidance_state":

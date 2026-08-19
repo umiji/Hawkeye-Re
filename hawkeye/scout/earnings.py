@@ -117,6 +117,19 @@ class EarningsEvent:
     next_quarter_eps_estimate: Optional[float] = None
     next_quarter_revenue_estimate: Optional[float] = None
     next_quarter_period: str = ""
+    # WHY the two yardsticks above are missing, when the response stated a
+    # consensus sentence that could not be used. Two fields rather than one,
+    # mirroring `ConsensusReadout`: a shared field would report the year's
+    # refusal as the quarter's. Empty means the yardstick was read, and the
+    # figures beside it say whether the sentence named one at all.
+    #
+    # Carried at all because the refusals are a measurement (T-021). Before
+    # this they were produced and dropped one line later, so a yardstick the
+    # feed had plainly stated went missing with nothing anywhere saying why
+    # — and the question "how often does the safety catch fire" could not be
+    # asked of the ledger even after the defect was understood.
+    full_year_consensus_reason: str = ""
+    next_quarter_consensus_reason: str = ""
     # The source's own fiscal label (`2026-Q2`), when the calendar gave one.
     # Preferred over the calendar quarter of the report date, which is wrong
     # for any company whose fiscal year does not end in December.

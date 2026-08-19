@@ -129,6 +129,12 @@ def _candidate_to_dict(c: ScoutCandidate) -> dict:
         "revenue_surprise_trusted": c.revenue_surprise_trusted,
         "conflicting_estimates": c.conflicting_estimates,
         "numbers_source": c.numbers_source, "numbers_reason": c.numbers_reason,
+        # Why the guidance's yardstick is missing (T-021). The scan writes
+        # this file and `hawkeye rank` reads it back hours later, so a field
+        # missing from the round trip reaches the ledger empty — which reads
+        # as "nothing was refused" rather than as "we did not record it".
+        "full_year_consensus_reason": c.full_year_consensus_reason,
+        "next_quarter_consensus_reason": c.next_quarter_consensus_reason,
         "calendar_eps_surprise_pct": c.calendar_eps_surprise_pct,
         # How the company's own release was cut (T-013). The scan writes the
         # pending file and `hawkeye rank` reads it back hours later, so a
@@ -162,6 +168,11 @@ def _candidate_from_dict(d: dict) -> ScoutCandidate:
         revenue_surprise_trusted=d["revenue_surprise_trusted"],
         conflicting_estimates=d["conflicting_estimates"],
         numbers_source=d["numbers_source"], numbers_reason=d["numbers_reason"],
+        # `.get` with an empty default: a pending file written before T-021
+        # names no refusal, and empty there is the truth — that scan never
+        # recorded one.
+        full_year_consensus_reason=d.get("full_year_consensus_reason", ""),
+        next_quarter_consensus_reason=d.get("next_quarter_consensus_reason", ""),
         calendar_eps_surprise_pct=d["calendar_eps_surprise_pct"],
         # `.get` with a zero default: a pending file written before T-013 has
         # no counts, and zero there is the truth — that scan never read a
