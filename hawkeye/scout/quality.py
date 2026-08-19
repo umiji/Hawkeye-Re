@@ -37,7 +37,9 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Optional
 
-from hawkeye.contracts.models import GuidanceState, ScoreBreakdown, now
+from hawkeye.contracts.models import (
+    GuidanceComparison, GuidanceState, ScoreBreakdown, now,
+)
 from hawkeye.contracts.stocks import (
     CauseReading,
     ConsensusSnapshot,
@@ -108,11 +110,27 @@ class LegVerdict:
     # `surprise_pct` above stays the primary reading so the existing display
     # and the existing scoring of the other two legs are unchanged.
     parts: tuple[tuple[str, float], ...] = ()
+    # Guidance only. The two FIGURES behind each entry of `parts`, per unit:
+    # (unit, what the company guided, what it was measured against). `parts`
+    # keeps only the percentage that fell out of dividing them, and a
+    # percentage cannot be argued with — the scan CSV carries these so the
+    # user can do the division themselves (T-018). The consensus half is None
+    # when there was no bar to compare against, and an entry exists even then:
+    # "the company guided this and we held nothing to measure it with" is the
+    # answer to why a guidance leg scored nothing, and dropping the entry
+    # would leave that question unanswerable from the file.
+    comparisons: tuple[tuple[str, Optional[float], Optional[float]], ...] = ()
     # Guidance only. WHICH period this reading is about (`2026-Q3`, `FY2026`),
     # stated rather than left to be parsed back out of `flags`. On the leg the
     # scoring rests on it names the period that governed; on each entry of
     # `periods` below it names that entry's own.
     period: str = ""
+    # Which KIND of period `period` names — "next_quarter", "full_year" or
+    # "other" — decided HERE, where the print's own fiscal quarter is in hand
+    # to decide it against. The scan record downstream keeps no fiscal
+    # quarter, so a reader handed only `2026-Q3` there could not tell the
+    # quarter the company guided from the one it had just reported (T-018).
+    period_kind: str = ""
     # Every period the company guided, each judged on its own, since T-020. A
     # release routinely carries two — the next quarter and the full year — and
     # the leg above reports ONE of them: the worst (User decision,
@@ -249,6 +267,22 @@ def guidance_state(quality: Optional["EarningsQuality"]) -> GuidanceState:
     if reason in _GUIDANCE_COMPANY_SILENT or not reason:
         return GuidanceState.NOT_PUBLISHED
     return GuidanceState.UNREADABLE
+
+
+def guidance_comparisons(quality: Optional["EarningsQuality"]
+                         ) -> list[GuidanceComparison]:
+    """Every (period, unit) the company guided, flattened for the scan record.
+
+    Read off EVERY period rather than off the one that governed the score:
+    the governing period is the worst one (T-020), and a file showing only it
+    would hide the very second period T-020 exists to stop losing.
+    """
+    if quality is None:
+        return []
+    return [GuidanceComparison(period=per.period, period_kind=per.period_kind,
+                               unit=unit, company=company, consensus=bar)
+            for per in quality.guidance.periods
+            for unit, company, bar in per.comparisons]
 
 
 def _pct(actual: Optional[float], estimate: Optional[float]) -> Optional[float]:
@@ -425,6 +459,35 @@ def _governing_period(judged: tuple[LegVerdict, ...]) -> LegVerdict:
     return replace(governing, periods=judged)
 
 
+def _period_kind(period: str, fiscal_quarter: str) -> str:
+    """Which yardstick a guided period belongs to, in one word.
+
+    The branching mirrors `_yardsticks` above and must keep mirroring it: an
+    unlabelled reading counts as next quarter there, so it counts as next
+    quarter here, and a period naming neither is "other" in both.
+    """
+    if period.startswith("FY"):
+        return "full_year"
+    if not period or period == _next_quarter(fiscal_quarter):
+        return "next_quarter"
+    return "other"
+
+
+def _comparisons(guidance: GuidanceReading, eps_bar: Optional[float],
+                 revenue_bar: Optional[float]
+                 ) -> tuple[tuple[str, Optional[float], Optional[float]], ...]:
+    """Every unit the company actually guided, beside the bar held for it.
+
+    Keyed off the COMPANY's figure, not off the bar: a range published with
+    no consensus to measure it against is still something the company said,
+    and it is the reason that period scored nothing.
+    """
+    return tuple((unit, value, bar) for unit, value, bar
+                 in (("eps", guidance.eps_midpoint, eps_bar),
+                     ("revenue", guidance.revenue_midpoint, revenue_bar))
+                 if value is not None)
+
+
 def _guidance_period(guidance: GuidanceReading, print_row: EarningsPrint,
                      consensus: Optional[ConsensusSnapshot],
                      config) -> LegVerdict:
@@ -446,16 +509,22 @@ def _guidance_period(guidance: GuidanceReading, print_row: EarningsPrint,
     # exists to avoid inventing. The condition is quoted so the reader can see
     # what was declined, and it costs nothing either way (see below: an absent
     # guidance leg is neither scored nor penalised).
+    kind = _period_kind(guidance.period, print_row.fiscal_quarter)
     if guidance.qualifier:
+        # No bar travels with a qualified range, deliberately. Printing the
+        # consensus beside it invites exactly the comparison this branch
+        # exists to refuse; what the company said is still recorded.
         return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
-                          period=guidance.period,
+                          period=guidance.period, period_kind=kind,
+                          comparisons=_comparisons(guidance, None, None),
                           flags=("guidance_scope_qualified",),
                           excerpt=guidance.qualifier)
     eps_bar, revenue_bar, refusal = _yardsticks(guidance.period, print_row,
                                                 consensus)
     if refusal:
         return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
-                          period=guidance.period,
+                          period=guidance.period, period_kind=kind,
+                          comparisons=_comparisons(guidance, None, None),
                           flags=(refusal, f"guided_{guidance.period}"))
     # EPS first, revenue second. Plenty of companies guide only on sales —
     # Amazon gives net sales and operating income and never an EPS range —
@@ -479,6 +548,8 @@ def _guidance_period(guidance: GuidanceReading, print_row: EarningsPrint,
     if not usable:
         return LegVerdict(
             leg="guidance", status=LegStatus.ABSENT, period=guidance.period,
+            period_kind=kind,
+            comparisons=_comparisons(guidance, eps_bar, revenue_bar),
             flags=(("eps_yardstick_too_small",) if too_small
                   else ("no_forward_consensus_to_compare",)))
     # EVERY leg the company guided and this system holds a bar for, not just
@@ -489,7 +560,9 @@ def _guidance_period(guidance: GuidanceReading, print_row: EarningsPrint,
                   if _pct(value, yardstick) is not None)
     if not parts:
         return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
-                          period=guidance.period,
+                          period=guidance.period, period_kind=kind,
+                          comparisons=_comparisons(guidance, eps_bar,
+                                                   revenue_bar),
                           flags=("no_forward_consensus_to_compare",))
     above = sum(1 for _, pct in parts if pct > 0)
     below = sum(1 for _, pct in parts if pct < 0)
@@ -506,7 +579,9 @@ def _guidance_period(guidance: GuidanceReading, print_row: EarningsPrint,
     too_small_flag = ("eps_yardstick_too_small",) if too_small else ()
     return LegVerdict(leg="guidance", status=status, surprise_pct=parts[0][1],
                       actual=midpoint, estimate=yardstick, parts=parts,
-                      period=guidance.period, excerpt=guidance.source_excerpt,
+                      comparisons=_comparisons(guidance, eps_bar, revenue_bar),
+                      period=guidance.period, period_kind=kind,
+                      excerpt=guidance.source_excerpt,
                       flags=tuple(f"on_{unit}" for unit, _ in parts)
                       + period_flag + too_small_flag)
 

@@ -147,8 +147,31 @@ _FLAG = {
     "duplicate_period": "読み手が同じ期を2回報告したため、2回目を採用しません"
                         "でした(同じ発表を二重に数えないため)",
     "on_eps": "EPSレンジの中央値で比較",
-    "on_revenue": "売上レンジの中央値で比較(EPSレンジの開示が無いため)",
+    # 単独で立ったとき、つまりEPSでは比較できなかったときの文言。括弧内で
+    # 理由を「EPSレンジの開示が無いため」と断定していたのが T-018 の修正点で、
+    # EPSで比較できない理由は3つある（会社がEPSレンジを出していない／比較先の
+    # EPSコンセンサスが無い／そのコンセンサスがゼロに近すぎて率が意味を持た
+    # ない）。どれだったかはこのフラグからは分からないので、断定せず事実だけを
+    # 書く。3つ目の場合は `eps_yardstick_too_small` が別行で理由を述べる。
+    "on_revenue": "売上レンジの中央値で比較(EPSでは比較できなかったため)",
 }
+
+# EPSでも比較できていたときの `on_revenue` の文言。1行目で「EPSで比較した」と
+# 言った直後に2行目で「EPSでは比較できなかった」と言う矛盾が、2026-08-19 の
+# 走査で AS に実際に出た（AS は $0.31〜0.33 のEPSレンジを開示している）。
+_ON_REVENUE_ALSO = "売上レンジの中央値でも比較"
+
+
+def _leg_flag_ja(flag: str, flags: tuple[str, ...]) -> str:
+    """1つのフラグの日本語訳。同じ判定に並んでいる他のフラグも見て決める。
+
+    `_flag_ja` と分けてあるのは、こちらが「その判定の中での意味」を訳すため。
+    走査レポートや監視レポートは単独のフラグを1つずつ訳しており、そちらに
+    隣のフラグという概念が無い。
+    """
+    if flag == "on_revenue" and "on_eps" in flags:
+        return _ON_REVENUE_ALSO
+    return _flag_ja(flag)
 
 
 def _flag_ja(flag: str) -> str:
@@ -187,7 +210,7 @@ def render_leg_ja(leg: LegVerdict) -> str:
     if "vendors_report_different_actuals" in leg.flags:
         lines.append(f"    実績値: 判定に使用 {leg.actual:g} / "
                      f"決算カレンダー {leg.other_actual:g}")
-    lines += [f"    - {_flag_ja(f)}" for f in leg.flags]
+    lines += [f"    - {_leg_flag_ja(f, leg.flags)}" for f in leg.flags]
     # 比較を見送ったときは、その根拠になった会社自身の文言をそのまま出す。
     # 「条件が付いていたので比較しませんでした」だけでは、その判断が妥当
     # だったのか読み手に検算しようがない(原文は英語のまま。要約サイトの

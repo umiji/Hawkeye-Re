@@ -50,6 +50,7 @@ from hawkeye.scout.quality import (
     EarningsQuality,
     assess_earnings,
     describe_quality_en,
+    guidance_comparisons,
     guidance_state,
     print_from_event,
     reconstructed_consensus,
@@ -927,6 +928,10 @@ def _measured(c: ScoutCandidate) -> dict:
             # when it was not (T-014).
             "guidance_state": guidance_state(c.quality),
             "guidance_reason": c.quality.guidance_reason if c.quality else "",
+            # The figures the guidance score was computed from, per period and
+            # per unit (T-018) — kept beside the score for the same reason the
+            # EPS pair above is kept beside its percentage.
+            "guidance_comparisons": guidance_comparisons(c.quality),
             "score": c.score, "score_version": c.score_version,
             # What earned the score. None when the funnel ran without a stock
             # store, i.e. when the three-leg reading never happened — the
