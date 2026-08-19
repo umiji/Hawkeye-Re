@@ -185,9 +185,10 @@ def test_a_stored_reading_reaches_a_named_stocks_catalyst_text(tmp_path):
     active = store.active_print(stock_id, "2026-Q2")
     store.revise_print(active.model_copy(update={
         "id": new_id("ern"),
-        "guidance": GuidanceReading(period="2026-Q3", eps_low=2.0,
-                                    eps_high=2.2, extractor="agent",
-                                    source_excerpt="sees Q3 EPS of $2.00-$2.20"),
+        "guidance_readings": [
+            GuidanceReading(period="2026-Q3", eps_low=2.0, eps_high=2.2,
+                            extractor="agent",
+                            source_excerpt="sees Q3 EPS of $2.00-$2.20")],
         "guidance_reason": "",
         "cause_reason": "no_cause_in_source"}))
 

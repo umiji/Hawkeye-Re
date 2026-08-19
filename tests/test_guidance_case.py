@@ -38,10 +38,10 @@ SUMMARY = (
     "of $1.00 per share to breakeven. The current consensus estimate is "
     "earnings of $0.08 per share for the quarter ending September 30, 2026.")
 
-GOOD_REPLY = {
-    "guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
-    "quote": ("third quarter results to range from a loss of $1.00 per share "
-              "to breakeven")}
+GOOD_REPLY = {"guided": True, "periods": [{
+        "period": "2026-Q3", "eps_low": -1.0, "eps_high": 0.0,
+        "quote": "third quarter results to range from a loss of $1.00 "
+                 "per share to breakeven"}]}
 
 
 def _config():
@@ -96,9 +96,9 @@ def test_the_reading_lands_on_the_print_and_retires_the_row_it_replaces(
     guidance_case.attach(store, case, extraction)
 
     active = store.active_print(case.stock_id, "2026-Q2")
-    assert active.guidance.eps_low == -1.00
-    assert active.guidance.eps_high == 0.0
-    assert active.guidance.extractor == "agent"
+    assert active.guidance_readings[0].eps_low == -1.00
+    assert active.guidance_readings[0].eps_high == 0.0
+    assert active.guidance_readings[0].extractor == "agent"
     assert active.id != case.print_id                    # a NEW row
     rows = store.prints(case.stock_id)
     assert len(rows) == 2
@@ -118,7 +118,7 @@ def test_the_row_ranked_on_is_still_readable_afterwards(tmp_path):
     retired = [r for r in store.prints(case.stock_id)
                if r.status is RowStatus.SUPERSEDED]
     assert retired[0].id == case.print_id
-    assert retired[0].guidance is None
+    assert retired[0].guidance_readings == []
 
 
 def test_a_refusal_is_attached_too_so_the_row_says_why(tmp_path):
@@ -127,14 +127,14 @@ def test_a_refusal_is_attached_too_so_the_row_says_why(tmp_path):
     store = _scan(tmp_path)
     case = guidance_case.list_cases()[0]
 
-    extraction = parse_reply({
-        "guided": True, "period": "2026-Q3", "eps_low": 5.0, "eps_high": 6.0,
-        "quote": "third quarter earnings of $5.00 to $6.00 per share"},
+    extraction = parse_reply({"guided": True, "periods": [{
+            "period": "2026-Q3", "eps_low": 5.0, "eps_high": 6.0,
+            "quote": "third quarter earnings of $5.00 to $6.00 per share"}]},
         case.request())
     guidance_case.attach(store, case, extraction)
 
     active = store.active_print(case.stock_id, "2026-Q2")
-    assert active.guidance is None
+    assert active.guidance_readings == []
     assert active.guidance_reason == "quote_not_in_source"
 
 

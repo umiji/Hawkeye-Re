@@ -565,5 +565,8 @@ def test_the_csv_carries_the_figures_the_state_and_the_errors():
     # Whole figures, not the screen's 133.5M: a spreadsheet has to divide them.
     assert cells["売上 実績/予想"] == "133462000 / 120880000"
     assert cells["ガイダンス"] == "開示あり"
-    assert cells["エラー"] == "数値"
+    # A sentence, not the screen's one word: the file is read a week later
+    # with no §④ beside it to explain what "数値" meant (T-018).
+    assert cells["エラー"] == ("決算専門サイトからEPSまたは売上の数値が取れず、"
+                              "決算カレンダーの数字で判定しました。")
     assert cells["数値の出所"] == "EW"

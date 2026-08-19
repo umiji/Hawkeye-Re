@@ -62,10 +62,13 @@ from hawkeye.reports.render_ja import (
     render_signals_ja,
 )
 from hawkeye.scout import cause_case, drop_case, drop_cycle, guidance_case
-from hawkeye.scout.guidance_agent import parse_reply, render_request
+from hawkeye.scout.guidance_agent import (
+    failure_kind as guidance_failure_kind,
+    parse_reply,
+)
 from hawkeye.scout.cause_agent import (
+    failure_kind as cause_failure_kind,
     parse_reply as parse_cause_reply,
-    render_request as render_cause_request,
 )
 from hawkeye.scout.drop_review import (
     CHECKPOINT_TRADING_DAYS,
@@ -590,6 +593,40 @@ def cmd_scout(args: argparse.Namespace) -> int:
     return 0
 
 
+def _unread_guidance_ja(
+        unread: list[guidance_case.GuidanceCase]) -> str:
+    """Why the ranking stopped, and the two ways forward.
+
+    Names every ticker rather than a bare count: the operator's next move is
+    `hawkeye guidance queue`, and knowing WHICH company is waiting is what
+    tells them whether the reading is one they already tried and failed.
+    """
+    names = "、".join(c.ticker for c in unread)
+    return "\n".join([
+        f"会社の見通し(ガイダンス)の読み取り待ちが {len(unread)}件 "
+        f"あります({names})。",
+        "このまま順位付けすると、その銘柄の見通しの点数がゼロのまま順位が"
+        "決まり、審理に送る銘柄の顔ぶれが変わります。",
+        "  hawkeye guidance queue   で読み切ってから hawkeye rank を"
+        "実行してください。",
+        "  読み取りがどうしても通らない場合のみ:",
+        "  hawkeye rank --allow-unread-guidance"
+        "  (見通しを読まずに順位を決めたことが台帳に残ります)",
+    ])
+
+
+def _ranked_unread_ja(
+        unread: list[guidance_case.GuidanceCase]) -> str:
+    """The escape hatch, said out loud. Printed whenever it is taken."""
+    names = "、".join(c.ticker for c in unread)
+    return "\n".join([
+        f"⚠️ 見通しを読まずに順位を決めました: 読み取り待ち {len(unread)}件"
+        f"({names})を残したまま --allow-unread-guidance で実行しています。",
+        "   この銘柄は見通しの点数がゼロのまま順位付けされています。"
+        "台帳の走査記録にも同じことを書きました。",
+    ])
+
+
 def cmd_rank(args: argparse.Namespace) -> int:
     """Re-score the pending scan now that guidance can actually be known, sort
     it, and only THEN commit it to the ledger (docs/design/RANK_AFTER_GUIDANCE.ja.md).
@@ -605,12 +642,30 @@ def cmd_rank(args: argparse.Namespace) -> int:
         print("順位付け待ちの走査がありません。先に hawkeye scout を"
               "実行してください。", file=sys.stderr)
         return 1
+    # The one leg that can still move between `scout` and here (T-016). Both
+    # `scout`'s closing line and `hawkeye guidance queue` already SAY the
+    # readings are outstanding, but saying it is advice, and CLAUDE.md
+    # invariant 3 asks code to enforce what the prompt requests: until this
+    # guard existed the whole shortlist could be scored with that leg at zero
+    # for every name, sorted on it, and committed — silently. Checked before
+    # anything is loaded or written, so a refusal costs nothing and leaves the
+    # pending scan exactly where it was.
+    unread = guidance_case.list_cases()
+    if unread and not args.allow_unread_guidance:
+        print(_unread_guidance_ja(unread), file=sys.stderr)
+        return 1
     config = HawkeyeConfig.from_env()
     finnhub = FinnhubProvider()
     store = _stock_store()
     ledger = _ledger()
     result = scan_store.load_scan_result()
     rerank_after_guidance(store, result, config)
+    if unread:
+        # Twice, on purpose, and for two different readers: stderr now, before
+        # the several hundred lines of report that would bury it, and stdout
+        # at the very end (below), which is what gets scrolled back to and
+        # what a redirected run keeps on disk.
+        print(_ranked_unread_ja(unread), file=sys.stderr)
 
     # Whatever isn't sent to the tribunal THIS run — from result.passed's
     # tail onward — is the ranking-cutoff tier (docs/design/MASTER_OVERVIEW.ja.md
@@ -628,6 +683,12 @@ def cmd_rank(args: argparse.Namespace) -> int:
                 "days_back_override": None,
                 "duplicates_skipped": result.duplicates,
                 "min_eps_surprise": config.scout_min_eps_surprise_pct,
+                # Recorded on every scan, zero included: a key that only
+                # appears when something went wrong cannot be told apart from
+                # a row written before the key existed (T-016).
+                "ranked_with_unread_guidance": bool(unread),
+                "guidance_unread_at_rank": len(unread),
+                "guidance_unread_tickers": [c.ticker for c in unread],
                 **result.numbers.as_dict()},
         scanned=result.scanned, screened=result.screened,
         enriched=result.enriched, gate_passed=len(result.passed),
@@ -684,6 +745,10 @@ def cmd_rank(args: argparse.Namespace) -> int:
             report_path = _write_tribunal_report(rec)
             print(f"\n(記録済み: {rec.id} / status={status.value})")
             print(f"(レポート保存先: {report_path})")
+
+    if unread:
+        print()
+        print(_ranked_unread_ja(unread))
 
     scan_store.discard_scan_result()
     return 0
@@ -863,6 +928,57 @@ def cmd_stocks_prune_revisions(args: argparse.Namespace) -> int:
     return 0
 
 
+# The two refusals worth re-reading, and the reason the distinction is not a
+# new list: `reader_failed` means the reply broke a MECHANICAL check of ours
+# (the quote is not in the release, the unit is not one we accept, the period
+# is unreadable) and `call_failed` means the call never completed. Both are
+# ours to fix and both are retryable. Everything else — chiefly the reader
+# reporting that the release states no reason — is a final answer, and keeping
+# it staged would invite a reworded retry, which is exactly what the run skill
+# forbids. The mapping itself stays in each gate's own `_FAILURE_KIND`.
+_RETRYABLE_REFUSALS = ("reader_failed", "call_failed")
+
+
+def _keep_staged(reason: str, classify) -> bool:
+    """Whether a refusal leaves the material where the reader can try again."""
+    return bool(reason) and classify(reason) in _RETRYABLE_REFUSALS
+
+
+def _report_kept_package(ticker: str, reason: str, queue_command: str,
+                         case_id: str) -> None:
+    """Say plainly that nothing was lost, and what to do next.
+
+    Before T-015 this path deleted the staged summary on its way out, so a
+    reply that merely used the wrong word for a unit ended the reading for
+    that whole scan — AMBQ, 2026-08-18.
+    """
+    print(f"{ticker}: 読み取り結果は形式検査を通りませんでした"
+          f"(理由: {reason})。材料は残してあるので、指示文を読み直して"
+          "同じ case-id で再提出してください:", file=sys.stderr)
+    print(f"  hawkeye {queue_command} queue --case-id {case_id}",
+          file=sys.stderr)
+
+
+def _print_reader_package(package: dict, case, submit_command: str) -> None:
+    """Name the four files a reader subagent needs, the way `case step` does.
+
+    Paths, not the text itself. The text is in `input`, and printing it here
+    as well is what made the orchestrating session treat the reading as
+    something to compose out of what it had seen rather than something to
+    hand over — which is how the instruction that cost AMBQ's reading got
+    written in the first place (T-015).
+    """
+    print(f"case: {case.id}  ticker: {case.ticker}  "
+          f"quarter: {case.fiscal_quarter}")
+    print(f"next_role: {package['role']}")
+    print(f"system: {package['system']}")
+    print(f"input: {package['input']}")
+    print(f"schema: {package['schema']}")
+    print(f"write_reply_to: {package['output']}")
+    print(f"submit_with: hawkeye {submit_command} submit {case.id} "
+          f"--file {package['output']}")
+
+
 def cmd_guidance_queue(args: argparse.Namespace) -> int:
     """List the forward statements waiting to be read, or emit one package.
 
@@ -885,11 +1001,28 @@ def cmd_guidance_queue(args: argparse.Namespace) -> int:
     except FileNotFoundError:
         print(f"case not found: {args.case_id}", file=sys.stderr)
         return 1
-    print(render_request(case.request()))
-    print()
-    print(f"submit_with: hawkeye guidance submit {case.id} "
-          f"--file <読み取り結果.json>")
+    _print_reader_package(guidance_case.write_package(case), case, "guidance")
     return 0
+
+
+def _guidance_recorded_ja(ticker: str, extraction) -> str:
+    """何期ぶんの見通しが台帳に入り、何期が受け付けられなかったかを1行で言う。
+
+    T-020 まで、1回の発表に複数の期の見通しがあっても記録は1期だけで、しかも
+    残りが落ちたことはどこにも出なかった。操作している人間がその場で気づける
+    唯一の場所がここなので、受け付けた期の名前と、受け付けなかった期の理由を
+    そのまま出す。
+    """
+    if not extraction.readings:
+        return (f"{ticker}: 会社の見通しは記録されませんでした"
+                f"({extraction.reason})。")
+    periods = "、".join(r.period or "期の記載なし" for r in extraction.readings)
+    line = (f"{ticker}: 会社の見通しを{len(extraction.readings)}期ぶん"
+            f"記録しました({periods})。")
+    if extraction.refusals:
+        line += (f" 受け付けなかった期が{len(extraction.refusals)}件"
+                 f"あります({'、'.join(extraction.refusals)})。")
+    return line
 
 
 def cmd_guidance_submit(args: argparse.Namespace) -> int:
@@ -918,15 +1051,23 @@ def cmd_guidance_submit(args: argparse.Namespace) -> int:
               "反映しませんでした(実績値の訂正が間に入った可能性があります)。"
               "この銘柄はもう一度走査してください。", file=sys.stderr)
         return 1
+    print(_guidance_recorded_ja(case.ticker, extraction))
     # Only now — the staged file is what makes a failed write retryable, the
     # same ordering the tribunal's case workspaces and the drop reviews use.
-    guidance_case.discard(case.id)
+    # A refusal that is OURS rather than the company's keeps it (T-015).
+    kept = _keep_staged(extraction.reason, guidance_failure_kind)
+    if not kept:
+        guidance_case.discard(case.id)
 
     row = store.active_print(case.stock_id, case.fiscal_quarter)
     consensus = (store.consensus(row.consensus_snapshot_id)
                  if row.consensus_snapshot_id else None)
     print(render_quality_ja(assess_earnings(row, consensus,
                                             HawkeyeConfig.from_env())))
+    if kept:
+        _report_kept_package(case.ticker, extraction.reason, "guidance",
+                             case.id)
+        return 1
     remaining = len(guidance_case.list_cases())
     print("\n次: " + (f"hawkeye guidance queue (残り {remaining}件)"
                       if remaining else "hawkeye case open ..."))
@@ -956,10 +1097,7 @@ def cmd_cause_queue(args: argparse.Namespace) -> int:
     except FileNotFoundError:
         print(f"case not found: {args.case_id}", file=sys.stderr)
         return 1
-    print(render_cause_request(case.request()))
-    print()
-    print(f"submit_with: hawkeye cause submit {case.id} "
-          f"--file <読み取り結果.json>")
+    _print_reader_package(cause_case.write_package(case), case, "cause")
     return 0
 
 
@@ -992,13 +1130,20 @@ def cmd_cause_submit(args: argparse.Namespace) -> int:
         return 1
     # Only now — the staged file is what makes a failed write retryable, the
     # same ordering the tribunal's case workspaces and the drop reviews use.
-    cause_case.discard(case.id)
+    # A refusal that is OURS rather than the company's keeps it (T-015).
+    kept = _keep_staged(extraction.reason, cause_failure_kind)
+    if not kept:
+        cause_case.discard(case.id)
 
     row = store.active_print(case.stock_id, case.fiscal_quarter)
     consensus = (store.consensus(row.consensus_snapshot_id)
                  if row.consensus_snapshot_id else None)
     print(render_quality_ja(assess_earnings(row, consensus,
                                             HawkeyeConfig.from_env())))
+    if kept:
+        _report_kept_package(case.ticker, extraction.reason, "cause",
+                             case.id)
+        return 1
     remaining = len(cause_case.list_cases())
     print("\n次: " + (f"hawkeye cause queue (残り {remaining}件)"
                       if remaining else "hawkeye rank"))
@@ -1720,6 +1865,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="open session-mode cases for the top N candidates "
                          "(no API key; driven by /hawkeye-run)")
     rk.add_argument("--nav", type=float, default=100_000.0)
+    rk.add_argument("--allow-unread-guidance", action="store_true",
+                    help="rank even with guidance readings still queued "
+                         "(recorded on the scan row; use only when a reading "
+                         "cannot be made to pass)")
     rk.set_defaults(func=cmd_rank)
 
     cn = sub.add_parser("consensus",

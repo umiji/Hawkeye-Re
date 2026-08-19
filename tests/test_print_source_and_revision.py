@@ -19,6 +19,7 @@ reviving is the in-place rewrite the append-only rule exists to forbid.
 """
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
@@ -165,3 +166,49 @@ def test_a_moved_full_year_consensus_counts_as_new_information():
     moved = base.model_copy(update={"full_year_eps_avg": 1.75})
 
     assert base.content_key() != moved.content_key()
+
+
+# --- a row written by an older version of this program ----------------------
+
+def test_a_row_written_under_an_older_shape_can_still_be_retired(tmp_path):
+    """Found while verifying T-020, in the real ledger, on a real row.
+
+    Retiring used to re-serialize the row with TODAY's model and write that
+    back. It looks harmless while the model never changes: the moment a field
+    is added or renamed, every row already on disk fails the append-only
+    trigger — its stored text and its re-serialized text stop matching — and
+    the whole revision path dies on data nobody touched.
+
+    The row here is a pre-T-020 print carrying a single `guidance` object,
+    which is how all 239 rows in the live ledger were written. Retiring it
+    must flip its status and change nothing else.
+    """
+    st = store(tmp_path)
+    st.put_stock(a_stock())
+    legacy = json.dumps({
+        "id": "ern_legacy", "stock_id": "cik:0001018724", "ticker": "ADEA",
+        "fiscal_quarter": "2026-Q2", "report_date": "2026-08-05",
+        "source": "finnhub", "status": "active", "recorded_at":
+        "2026-08-05T00:00:00+00:00", "eps_actual": 0.34,
+        "guidance": {"period": "2026-Q3", "eps_low": 1.0, "eps_high": 1.2},
+        "guidance_reason": ""})
+    st._conn.execute(
+        "INSERT INTO earnings_prints (id, stock_id, fiscal_quarter,"
+        " report_date, source, status, consensus_snapshot_id, payload)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("ern_legacy", "cik:0001018724", "2026-Q2", "2026-08-05", "finnhub",
+         "active", "", legacy))
+    st._conn.commit()
+
+    st.revise_print(a_print(id="ern_second", eps_actual=0.42))
+
+    stored = st._conn.execute(
+        "SELECT status, payload FROM earnings_prints WHERE id = 'ern_legacy'"
+    ).fetchone()
+    assert stored[0] == RowStatus.SUPERSEDED.value
+    written, before = json.loads(stored[1]), json.loads(legacy)
+    assert written.pop("status") == "superseded"
+    before.pop("status")
+    # Everything else is the text that was stored, not the text this version
+    # of the model would produce for it.
+    assert written == before

@@ -280,6 +280,36 @@ class ScoreBreakdown(BaseModel):
         return self.eps + self.revenue + self.gap + self.guidance + self.whisper
 
 
+class GuidanceComparison(BaseModel):
+    """One period of company guidance, for one unit, beside its yardstick.
+
+    The scan report's five score columns say WHAT each part earned; nothing
+    said what the guidance part was computed FROM, so a guidance score could
+    not be checked without opening the ledger by hand (T-018). These are the
+    two figures the percentage was divided out of, exactly as the ranking
+    read them.
+
+    One record per (period, unit) rather than a flat pair, because a release
+    routinely guides both the next quarter and the full year, and both an
+    EPS range and a sales range within each (T-020). Collapsing them would
+    reintroduce the loss T-020 removed.
+    """
+    period: str = ""                      # `2026-Q3`, `FY2026`
+    # "next_quarter", "full_year" or "other". Decided when the print's own
+    # fiscal quarter was in hand; a reader here has no way to derive it.
+    period_kind: str = ""
+    unit: str = ""                        # "eps" | "revenue"
+    # The midpoint of the company's range — the figure the comparison used.
+    # The range's ends are not duplicated here: they live on the print row,
+    # and a second copy that could drift from the first would be worse than
+    # a pointer to the one that cannot.
+    company: Optional[float] = None
+    # The consensus this was measured against, or None when nothing was held
+    # for this period. None is a fact worth carrying: it is the reason a
+    # company that guided clearly can still score zero on guidance.
+    consensus: Optional[float] = None
+
+
 class ScreenedCandidate(BaseModel):
     id: str = Field(default_factory=lambda: new_id("scr"))
     recorded_at: datetime = Field(default_factory=now)
@@ -315,6 +345,14 @@ class ScreenedCandidate(BaseModel):
     # in one cell, the reason is what the failures section says in words.
     guidance_state: GuidanceState = GuidanceState.UNKNOWN
     guidance_reason: str = ""
+    # The figures behind the guidance score, as the ranking read them (T-018).
+    # Stored rather than re-derived when the report is rendered, for the same
+    # reason `eps_actual` above is: the print row can gain or revise a
+    # guidance reading afterwards, and a file that showed the NEW figures
+    # under the OLD score would be worse than one that showed none. Empty
+    # both for a row written before this field existed and for a company that
+    # guided nothing — `guidance_state` is what tells those apart.
+    guidance_comparisons: list[GuidanceComparison] = Field(default_factory=list)
     # Which vendor supplied BOTH figures the surprise above was computed from
     # — "calendar" (the Finnhub earnings calendar) or "whispers"
     # (EarningsWhispers) — and what the calendar had read when the feed

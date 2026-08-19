@@ -33,7 +33,9 @@ queue on disk and the one write to the ledger.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
+from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -41,7 +43,13 @@ from pydantic import BaseModel, Field
 from hawkeye import paths
 from hawkeye.contracts.models import new_id, now
 from hawkeye.contracts.stocks import next_fiscal_quarter
-from hawkeye.scout.guidance_agent import GuidanceExtraction, GuidanceRequest
+from hawkeye.scout.guidance_agent import (
+    GUIDANCE_SYSTEM,
+    GuidanceExtraction,
+    GuidanceRequest,
+    build_schema,
+    render_request,
+)
 from hawkeye.scout.revision import target_row
 
 
@@ -108,9 +116,56 @@ def list_cases() -> list[GuidanceCase]:
     return sorted(cases, key=lambda c: c.ticker)
 
 
+def _package_dir(case_id: str) -> Path:
+    """Where one case's instruction files live.
+
+    A SUBDIRECTORY, not four files beside the case JSON, because `list_cases`
+    finds work by globbing `gdc_*.json` — a `gdc_x.schema.json` sitting next
+    to `gdc_x.json` would be counted as a second company waiting to be read.
+    """
+    return paths.guidance_dir() / case_id
+
+
+def write_package(case: GuidanceCase) -> dict:
+    """Materialize what one reader is told, what it reads, and the shape its
+    reply must take, as files. Returns their paths.
+
+    The mirror of `hawkeye/tribunal/casefile.py::write_package`, and the twin
+    of `hawkeye/scout/cause_case.py::write_package` — see that one for why
+    both exist (T-015): in session mode the reader is a throwaway subagent,
+    and until now the only thing that reached it was the summary plus a
+    one-line ask, leaving the orchestrating session to invent the rest.
+
+    What is written is `GUIDANCE_SYSTEM` ITSELF, never a restatement of it.
+    The API path sends that same constant, and two engines reading different
+    text produce answers that cannot be compared (`CLAUDE.md` invariant 4).
+    """
+    d = _package_dir(case.id)
+    d.mkdir(parents=True, exist_ok=True)
+    files = {
+        "system": d / "guidance.system.md",
+        "input": d / "guidance.input.md",
+        "schema": d / "guidance.schema.json",
+        "output": d / "guidance.out.json",   # where to write the reply
+    }
+    files["system"].write_text(GUIDANCE_SYSTEM, encoding="utf-8")
+    files["input"].write_text(render_request(case.request()), encoding="utf-8")
+    files["schema"].write_text(json.dumps(build_schema(), indent=2),
+                               encoding="utf-8")
+    return {"role": "guidance", **{k: str(v) for k, v in files.items()}}
+
+
 def discard(case_id: str) -> bool:
-    """Delete a staged case. Only after its ledger write is confirmed — the
-    staged file is what makes a failed write retryable."""
+    """Delete a staged case and its instruction files. Only after its ledger
+    write is confirmed — the staged file is what makes a failed write
+    retryable.
+
+    The package goes with it: an instruction file outliving the case it was
+    written for points a reader at work nobody is waiting for.
+    """
+    d = _package_dir(case_id)
+    if d.is_dir():
+        shutil.rmtree(d)
     p = _case_path(case_id)
     if not p.exists():
         return False
@@ -153,5 +208,10 @@ def attach(store, case: GuidanceCase,
     return store.revise_print(active.model_copy(update={
         "id": new_id("ern"),
         "recorded_at": now(),
-        "guidance": extraction.reading,
-        "guidance_reason": extraction.reason}))
+        "guidance_readings": list(extraction.readings),
+        "guidance_reason": extraction.reason,
+        # The periods the gate turned down while keeping others. Written even
+        # when it is empty, so a row that predates T-020 and a row where
+        # nothing was refused stay distinguishable from one where the list was
+        # never set.
+        "guidance_refusals": list(extraction.refusals)}))

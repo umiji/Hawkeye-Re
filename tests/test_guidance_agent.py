@@ -51,6 +51,18 @@ ALGT_SUMMARY = (
     "per share.")
 
 
+def a_reply(**entry) -> dict:
+    """A reply naming ONE period.
+
+    The reply carries a LIST of periods since T-020, because a release can
+    state an outlook for the quarter and one for the year at once. Every case
+    in this file is about what the gate does with a single period, so they all
+    send one; the multi-period cases live in
+    `tests/test_guidance_multi_period.py`.
+    """
+    return {"guided": True, "periods": [entry]}
+
+
 def a_request(summary=ACA_SUMMARY, **kw) -> GuidanceRequest:
     base = dict(ticker="ACA", fiscal_quarter="2026-Q1",
                 next_quarter="2026-Q2", summary=summary)
@@ -82,51 +94,55 @@ def test_the_package_names_the_quarter_that_follows_the_one_reported():
 # --- an ordinary reading ---------------------------------------------------
 
 def test_a_quoted_full_year_range_is_accepted():
-    out = parse_reply({
-        "guided": True, "period": "FY2026",
-        "revenue_low": 2.60, "revenue_high": 2.70, "revenue_unit": "billion",
-        "quote": "2026 revenue of $2.60 billion to $2.70 billion",
-    }, a_request(), model="test-model")
+    out = parse_reply(
+        a_reply(
+            period="FY2026", revenue_low=2.6, revenue_high=2.7,
+            revenue_unit="billion",
+            quote="2026 revenue of $2.60 billion to $2.70 billion"),
+        a_request(), model="test-model")
 
     assert out.reason == ""
-    assert out.reading.period == "FY2026"
-    assert out.reading.revenue_low == pytest.approx(2.60e9)
-    assert out.reading.revenue_high == pytest.approx(2.70e9)
+    assert out.readings[0].period == "FY2026"
+    assert out.readings[0].revenue_low == pytest.approx(2.60e9)
+    assert out.readings[0].revenue_high == pytest.approx(2.70e9)
 
 
 def test_the_unit_the_agent_read_is_what_converts_the_figure():
     """The vendor writes millions and billions in the same corpus and every
     contract downstream is in dollars. A model that returned raw 2.85 with no
     unit would be a 1,000,000,000x error nothing else could catch."""
-    out = parse_reply({
-        "guided": True, "period": "FY2026",
-        "revenue_low": 275.0, "revenue_high": 295.0, "revenue_unit": "million",
-        "quote": "2026 revenue of $2.60 billion to $2.70 billion",
-    }, a_request(), model="m")
+    out = parse_reply(
+        a_reply(
+            period="FY2026", revenue_low=275.0, revenue_high=295.0,
+            revenue_unit="million",
+            quote="2026 revenue of $2.60 billion to $2.70 billion"),
+        a_request(), model="m")
 
-    assert out.reading.revenue_low == pytest.approx(275e6)
+    assert out.readings[0].revenue_low == pytest.approx(275e6)
 
 
 def test_a_reading_records_who_read_it():
-    out = parse_reply({
-        "guided": True, "period": "FY2026",
-        "revenue_low": 2.60, "revenue_high": 2.70, "revenue_unit": "billion",
-        "quote": "2026 revenue of $2.60 billion to $2.70 billion",
-    }, a_request(), model="claude-opus-4-8")
+    out = parse_reply(
+        a_reply(
+            period="FY2026", revenue_low=2.6, revenue_high=2.7,
+            revenue_unit="billion",
+            quote="2026 revenue of $2.60 billion to $2.70 billion"),
+        a_request(), model="claude-opus-4-8")
 
-    assert out.reading.extractor == "agent"
-    assert out.reading.extractor_model == "claude-opus-4-8"
+    assert out.readings[0].extractor == "agent"
+    assert out.readings[0].extractor_model == "claude-opus-4-8"
 
 
 def test_a_range_written_high_first_is_ordered_not_refused():
-    out = parse_reply({
-        "guided": True, "period": "FY2026",
-        "revenue_low": 2.70, "revenue_high": 2.60, "revenue_unit": "billion",
-        "quote": "2026 revenue of $2.60 billion to $2.70 billion",
-    }, a_request(), model="m")
+    out = parse_reply(
+        a_reply(
+            period="FY2026", revenue_low=2.7, revenue_high=2.6,
+            revenue_unit="billion",
+            quote="2026 revenue of $2.60 billion to $2.70 billion"),
+        a_request(), model="m")
 
-    assert out.reading.revenue_low == pytest.approx(2.60e9)
-    assert out.reading.revenue_high == pytest.approx(2.70e9)
+    assert out.readings[0].revenue_low == pytest.approx(2.60e9)
+    assert out.readings[0].revenue_high == pytest.approx(2.70e9)
 
 
 # --- the reading no regular expression can produce -------------------------
@@ -134,17 +150,17 @@ def test_a_range_written_high_first_is_ordered_not_refused():
 def test_a_loss_to_breakeven_becomes_a_negative_range():
     """The whole reason this layer exists. "a loss of $1.00 per share to
     breakeven" is -1.00 to 0.00, and the words are what say so."""
-    out = parse_reply({
-        "guided": True, "period": "2026-Q3",
-        "eps_low": -1.00, "eps_high": 0.0,
-        "quote": ("third quarter results to range from a loss of $1.00 per "
-                  "share to breakeven"),
-    }, a_request(ticker="ALGT", fiscal_quarter="2026-Q2",
-                 next_quarter="2026-Q3", summary=ALGT_SUMMARY), model="m")
+    out = parse_reply(
+        a_reply(
+            period="2026-Q3", eps_low=-1.0, eps_high=0.0,
+            quote="third quarter results to range from a loss of $1.00 "
+                  "per share to breakeven"),
+        a_request(ticker="ALGT", fiscal_quarter="2026-Q2",
+                  next_quarter="2026-Q3", summary=ALGT_SUMMARY), model="m")
 
     assert out.reason == ""
-    assert out.reading.eps_low == pytest.approx(-1.00)
-    assert out.reading.eps_high == pytest.approx(0.0)
+    assert out.readings[0].eps_low == pytest.approx(-1.00)
+    assert out.readings[0].eps_high == pytest.approx(0.0)
 
 
 def test_an_open_ended_range_is_still_refused():
@@ -152,26 +168,27 @@ def test_an_open_ended_range_is_still_refused():
     understates a floor the company deliberately left open, and inventing a
     top is the one thing this parser exists to prevent — the agent naming it
     is the improvement, not the agent guessing past it."""
-    out = parse_reply({
-        "guided": True, "period": "FY2026", "eps_low": 6.00, "eps_high": None,
-        "open_ended": True,
-        "quote": "2026 earnings of more than $6.00 per share",
-    }, a_request(ticker="ALGT", summary=ALGT_SUMMARY), model="m")
+    out = parse_reply(
+        a_reply(
+            period="FY2026", eps_low=6.0, eps_high=None, open_ended=True,
+            quote="2026 earnings of more than $6.00 per share"),
+        a_request(ticker="ALGT", summary=ALGT_SUMMARY), model="m")
 
-    assert out.reading is None
+    assert out.readings == ()
     assert out.reason == "open_ended_range"
 
 
 # --- the hallucination gate ------------------------------------------------
 
 def test_a_quote_that_is_not_in_the_summary_voids_the_whole_reading():
-    out = parse_reply({
-        "guided": True, "period": "FY2026",
-        "revenue_low": 3.10, "revenue_high": 3.30, "revenue_unit": "billion",
-        "quote": "2026 revenue of $3.10 billion to $3.30 billion",
-    }, a_request(), model="m")
+    out = parse_reply(
+        a_reply(
+            period="FY2026", revenue_low=3.1, revenue_high=3.3,
+            revenue_unit="billion",
+            quote="2026 revenue of $3.10 billion to $3.30 billion"),
+        a_request(), model="m")
 
-    assert out.reading is None
+    assert out.readings == ()
     assert out.reason == "quote_not_in_source"
 
 
@@ -179,11 +196,12 @@ def test_a_quote_is_matched_through_reformatted_whitespace():
     """The summary arrives with line breaks and doubled spaces in it. A
     reading thrown away over an invisible character would train us to
     loosen the check that matters."""
-    out = parse_reply({
-        "guided": True, "period": "FY2026",
-        "revenue_low": 2.60, "revenue_high": 2.70, "revenue_unit": "billion",
-        "quote": "2026   revenue of\n$2.60 billion to $2.70 billion",
-    }, a_request(), model="m")
+    out = parse_reply(
+        a_reply(
+            period="FY2026", revenue_low=2.6, revenue_high=2.7,
+            revenue_unit="billion",
+            quote="2026   revenue of\n$2.60 billion to $2.70 billion"),
+        a_request(), model="m")
 
     assert out.reason == ""
 
@@ -191,55 +209,59 @@ def test_a_quote_is_matched_through_reformatted_whitespace():
 def test_quoting_the_previous_guidance_is_refused():
     """It is in the same summary, in the same shape, one sentence later. ACA's
     previous range is $2.54-$2.67 billion against a current $2.60-$2.70."""
-    out = parse_reply({
-        "guided": True, "period": "FY2026",
-        "revenue_low": 2.54, "revenue_high": 2.67, "revenue_unit": "billion",
-        "quote": "revenue of $2.54 billion to $2.67 billion",
-    }, a_request(), model="m")
+    out = parse_reply(
+        a_reply(
+            period="FY2026", revenue_low=2.54, revenue_high=2.67,
+            revenue_unit="billion",
+            quote="revenue of $2.54 billion to $2.67 billion"),
+        a_request(), model="m")
 
-    assert out.reading is None
+    assert out.readings == ()
     assert out.reason == "quoted_the_wrong_sentence"
 
 
 def test_quoting_the_analyst_consensus_is_refused():
     """The worst of the three: the consensus IS the bar, so reading it as
     guidance produces a beat of exactly zero on every name it happens to."""
-    out = parse_reply({
-        "guided": True, "period": "FY2026",
-        "revenue_low": 3.02, "revenue_high": 3.02, "revenue_unit": "billion",
-        "quote": "the current consensus revenue estimate, which includes its "
-                 "barge business, is $3.02 billion",
-    }, a_request(), model="m")
+    out = parse_reply(
+        a_reply(
+            period="FY2026", revenue_low=3.02, revenue_high=3.02,
+            revenue_unit="billion",
+            quote="the current consensus revenue estimate, which includes "
+                  "its barge business, is $3.02 billion"),
+        a_request(), model="m")
 
-    assert out.reading is None
+    assert out.readings == ()
     assert out.reason == "quoted_the_wrong_sentence"
 
 
 # --- the condition (layer 3) -----------------------------------------------
 
 def test_a_condition_the_agent_reports_must_also_be_in_the_summary():
-    out = parse_reply({
-        "guided": True, "period": "FY2026",
-        "revenue_low": 2.60, "revenue_high": 2.70, "revenue_unit": "billion",
-        "quote": "2026 revenue of $2.60 billion to $2.70 billion",
-        "qualifier": "excluding its barge business",
-    }, a_request(), model="m")
+    out = parse_reply(
+        a_reply(
+            period="FY2026", revenue_low=2.6, revenue_high=2.7,
+            revenue_unit="billion",
+            quote="2026 revenue of $2.60 billion to $2.70 billion",
+            qualifier="excluding its barge business"),
+        a_request(), model="m")
 
-    assert out.reading.qualifier == "excluding its barge business"
+    assert out.readings[0].qualifier == "excluding its barge business"
 
 
 def test_a_condition_the_agent_invented_voids_the_reading():
     """A fabricated condition is not the safe direction. It reads as a
     refusal, so it would silently delete a real guidance beat, and nobody
     checking the numbers would see anything wrong."""
-    out = parse_reply({
-        "guided": True, "period": "FY2026",
-        "revenue_low": 2.60, "revenue_high": 2.70, "revenue_unit": "billion",
-        "quote": "2026 revenue of $2.60 billion to $2.70 billion",
-        "qualifier": "excluding restructuring charges",
-    }, a_request(), model="m")
+    out = parse_reply(
+        a_reply(
+            period="FY2026", revenue_low=2.6, revenue_high=2.7,
+            revenue_unit="billion",
+            quote="2026 revenue of $2.60 billion to $2.70 billion",
+            qualifier="excluding restructuring charges"),
+        a_request(), model="m")
 
-    assert out.reading is None
+    assert out.readings == ()
     assert out.reason == "quote_not_in_source"
 
 
@@ -249,43 +271,46 @@ def test_a_quarterly_period_that_is_not_the_next_quarter_is_refused():
     """Same rule the code path has: guidance for a period other than the one
     a yardstick exists for is a comparison across periods, and ADM's version
     of that error read as a +348% beat."""
-    out = parse_reply({
-        "guided": True, "period": "2026-Q4",
-        "eps_low": 1.0, "eps_high": 1.2,
-        "quote": "2026 revenue of $2.60 billion to $2.70 billion",
-    }, a_request(), model="m")
+    out = parse_reply(
+        a_reply(
+            period="2026-Q4", eps_low=1.0, eps_high=1.2,
+            quote="2026 revenue of $2.60 billion to $2.70 billion"),
+        a_request(), model="m")
 
-    assert out.reading is None
+    assert out.readings == ()
     assert out.reason == "period_not_next_quarter"
 
 
 def test_a_period_in_no_known_shape_is_refused():
-    out = parse_reply({
-        "guided": True, "period": "next year",
-        "eps_low": 1.0, "eps_high": 1.2,
-        "quote": "2026 revenue of $2.60 billion to $2.70 billion",
-    }, a_request(), model="m")
+    out = parse_reply(
+        a_reply(
+            period="next year", eps_low=1.0, eps_high=1.2,
+            quote="2026 revenue of $2.60 billion to $2.70 billion"),
+        a_request(), model="m")
 
-    assert out.reading is None
+    assert out.readings == ()
     assert out.reason == "period_unreadable"
 
 
 # --- nothing to read -------------------------------------------------------
 
 def test_a_company_that_guided_nothing_is_not_a_failure():
-    out = parse_reply({"guided": False}, a_request(), model="m")
+    out = parse_reply(
+        {"guided": False, "periods": []},
+        a_request(), model="m")
 
-    assert out.reading is None
+    assert out.readings == ()
     assert out.reason == "no_guidance_in_source"
 
 
 def test_a_reading_with_no_figure_at_all_is_refused():
-    out = parse_reply({
-        "guided": True, "period": "FY2026",
-        "quote": "2026 revenue of $2.60 billion to $2.70 billion",
-    }, a_request(), model="m")
+    out = parse_reply(
+        a_reply(
+            period="FY2026",
+            quote="2026 revenue of $2.60 billion to $2.70 billion"),
+        a_request(), model="m")
 
-    assert out.reading is None
+    assert out.readings == ()
     assert out.reason == "no_number_in_source"
 
 
@@ -321,9 +346,14 @@ def test_an_unknown_reason_is_never_silently_binned():
 # --- the schema ------------------------------------------------------------
 
 def test_the_schema_forbids_fields_nobody_reviewed():
+    """Both levels of it. The quote moved onto the period entry when the reply
+    became a list of them (T-020), and a level that let unreviewed fields
+    through would be a level nobody parses."""
     schema = build_schema()
     assert schema["additionalProperties"] is False
-    assert "quote" in schema["required"]
+    entry = schema["properties"]["periods"]["items"]
+    assert entry["additionalProperties"] is False
+    assert "quote" in entry["required"]
 
 
 # --- the tally -------------------------------------------------------------
@@ -378,36 +408,39 @@ ALGT_REAL = (
 
 
 def test_the_vendors_paragraph_break_ends_a_sentence():
-    out = parse_reply({
-        "guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
-        "quote": ("third quarter  results to range from a loss of $1.00 per "
-                  "share to  breakeven"),
-    }, a_request(ticker="ALGT", fiscal_quarter="2026-Q2",
-                 next_quarter="2026-Q3", summary=ALGT_REAL), model="m")
+    out = parse_reply(
+        a_reply(
+            period="2026-Q3", eps_low=-1.0, eps_high=0.0,
+            quote="third quarter  results to range from a loss of $1.00 "
+                  "per share to  breakeven"),
+        a_request(ticker="ALGT", fiscal_quarter="2026-Q2",
+                  next_quarter="2026-Q3", summary=ALGT_REAL), model="m")
 
     assert out.reason == ""
-    assert out.reading.eps_low == pytest.approx(-1.00)
+    assert out.readings[0].eps_low == pytest.approx(-1.00)
 
 
 def test_the_quarter_just_reported_is_not_the_analysts_forward_sentence():
     """"beat consensus estimates by 72.44%" describes what already happened.
     Only "the current consensus ... is" is the bar this reading would be
     measured against."""
-    out = parse_reply({
-        "guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
-        "quote": "a loss of $1.00 per share to  breakeven",
-    }, a_request(ticker="ALGT", fiscal_quarter="2026-Q2",
-                 next_quarter="2026-Q3", summary=ALGT_REAL), model="m")
+    out = parse_reply(
+        a_reply(
+            period="2026-Q3", eps_low=-1.0, eps_high=0.0,
+            quote="a loss of $1.00 per share to  breakeven"),
+        a_request(ticker="ALGT", fiscal_quarter="2026-Q2",
+                  next_quarter="2026-Q3", summary=ALGT_REAL), model="m")
 
     assert out.reason == ""
 
 
 def test_the_forward_consensus_sentence_is_still_a_decoy():
-    out = parse_reply({
-        "guided": True, "period": "2026-Q3", "eps_low": 0.08, "eps_high": 0.08,
-        "quote": ("The current consensus estimate is earnings of $0.08 per "
-                  "share for the quarter ending September 30, 2026"),
-    }, a_request(ticker="ALGT", fiscal_quarter="2026-Q2",
-                 next_quarter="2026-Q3", summary=ALGT_REAL), model="m")
+    out = parse_reply(
+        a_reply(
+            period="2026-Q3", eps_low=0.08, eps_high=0.08,
+            quote="The current consensus estimate is earnings of $0.08 "
+                  "per share for the quarter ending September 30, 2026"),
+        a_request(ticker="ALGT", fiscal_quarter="2026-Q2",
+                  next_quarter="2026-Q3", summary=ALGT_REAL), model="m")
 
     assert out.reason == "quoted_the_wrong_sentence"

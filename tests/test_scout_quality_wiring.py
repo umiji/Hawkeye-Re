@@ -341,10 +341,9 @@ def test_a_pre_registered_row_does_not_block_the_full_year_guidance_leg(tmp_path
     result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
                        _config(), today=today, stock_store=store,
                        numbers_source=_feed(event_day, _FULL_YEAR_GUIDANCE))
-    _read_staged_guidance(store, {
-        "guided": True, "period": "FY2026",
-        "eps_low": 5.15, "eps_high": 5.60,
-        "quote": "2026 earnings of $5.15 to $5.60 per share"})
+    _read_staged_guidance(store, {"guided": True, "periods": [{
+            "period": "FY2026", "eps_low": 5.15, "eps_high": 5.6,
+            "quote": "2026 earnings of $5.15 to $5.60 per share"}]})
     rerank_after_guidance(store, result, _config())
 
     guidance = result.passed[0].quality.guidance
@@ -369,10 +368,9 @@ def test_the_quarterly_yardstick_comes_from_the_print_that_carried_the_guidance(
     result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
                        _config(), today=today, stock_store=store,
                        numbers_source=_feed(event_day, _QUARTERLY_GUIDANCE))
-    _read_staged_guidance(store, {
-        "guided": True, "period": "2026-Q3",
-        "eps_low": 2.50, "eps_high": 2.70,
-        "quote": "third quarter earnings of $2.50 to $2.70 per share"})
+    _read_staged_guidance(store, {"guided": True, "periods": [{
+            "period": "2026-Q3", "eps_low": 2.5, "eps_high": 2.7,
+            "quote": "third quarter earnings of $2.50 to $2.70 per share"}]})
     rerank_after_guidance(store, result, _config())
 
     guidance = result.passed[0].quality.guidance
@@ -447,16 +445,17 @@ def test_a_reading_no_pattern_could_produce_reaches_the_print_row(tmp_path, monk
     it is what layer 2 exists to stop."""
     _, store = _scan(tmp_path, monkeypatch)
 
-    _read_staged_guidance(store, {
-        "guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
-        "quote": ("third quarter results to range from a loss of $1.00 per "
-                  "share to breakeven")})
+    _read_staged_guidance(store, {"guided": True, "periods": [{
+            "period": "2026-Q3", "eps_low": -1.0, "eps_high": 0.0,
+            "quote": "third quarter results to range from a loss of "
+                     "$1.00 per share to breakeven"}]})
 
     row = store.active_print(store.stock_by_ticker("AMZN").id, "2026-Q2")
-    assert row.guidance is not None
-    assert row.guidance.eps_low == -1.00 and row.guidance.eps_high == 0.0
-    assert row.guidance.extractor == "agent"
-    assert row.guidance.extractor_model == "test-model"
+    assert row.guidance_readings
+    assert row.guidance_readings[0].eps_low == -1.00
+    assert row.guidance_readings[0].eps_high == 0.0
+    assert row.guidance_readings[0].extractor == "agent"
+    assert row.guidance_readings[0].extractor_model == "test-model"
 
 
 def test_attaching_staged_guidance_retires_the_pending_row_and_appends_one(
@@ -471,14 +470,14 @@ def test_attaching_staged_guidance_retires_the_pending_row_and_appends_one(
     stock_id = store.stock_by_ticker("AMZN").id
     assert len(store.prints(stock_id)) == 1        # the pending row, alone
 
-    _read_staged_guidance(store, {
-        "guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
-        "quote": ("third quarter results to range from a loss of $1.00 per "
-                  "share to breakeven")})
+    _read_staged_guidance(store, {"guided": True, "periods": [{
+            "period": "2026-Q3", "eps_low": -1.0, "eps_high": 0.0,
+            "quote": "third quarter results to range from a loss of "
+                     "$1.00 per share to breakeven"}]})
 
     assert len(store.prints(stock_id)) == 2         # pending + the revision
     active = store.active_print(stock_id, "2026-Q2")
-    assert active.guidance is not None
+    assert active.guidance_readings
 
 
 def test_a_refusal_is_recorded_by_name_on_the_row(tmp_path, monkeypatch):
@@ -486,12 +485,12 @@ def test_a_refusal_is_recorded_by_name_on_the_row(tmp_path, monkeypatch):
     row that stores the blank alone cannot tell them apart afterwards."""
     _, store = _scan(tmp_path, monkeypatch)
 
-    _read_staged_guidance(store, {
-        "guided": True, "period": "2026-Q3", "eps_low": 5.0, "eps_high": 6.0,
-        "quote": "third quarter earnings of $5.00 to $6.00 per share"})
+    _read_staged_guidance(store, {"guided": True, "periods": [{
+            "period": "2026-Q3", "eps_low": 5.0, "eps_high": 6.0,
+            "quote": "third quarter earnings of $5.00 to $6.00 per share"}]})
 
     row = store.active_print(store.stock_by_ticker("AMZN").id, "2026-Q2")
-    assert row.guidance is None
+    assert row.guidance_readings == []
     assert row.guidance_reason == "quote_not_in_source"
 
 
@@ -499,7 +498,7 @@ def test_the_reason_reaches_the_reading_of_the_quarter_after_rerank(
         tmp_path, monkeypatch):
     result, store = _scan(tmp_path, monkeypatch)
 
-    _read_staged_guidance(store, {"guided": False})
+    _read_staged_guidance(store, {"guided": False, "periods": []})
     rerank_after_guidance(store, result, _config())
 
     guidance = result.passed[0].quality.guidance
@@ -524,10 +523,9 @@ def test_the_tribunal_is_told_the_guidance_that_was_read_after_the_scan(
     before = result.passed[0].brief.catalyst.description
     assert "pending_extraction" in before        # the scan-time paragraph
 
-    _read_staged_guidance(store, {
-        "guided": True, "period": "2026-Q3",
-        "eps_low": 2.50, "eps_high": 2.70,
-        "quote": "third quarter earnings of $2.50 to $2.70 per share"})
+    _read_staged_guidance(store, {"guided": True, "periods": [{
+            "period": "2026-Q3", "eps_low": 2.5, "eps_high": 2.7,
+            "quote": "third quarter earnings of $2.50 to $2.70 per share"}]})
     rerank_after_guidance(store, result, _config())
 
     description = result.passed[0].brief.catalyst.description
@@ -542,7 +540,7 @@ def test_a_company_that_guided_nothing_says_so_to_the_tribunal(
     split exists for is worth nothing if only the leg carries it."""
     result, store = _scan(tmp_path, monkeypatch)
 
-    _read_staged_guidance(store, {"guided": False})
+    _read_staged_guidance(store, {"guided": False, "periods": []})
     rerank_after_guidance(store, result, _config())
 
     description = result.passed[0].brief.catalyst.description
@@ -561,10 +559,9 @@ def test_rewriting_the_paragraph_touches_nothing_else_on_the_brief(
     before = brief.model_dump(exclude={"catalyst"})
     catalyst_before = brief.catalyst.model_dump(exclude={"description"})
 
-    _read_staged_guidance(store, {
-        "guided": True, "period": "2026-Q3",
-        "eps_low": 2.50, "eps_high": 2.70,
-        "quote": "third quarter earnings of $2.50 to $2.70 per share"})
+    _read_staged_guidance(store, {"guided": True, "periods": [{
+            "period": "2026-Q3", "eps_low": 2.5, "eps_high": 2.7,
+            "quote": "third quarter earnings of $2.50 to $2.70 per share"}]})
     rerank_after_guidance(store, result, _config())
 
     assert result.passed[0].brief.model_dump(exclude={"catalyst"}) == before

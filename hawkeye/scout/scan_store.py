@@ -195,6 +195,16 @@ def _leg_to_dict(lv: LegVerdict) -> dict:
             "other_actual": lv.other_actual, "analysts": lv.analysts,
             "flags": list(lv.flags),
             "parts": [list(p) for p in lv.parts],
+            # T-018. `None` survives JSON as `null`, so a unit the company
+            # guided with no bar to measure it against reads back as exactly
+            # that rather than as a zero.
+            "comparisons": [list(c) for c in lv.comparisons],
+            "period": lv.period,
+            "period_kind": lv.period_kind,
+            # Nested one level and no further: an entry of `periods` is one
+            # period's own reading and never carries a `periods` of its own,
+            # so this recursion terminates by construction (T-020).
+            "periods": [_leg_to_dict(p) for p in lv.periods],
             "excerpt": lv.excerpt}
 
 
@@ -205,6 +215,18 @@ def _leg_from_dict(d: dict) -> LegVerdict:
                       other_actual=d["other_actual"], analysts=d["analysts"],
                       flags=tuple(d["flags"]),
                       parts=tuple(tuple(p) for p in d["parts"]),
+                      # Absent on a scan written before T-018, which reads
+                      # back as "no figures recorded" — the same thing the
+                      # report prints for it.
+                      comparisons=tuple(tuple(c)
+                                        for c in d.get("comparisons", ())),
+                      # Absent on a scan written before T-020: such a row
+                      # holds one period and reads back as one, rather than
+                      # refusing to load at all.
+                      period=d.get("period", ""),
+                      period_kind=d.get("period_kind", ""),
+                      periods=tuple(_leg_from_dict(p)
+                                    for p in d.get("periods", ())),
                       excerpt=d["excerpt"])
 
 

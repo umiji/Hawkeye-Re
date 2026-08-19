@@ -64,7 +64,8 @@ def _scout_args(**overrides):
 
 
 def _rank_args(**overrides):
-    base = dict(evaluate=0, open_cases=0, nav=100_000.0)
+    base = dict(evaluate=0, open_cases=0, nav=100_000.0,
+                allow_unread_guidance=False)
     base.update(overrides)
     return argparse.Namespace(**base)
 
@@ -141,9 +142,10 @@ def test_ranking_after_the_guidance_queue_scores_the_real_reading(
     assert len(cases) == 1 and cases[0].ticker == "BBB"
     store = cli._stock_store()
     extraction = parse_reply(
-        {"guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
-         "quote": ("third quarter results to range from a loss of $1.00 "
-                   "per share to breakeven")},
+        {"guided": True, "periods": [{
+                "period": "2026-Q3", "eps_low": -1.0, "eps_high": 0.0,
+                "quote": "third quarter results to range from a loss of "
+                         "$1.00 per share to breakeven"}]},
         cases[0].request(), model="test-model")
     guidance_case.attach(store, cases[0], extraction)
     guidance_case.discard(cases[0].id)
@@ -157,3 +159,83 @@ def test_ranking_after_the_guidance_queue_scores_the_real_reading(
     # "unread" score `hawkeye scout` alone would have committed.
     assert bbb_row.score_breakdown is not None
     assert bbb_row.score_breakdown.guidance < 0
+
+
+# --- the guard: rank must not score a shortlist on an unread guidance leg ---
+#
+# T-016. `hawkeye scout` and `hawkeye guidance queue` both TELL the operator
+# the readings are outstanding, but neither stops anything: until this guard
+# existed `hawkeye rank` would happily score every name with the guidance leg
+# at zero, sort on that, and commit the shortlist to the ledger. The leg is
+# worth real points (FLXS moved 17.99 -> 22.99 the moment its guidance landed,
+# measured 2026-08-18), so a skipped queue changes which names reach the
+# tribunal and therefore which names the user is asked to decide on.
+
+
+def _scout_leaving_one_guidance_case(tmp_path, monkeypatch):
+    """A scan that stages exactly one reading, still waiting."""
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    entries = [_entries(event_day, "AAA", 1.30),
+               _entries(event_day, "BBB", 1.15)]
+    whispers = FakeWhispers({"BBB": make_whispers(
+        "BBB", announced=event_day, summary=_GUIDED_DOWN_SUMMARY)})
+    _wire(monkeypatch, tmp_path, entries, whispers)
+    assert cli.cmd_scout(_scout_args()) == 0
+    assert len(guidance_case.list_cases()) == 1
+    return guidance_case.list_cases()
+
+
+def test_rank_refuses_while_a_guidance_reading_is_still_waiting(
+        tmp_path, monkeypatch, capsys):
+    _scout_leaving_one_guidance_case(tmp_path, monkeypatch)
+
+    rc = cli.cmd_rank(_rank_args())
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "1件" in err, "the count has to be named, not just 'some'"
+    assert "BBB" in err, "and the name whose reading is missing"
+    assert "hawkeye guidance queue" in err
+    # Nothing may have been committed: the scan is still pending and the
+    # ledger holds no scan row, so re-running after the queue is drained
+    # ranks the same window rather than losing it.
+    assert scan_store.has_pending_scan()
+    assert cli._ledger().last_scan_at() is None
+
+
+def test_rank_does_not_stop_once_the_guidance_queue_is_drained(
+        tmp_path, monkeypatch):
+    """Criterion 3. Without this an implementation that ALWAYS refuses would
+    pass the test above and deadlock every real run."""
+    cases = _scout_leaving_one_guidance_case(tmp_path, monkeypatch)
+    guidance_case.discard(cases[0].id)
+
+    rc = cli.cmd_rank(_rank_args())
+
+    assert rc == 0
+    assert not scan_store.has_pending_scan()
+    scan = cli._ledger().scan()
+    assert scan is not None
+    assert scan["params"]["guidance_unread_at_rank"] == 0
+    assert scan["params"]["ranked_with_unread_guidance"] is False
+
+
+def test_the_escape_hatch_ranks_but_records_that_guidance_was_unread(
+        tmp_path, monkeypatch, capsys):
+    """A reading can fail its mechanical check over and over, so there has to
+    be a way through — but taking it is recorded, on screen and in the ledger,
+    rather than passing silently (CLAUDE.md invariant 6)."""
+    _scout_leaving_one_guidance_case(tmp_path, monkeypatch)
+
+    rc = cli.cmd_rank(_rank_args(allow_unread_guidance=True))
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "BBB" in captured.err
+    assert "見通しを読まずに順位を決めました" in captured.out, (
+        "the report the operator keeps has to carry it too, not only stderr")
+    scan = cli._ledger().scan()
+    assert scan["params"]["ranked_with_unread_guidance"] is True
+    assert scan["params"]["guidance_unread_at_rank"] == 1
+    assert scan["params"]["guidance_unread_tickers"] == ["BBB"]

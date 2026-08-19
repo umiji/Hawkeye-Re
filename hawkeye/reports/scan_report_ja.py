@@ -30,6 +30,7 @@ from typing import Iterable, Optional
 from hawkeye.contracts.models import (
     AnalystTrend,
     GateReport,
+    GuidanceComparison,
     GuidanceState,
     InsiderActivity,
     NewsItem,
@@ -98,6 +99,19 @@ _CSV_COLUMNS: tuple[tuple[str, str], ...] = (
     ("売上 実績/予想", "revenue_pair"),
     ("売上サプライズ率", "revenue_surprise_pct"),
     ("ガイダンス", "guidance_state"),
+    # What the guidance score was computed FROM (T-018). The column above says
+    # only whether an outlook was obtained; these say what the company
+    # actually guided and what it was measured against, so the guidance term
+    # of the score can be divided out by hand like every other term can.
+    # Multi-valued down the row rather than across it: one release routinely
+    # guides the next quarter AND the full year (T-020), and the three cells
+    # of a unit stay aligned entry for entry.
+    ("EPSガイダンス 対象期", "eps_guidance_period"),
+    ("EPSガイダンス 会社見通し", "eps_guidance_company"),
+    ("EPSガイダンス コンセンサス", "eps_guidance_consensus"),
+    ("売上ガイダンス 対象期", "revenue_guidance_period"),
+    ("売上ガイダンス 会社見通し", "revenue_guidance_company"),
+    ("売上ガイダンス コンセンサス", "revenue_guidance_consensus"),
     ("エラー", "errors"),
     ("点数", "score"),
     ("EPSで得た点", "eps"),
@@ -630,7 +644,16 @@ def _csv_cell(attr: str, c: ScreenedCandidate) -> str:
     if attr == "guidance_state":
         return _GUIDANCE_STATE_JA.get(c.guidance_state, "記録なし")
     if attr == "errors":
-        return "・".join(_failure_kinds(c))
+        # The file gets sentences where the screen gets one word. The screen
+        # has §④ under it to say what the word meant; a spreadsheet opened a
+        # week later has nothing, and "数値" told nobody anything (T-018).
+        return "".join(_failure_sentences(c))
+    if attr.endswith("_guidance_period"):
+        return _guidance_cells(c, attr[:-len("_guidance_period")])[0]
+    if attr.endswith("_guidance_company"):
+        return _guidance_cells(c, attr[:-len("_guidance_company")])[1]
+    if attr.endswith("_guidance_consensus"):
+        return _guidance_cells(c, attr[:-len("_guidance_consensus")])[2]
     # The screen's two combined cells, with the abbreviation removed: the file
     # is the same surface without the translation, so the figures arrive whole
     # and a spreadsheet can still divide one by the other.
@@ -729,6 +752,66 @@ def _failure_kinds(c: ScreenedCandidate) -> list[str]:
 
 def _errors_cell(c: ScreenedCandidate) -> str:
     return "・".join(_failure_kinds(c)) or "-"
+
+
+# The same three mechanisms, written out for the file. One sentence each,
+# ending in a full stop, so that two of them concatenate into two readable
+# sentences without a separator — a separator would leave the first sentence
+# ending in "しました／", which reads as a fragment.
+_FAILURE_SENTENCE = {
+    _ERROR_NUMBERS: "決算専門サイトからEPSまたは売上の数値が取れず、"
+                    "決算カレンダーの数字で判定しました。",
+    _ERROR_GUIDANCE: "会社は見通しを述べているのに、こちらが読み取れません"
+                     "でした。",
+    _ERROR_RELEASE: "審理に渡す決算発表文の抜粋の一部が、却下されたか"
+                    "語句を改変されていました。",
+}
+
+
+def _failure_sentences(c: ScreenedCandidate) -> list[str]:
+    return [_FAILURE_SENTENCE[kind] for kind in _failure_kinds(c)]
+
+
+# --- what the company guided, and what it was measured against (T-018) ------
+
+_PERIOD_KIND_JA = {"next_quarter": "翌四半期", "full_year": "通期",
+                   # The company guided a period neither yardstick covers, so
+                   # nothing was compared. Saying so in the cell keeps the
+                   # blank consensus beside it from reading as a data gap.
+                   "other": "比較対象外"}
+
+
+def _period_ja(g: GuidanceComparison) -> str:
+    """`2026-Q3（翌四半期）` — the company's own label, and what it means.
+
+    The label alone does not say whether that quarter is the one AHEAD of the
+    print, and the record downstream keeps no fiscal quarter to work it out
+    from, so both halves go in the one cell (User decision, 2026-08-19).
+    """
+    kind = _PERIOD_KIND_JA.get(g.period_kind, "")
+    if not g.period:
+        return kind or "-"
+    return f"{g.period}（{kind}）" if kind else g.period
+
+
+def _guidance_cells(c: ScreenedCandidate, unit: str) -> tuple[str, str, str]:
+    """(periods, what the company guided, the bar) for one unit, aligned.
+
+    All three are empty when the company guided nothing for this unit — NOT
+    `-`. A blank cell and a cell reading `-` would otherwise both appear, and
+    the reader would have to guess which meant "guided nothing at all"; the
+    ガイダンス column beside them already answers that in words.
+
+    A range is entered as its midpoint alone (User decision, 2026-08-19): it
+    is the figure the comparison used and the one a spreadsheet can divide.
+    The ends are not lost — they stay on the print row in the ledger.
+    """
+    rows = [g for g in c.guidance_comparisons if g.unit == unit]
+    if not rows:
+        return "", "", ""
+    return ("、".join(_period_ja(g) for g in rows),
+            "、".join(_plain(g.company) for g in rows),
+            "、".join(_plain(g.consensus) for g in rows))
 
 
 def _split(candidates: list[ScreenedCandidate], top_n: int
