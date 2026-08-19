@@ -56,14 +56,26 @@ class CauseCase(BaseModel):
     ticker: str
     fiscal_quarter: str
     summary: str
+    # The company's own earnings release, whole (T-008). `summary` above is
+    # now an EXCERPT cut from it, and this is what the reply's quote is
+    # checked against — see `CauseRequest.source_text`. Staged with the case
+    # rather than re-fetched at submit time: the vendor can restate a print
+    # in between, and a quote checked against a release nobody read would be
+    # verifying the wrong document.
+    #
+    # Empty on cases staged before T-008, and on any print whose prose is
+    # still the vendor's summary. The check then falls back to `summary`,
+    # which for those cases is the whole source anyway.
+    source_text: str = ""
 
     def request(self) -> CauseRequest:
-        """What the agent is shown. The quarter just reported and the summary,
+        """What the agent is shown. The quarter just reported and the prose,
         and nothing about how far the print cleared consensus — see the
         `cause_agent` module docstring for why that omission is the point."""
         return CauseRequest(ticker=self.ticker,
                             fiscal_quarter=self.fiscal_quarter,
-                            summary=self.summary)
+                            summary=self.summary,
+                            source_text=self.source_text)
 
 
 # --- the file queue ---------------------------------------------------------

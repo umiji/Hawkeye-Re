@@ -305,8 +305,48 @@ def _quarter_context(store, directory, event) -> Optional[_QuarterContext]:
                            consensus_id=consensus.id, consensus=consensus)
 
 
+def _stage_cause(context: _QuarterContext, event, cause_source) -> str:
+    """Stage the cause reading, and return the reason it could not be.
+
+    Split from the guidance staging beside it because the two no longer read
+    the same text (T-008). Guidance is in the vendor's summary; the reason
+    the quarter came out where it did is not — 0 of 30 prints yielded one
+    (measured 2026-08-17) — and comes from the company's own release, fetched
+    and cut here.
+
+    With no `cause_source` wired the old behaviour stands exactly: the
+    summary is staged as before. That path is what every offline test and
+    every scan without an extractor key still takes, and it must keep
+    yielding the same rows.
+    """
+    if cause_source is None or not getattr(cause_source, "available", False):
+        cause_case.save_case(cause_case.CauseCase(
+            stock_id=context.stock_id, print_id=context.print_row.id,
+            ticker=event.ticker,
+            fiscal_quarter=context.print_row.fiscal_quarter,
+            summary=event.summary))
+        return "pending_extraction"
+
+    built = cause_source.text_for(event.ticker,
+                                  getattr(event, "article_id", ""),
+                                  context.print_row.fiscal_quarter)
+    if not built.excerpt:
+        # Nothing to read. WHICH nothing it is has already been decided by
+        # the source and must survive to the row: "no release reached us",
+        # "the release explains nothing" and "our extractor composed every
+        # block" are three different facts and only the last is ours to fix.
+        return built.reason
+    cause_case.save_case(cause_case.CauseCase(
+        stock_id=context.stock_id, print_id=context.print_row.id,
+        ticker=event.ticker,
+        fiscal_quarter=context.print_row.fiscal_quarter,
+        summary=built.excerpt, source_text=built.source_text))
+    return "pending_extraction"
+
+
 def _stage_prose_reads(store, context: _QuarterContext, event,
-                       stats: GuidanceStats) -> _QuarterContext:
+                       stats: GuidanceStats,
+                       cause_source=None) -> _QuarterContext:
     """Stage the two readings only an agent can make, or say why there is
     nothing to stage.
 
@@ -351,20 +391,22 @@ def _stage_prose_reads(store, context: _QuarterContext, event,
             fiscal_quarter=context.print_row.fiscal_quarter,
             summary=event.summary))
         stats.staged += 1
-        # The SAME sentence, staged a second time for a different question:
-        # that queue asks what the company expects next quarter, this one asks
-        # what it said about the quarter just reported (T-003). Two agents
-        # rather than one because an extractor with two jobs can satisfy the
-        # easier one and call it an answer, and because each is checked
-        # against a different set of decoy sentences.
-        cause_case.save_case(cause_case.CauseCase(
-            stock_id=context.stock_id, print_id=context.print_row.id,
-            ticker=event.ticker,
-            fiscal_quarter=context.print_row.fiscal_quarter,
-            summary=event.summary))
+        # A second queue for a different question: that one asks what the
+        # company expects next quarter, this one asks what it said about the
+        # quarter just reported (T-003). Two agents rather than one because
+        # an extractor with two jobs can satisfy the easier one and call it
+        # an answer, and because each is checked against a different set of
+        # decoy sentences.
+        #
+        # No longer the same sentence, since T-008: guidance IS in the
+        # vendor's summary and the reason for the quarter is not, so this
+        # queue is fed from the company's own release instead.
+        cause_reason = _stage_cause(context, event, cause_source)
+    else:
+        cause_reason = "pending_extraction"
     return replace(context, print_row=context.print_row.model_copy(
         update={"guidance_reason": "pending_extraction",
-                "cause_reason": "pending_extraction"}))
+                "cause_reason": cause_reason}))
 
 
 def _record_print(store, context: _QuarterContext, config=None,
@@ -481,7 +523,8 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
               already_seen: Optional[set[tuple[str, date]]] = None,
               numbers_source: Optional[WhispersReader] = None,
               stock_store=None,
-              directory=None) -> ScoutResult:
+              directory=None,
+              cause_source=None) -> ScoutResult:
     """calendar_source: object with earnings_calendar(start, end) -> list[dict]
     provider: MarketDataProvider for enrichment (prices/profile/news).
     window: the earnings days to cover — normally built by scan_window()
@@ -492,6 +535,11 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
         decided, and the vendor whose figures rank the pool when it answers
         (hawkeye/scout/numbers.py). Optional — without it the calendar's own
         figures stand for every name.
+    cause_source: reads the company's OWN earnings release and cuts it to
+        the blocks explaining the quarter (T-008,
+        hawkeye/scout/cause_source.py). Optional — without it the cause
+        queue is fed the vendor's summary as before, which is the text that
+        explained 0 of 30 prints.
     """
     today = today or date.today()
     if window is None:
@@ -622,7 +670,7 @@ def run_scout(calendar_source, provider: MarketDataProvider, config: HawkeyeConf
         # one of the three things being judged.
         if context is not None:
             context = _stage_prose_reads(stock_store, context, event,
-                                         guidance_stats)
+                                         guidance_stats, cause_source)
         quality = (assess_earnings(context.print_row, context.consensus, config)
                    if context is not None else None)
         catalyst = Catalyst(

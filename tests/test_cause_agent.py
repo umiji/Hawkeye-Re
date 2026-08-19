@@ -324,15 +324,24 @@ def test_an_unread_explanation_is_stated_as_unverified_not_as_silence():
     assert "do not argue a one-off, a tax effect or a margin improvement" in text
 
 
-def test_a_summary_the_feed_never_supplied_is_not_a_company_that_explained_nothing():
+@pytest.mark.parametrize("reason", ["no_summary_from_feed",
+                                    "no_release_from_feed"])
+def test_a_text_the_feed_never_supplied_is_not_a_company_that_explained_nothing(
+        reason):
     """A feed outage and a company that named no cause are different facts,
-    and the drop record keeps whichever one is written here permanently."""
+    and the drop record keeps whichever one is written here permanently.
+
+    Two documents can now be the one that never arrived — the vendor's
+    summary, and the company's own release (T-008) — so the sentence names
+    neither specifically. Saying "no summary" about a missing RELEASE would
+    be a precise falsehood about which document is absent.
+    """
     text = describe_quality_en(assess_earnings(
-        a_print(eps_actual=1.20, revenue_actual=1.0e9,
-                cause_reason="no_summary_from_feed"),
+        a_print(eps_actual=1.20, revenue_actual=1.0e9, cause_reason=reason),
         a_consensus(), CONFIG))
 
-    assert "the vendor supplied no summary to read" in text
+    assert "no text about this quarter reached us to read" in text
+    assert "the source states none" not in text
 
 
 def test_both_roles_are_told_they_may_not_invent_a_cause():
@@ -441,3 +450,84 @@ def test_the_reading_reaches_the_paragraph_the_tribunal_reads(tmp_path):
     description = result.passed[0].brief.catalyst.description
     assert QUOTE in description
     assert result.passed[0].quality.eps.status is LegStatus.BEAT
+
+
+# --- reading the company's release instead of the vendor's summary (T-008) --
+#
+# The summary never explained a quarter (0 of 30, measured 2026-08-17), so the
+# reader is now shown an excerpt cut from the company's own earnings release.
+# The excerpt is cut by an extractor, and an extractor can compose text — AII
+# did, on 2026-08-17, while told to copy character for character.
+#
+# So the quote check keeps matching against the RELEASE. These tests pin that
+# down, because the change that would break it is small and looks like
+# tidying: checking the quote against the text the reader was actually shown.
+
+RELEASE = (
+    "Revenue grew 76% to $43.2 million. Revenue growth in the second quarter "
+    "of 2026 reflects stronger-than-expected performance in the Drones "
+    "segment. "
+    "The company said the quarter included a one-time tax benefit of $0.30 "
+    "per share related to the resolution of a prior-year audit. "
+    "The company said it expects third quarter earnings of $0.90 to $1.00 "
+    "per share.")
+
+# What an extractor kept: the tax sentence, and not the revenue one.
+EXCERPT = ("The company said the quarter included a one-time tax benefit of "
+           "$0.30 per share related to the resolution of a prior-year audit.")
+
+# In the release, absent from the excerpt.
+UNCUT_QUOTE = ("Revenue growth in the second quarter of 2026 reflects "
+               "stronger-than-expected performance in the Drones segment")
+
+
+def _release_request(**kw) -> CauseRequest:
+    base = dict(ticker="TEST", fiscal_quarter="2026-Q2", summary=EXCERPT,
+                source_text=RELEASE)
+    base.update(kw)
+    return CauseRequest(**base)
+
+
+def test_a_quote_the_extractor_cut_away_is_still_the_companys_words():
+    """The check answers "did the company write this", not "did our cut keep
+    it". Matching the excerpt would let a bad cut redefine the company."""
+    reply = dict(GOOD_REPLY, quote=UNCUT_QUOTE, nature="operating",
+                 magnitude=None, magnitude_unit=None)
+    extraction = parse_reply(reply, _release_request())
+
+    assert extraction.reason == ""
+    assert extraction.reading.source_excerpt == UNCUT_QUOTE
+
+
+def test_a_quote_in_neither_the_excerpt_nor_the_release_is_still_refused():
+    """Widening what counts as the source must not widen it to everything."""
+    reply = dict(GOOD_REPLY,
+                 quote="the quarter benefited from a $12 million settlement")
+    assert parse_reply(reply, _release_request()).reason == "quote_not_in_source"
+
+
+def test_the_reader_is_shown_the_excerpt_and_not_the_whole_release():
+    """The excerpt is the point: ~25,900 characters of release is mostly
+    financial tables, and paying to read them every scan is what this
+    replaces."""
+    rendered = render_request(_release_request())
+    assert EXCERPT in rendered
+    assert UNCUT_QUOTE not in rendered
+
+
+def test_a_print_with_no_release_still_checks_against_the_summary():
+    """Names the release never covered keep working exactly as before."""
+    assert parse_reply(GOOD_REPLY, a_request()).reason == ""
+
+
+@pytest.mark.parametrize("reason,kind", [
+    ("no_release_from_feed", "source_absent"),
+    ("no_cause_in_release", "absent_in_source"),
+    ("extractor_invented_every_block", "reader_failed"),
+    ("release_fetch_failed", "call_failed"),
+    ("extractor_call_failed", "call_failed"),
+])
+def test_every_new_refusal_is_classified(reason, kind):
+    """An unclassified refusal is a blank nobody can account for, which is
+    the one thing this table exists to prevent."""
+    assert failure_kind(reason) == kind

@@ -59,13 +59,35 @@ from hawkeye.contracts.stocks import CauseReading
 
 @dataclass(frozen=True)
 class CauseRequest:
-    """One print's summary, and the little context needed to read it.
+    """One print's prose, and the little context needed to read it.
 
     No surprise figures, by design — see the module docstring.
+
+    Two texts, not one, since T-008. `summary` is what the agent is SHOWN;
+    `source_text` is what its quote is CHECKED against. They differ whenever
+    the prose is an excerpt cut from the company's earnings release: the
+    release runs ~25,900 characters of mostly financial tables, so an
+    extractor cuts it down first (`hawkeye/scout/cause_source.py`).
+
+    The check deliberately keeps pointing at the uncut release. An extractor
+    can compose text — AII's did on 2026-08-17, under explicit instruction
+    not to — and if the quote were matched against its output, a broken cut
+    would get to define what counts as the company's own words. Matching the
+    release means the worst a bad cut can do is lose an explanation, never
+    manufacture one (invariant 6).
+
+    `source_text` empty means the two are the same text, which is every print
+    whose prose is still the vendor's summary.
     """
     ticker: str
     fiscal_quarter: str        # the quarter just reported, e.g. 2026-Q1
-    summary: str               # the vendor's summary, verbatim
+    summary: str               # what the agent reads, verbatim
+    source_text: str = ""      # what the quote is checked against
+
+    @property
+    def verified_against(self) -> str:
+        """The text a quote has to exist in to be the company's words."""
+        return self.source_text or self.summary
 
 
 @dataclass(frozen=True)
@@ -200,7 +222,10 @@ def parse_reply(reply: dict, request: CauseRequest,
         return CauseExtraction(None, "no_cause_in_source")
 
     quote = str(reply.get("quote") or "")
-    sentence = _sentence_holding(quote, request.summary)
+    # Against the RELEASE, not against the excerpt the agent was shown. See
+    # `CauseRequest.source_text`: the excerpt is produced by a reader that can
+    # compose text, and a check pointed at it would be measuring our own cut.
+    sentence = _sentence_holding(quote, request.verified_against)
     if sentence is None:
         return CauseExtraction(None, "quote_not_in_source")
     if any(marker in sentence.lower() for marker in _WRONG_SENTENCE):
@@ -246,6 +271,20 @@ _FAILURE_KIND = {
     # nothing" for exactly that reason.
     "no_summary_from_feed": "source_absent",
     "feed_not_asked": "source_absent",
+    # T-008. The company's earnings release never reached us — the feed named
+    # no article for this print, or the article came back empty. A fact about
+    # the feed, kept apart from "the release explains nothing" for the same
+    # reason `no_summary_from_feed` is.
+    "no_release_from_feed": "source_absent",
+    # The release arrived and states no reason. Common, and not a defect —
+    # SEPN, a clinical-stage company with almost no revenue, is the shape of
+    # it (1 of 30, measured 2026-08-17).
+    "no_cause_in_release": "absent_in_source",
+    # Every block the extractor returned failed verbatim matching, i.e. it
+    # composed all of them. THIS is the number that means our reader is
+    # manufacturing sentences (AII, 2026-08-17) and it must never be filed as
+    # "the release explained nothing".
+    "extractor_invented_every_block": "reader_failed",
     # The reader produced something this gate would not accept. THIS is the
     # number to watch: it rising means the prompt or the gate is wrong.
     "quote_not_in_source": "reader_failed",
@@ -255,6 +294,11 @@ _FAILURE_KIND = {
     "period_not_reported_quarter": "reader_failed",
     # The call never completed.
     "extraction_call_failed": "call_failed",
+    # T-008, the two new ways that happens: the release could not be fetched,
+    # or the extractor could not be reached. Neither says anything about the
+    # company, and both are worth retrying — unlike every reason above them.
+    "release_fetch_failed": "call_failed",
+    "extractor_call_failed": "call_failed",
     # Not a failure at all: session mode staged the summary and nobody has
     # read it yet. Named here so that every reason this can be empty has to be
     # classified — a blank the reader cannot account for is what the table

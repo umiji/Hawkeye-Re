@@ -132,6 +132,14 @@ class WhispersRecord:
     vendor_surprise_basis: str = ""       # "whisper" | "consensus" | ""
     summary: str = ""
     subject: str = ""
+    # How the company's own earnings release is addressed (T-008). The feed
+    # states it in the same response as the figures (`fileName`), and it is
+    # the ONLY way to reach the release: `/api/newsarticle/{ticker}/{id}`
+    # takes it directly, and the sibling endpoints that look like they would
+    # serve it — `/api/news/`, `/api/newscontent/` — answer 302 with no body
+    # (measured 2026-08-17). Discarded, as it was until T-008, there is no
+    # second route to the one document that says why the quarter happened.
+    file_name: str = ""
     gaps: tuple[str, ...] = ()
 
     def covers(self, report_date: date) -> bool:
@@ -565,6 +573,9 @@ def parse_details(payload: Any) -> WhispersRecord:
         gaps.append("revenue_consensus_missing")
     if not summary:
         gaps.append("summary_missing")
+    file_name = str(payload.get("fileName") or "").strip()
+    if not file_name:
+        gaps.append("article_id_missing")
 
     whisper = _sentinel_free(payload.get("whisper"), _NO_VALUE)
     vendor_eps_pct = _percent(payload.get("earningsSurprise"))
@@ -590,6 +601,7 @@ def parse_details(payload: Any) -> WhispersRecord:
                                               eps_consensus, whisper),
         summary=summary,
         subject=str(payload.get("subject") or ""),
+        file_name=file_name,
         gaps=tuple(gaps))
 
 
@@ -616,7 +628,8 @@ class WhispersSource:
         return True
 
     def _fetch(self, symbol: str, path: str = "epsdetails",
-               referer: str = "epsdetails") -> httpx.Response:
+               referer: str = "epsdetails",
+               referer_symbol: str = "") -> httpx.Response:
         """One GET, retried while reading again could plausibly help.
 
         Only 5xx and connection errors are retried. A 4xx is the site telling
@@ -632,8 +645,11 @@ class WhispersSource:
         the company.
         """
         url = f"{_BASE}/api/{path}/{symbol}"
+        # The release endpoint addresses the ARTICLE, not the ticker, so the
+        # last URL segment and the page we claim to be coming from are not
+        # the same string there. Everywhere else they are.
         headers = {"User-Agent": _BROWSER_UA,
-                   "Referer": f"{_BASE}/{referer}/{symbol}",
+                   "Referer": f"{_BASE}/{referer}/{referer_symbol or symbol}",
                    "Accept": "application/json"}
         attempts = max(self._server_error_retries,
                        self._connection_retries) + 1
@@ -691,3 +707,80 @@ class WhispersSource:
         if body is None:
             return None
         return parse_details(body)
+
+    def article(self, ticker: str, file_name: str) -> str:
+        """The company's own earnings release as prose, or "" when the feed
+        names none for this print (T-008).
+
+        Addressed by the id the figures endpoint states (`file_name`), which
+        is the only route to it — the endpoints that look like siblings
+        (`/api/news/`, `/api/newscontent/`) answer 302 with no body, and the
+        `#newscontent` block on the page itself is empty in the served HTML
+        and filled by the site's own script from here (measured 2026-08-17).
+
+        "" is reserved for the feed having no article, exactly as `details`
+        reserves None. Anything that went wrong raises instead, because
+        downstream an empty release is read as "this company published no
+        explanation" rather than as "we could not read one" (invariant 6).
+        """
+        symbol = ticker.strip().upper()
+        article_id = (file_name or "").strip()
+        if not article_id:
+            return ""
+        resp = self._fetch(article_id, f"newsarticle/{symbol}", "epsdetails",
+                           referer_symbol=symbol)
+        if resp.status_code == httpx.codes.NO_CONTENT or not resp.content:
+            return ""
+        if resp.status_code >= 400:
+            raise WhispersUnavailable(
+                f"{symbol}: the earnings release answered {resp.status_code}")
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise WhispersUnavailable(
+                f"{symbol}: the earnings release answered "
+                f"{resp.headers.get('content-type', 'an unknown type')} "
+                f"instead of JSON") from exc
+        if not isinstance(body, dict):
+            raise WhispersUnavailable(
+                f"{symbol}: expected a JSON object for the earnings release, "
+                f"got {type(body).__name__}")
+        return release_text(body.get("article"))
+
+
+# -- the release, as prose ---------------------------------------------------
+#
+# The release arrives as the wire service's HTML — 172KB of it at the median,
+# against 25,900 characters of actual text. Markup is stripped here rather
+# than left for a reader to ignore, for a reason that outlives tidiness: the
+# quote check downstream matches a reader's words against THIS string, and no
+# company ever wrote `&nbsp;` or `</td>`. Left in, they are characters a
+# faithful quote could straddle and fail on.
+
+_SCRIPTING = re.compile(r"(?is)<(script|style)[^>]*>.*?</\1>")
+_LINE_BREAK = re.compile(r"(?i)<br\s*/?>")
+_BLOCK_END = re.compile(r"(?i)</(p|div|tr|h[1-6]|li)>")
+_TAG = re.compile(r"<[^>]+>")
+_NAMED_ENTITY = re.compile(r"&[a-zA-Z#0-9]+;")
+_ENTITIES = {"&nbsp;": " ", "&amp;": "&", "&quot;": '"', "&#39;": "'",
+             "&apos;": "'", "&lt;": "<", "&gt;": ">"}
+
+
+def release_text(article: Any) -> str:
+    """One release's HTML as the prose a person would read off the page."""
+    text = str(article or "")
+    if not text.strip():
+        return ""
+    text = _SCRIPTING.sub(" ", text)
+    text = _LINE_BREAK.sub("\n", text)
+    text = _BLOCK_END.sub("\n", text)
+    text = _TAG.sub(" ", text)
+    for entity, plain in _ENTITIES.items():
+        text = text.replace(entity, plain)
+    # Whatever is left is a named entity nobody decoded. Dropped rather than
+    # kept: a literal `&hellip;` in the source is a character the company did
+    # not write, and a quote covering it could never match.
+    text = _NAMED_ENTITY.sub(" ", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()

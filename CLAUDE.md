@@ -291,16 +291,19 @@ implemented features unilaterally without ever presenting the full
 picture (To-Be architecture, As-Is gap, and *why* the design should work)
 in one place. Keep §4/§5 current as capabilities land.
 
-## Task intake gate (added 2026-08-15)
+## Task intake gate (added 2026-08-15, restructured 2026-08-17 by T-009)
 
-`docs/task-list-hawkeye-re.md` is the single source of truth for progress;
-work one task at a time. **Before starting any new task request — even a
-casual one-liner — check it against `docs/task-template.md`'s 7 fields**
-(ID/title, purpose, scope, prohibitions, completion criteria, test plan,
-stop conditions). If any are missing or ambiguous, ask the user in a
-bulleted list before writing any code. Once confirmed, add the formal
-entry to `docs/task-list-hawkeye-re.md` and get agreement before branching
-or implementing.
+The single source of truth for progress is split across
+`docs/task-list-hawkeye-re.csv` (ID/created/updated/name/status/dependency
+index) and `docs/tasks/T-XXX.md` (one file per task with the full detail
+— see `docs/tasks/README.md`); work one task at a time. **Before starting
+any new task request — even a casual one-liner — check it against
+`docs/task-template.md`'s 7 fields** (ID/title, purpose, scope,
+prohibitions, completion criteria, test plan, stop conditions). If any are
+missing or ambiguous, ask the user in a bulleted list before writing any
+code. Once confirmed, add the formal entry (a CSV row plus a
+`docs/tasks/T-XXX.md` file) and get agreement before branching or
+implementing.
 
 The detailed per-task cycle (implement → test → update task-list →
 commit/Draft PR → evidence-backed report), the standing prohibitions, and
