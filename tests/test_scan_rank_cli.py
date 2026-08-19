@@ -142,9 +142,10 @@ def test_ranking_after_the_guidance_queue_scores_the_real_reading(
     assert len(cases) == 1 and cases[0].ticker == "BBB"
     store = cli._stock_store()
     extraction = parse_reply(
-        {"guided": True, "period": "2026-Q3", "eps_low": -1.00, "eps_high": 0.0,
-         "quote": ("third quarter results to range from a loss of $1.00 "
-                   "per share to breakeven")},
+        {"guided": True, "periods": [{
+                "period": "2026-Q3", "eps_low": -1.0, "eps_high": 0.0,
+                "quote": "third quarter results to range from a loss of "
+                         "$1.00 per share to breakeven"}]},
         cases[0].request(), model="test-model")
     guidance_case.attach(store, cases[0], extraction)
     guidance_case.discard(cases[0].id)

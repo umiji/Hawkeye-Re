@@ -1005,6 +1005,26 @@ def cmd_guidance_queue(args: argparse.Namespace) -> int:
     return 0
 
 
+def _guidance_recorded_ja(ticker: str, extraction) -> str:
+    """何期ぶんの見通しが台帳に入り、何期が受け付けられなかったかを1行で言う。
+
+    T-020 まで、1回の発表に複数の期の見通しがあっても記録は1期だけで、しかも
+    残りが落ちたことはどこにも出なかった。操作している人間がその場で気づける
+    唯一の場所がここなので、受け付けた期の名前と、受け付けなかった期の理由を
+    そのまま出す。
+    """
+    if not extraction.readings:
+        return (f"{ticker}: 会社の見通しは記録されませんでした"
+                f"({extraction.reason})。")
+    periods = "、".join(r.period or "期の記載なし" for r in extraction.readings)
+    line = (f"{ticker}: 会社の見通しを{len(extraction.readings)}期ぶん"
+            f"記録しました({periods})。")
+    if extraction.refusals:
+        line += (f" 受け付けなかった期が{len(extraction.refusals)}件"
+                 f"あります({'、'.join(extraction.refusals)})。")
+    return line
+
+
 def cmd_guidance_submit(args: argparse.Namespace) -> int:
     """Validate one reading and attach it to the print row it belongs to.
 
@@ -1031,6 +1051,7 @@ def cmd_guidance_submit(args: argparse.Namespace) -> int:
               "反映しませんでした(実績値の訂正が間に入った可能性があります)。"
               "この銘柄はもう一度走査してください。", file=sys.stderr)
         return 1
+    print(_guidance_recorded_ja(case.ticker, extraction))
     # Only now — the staged file is what makes a failed write retryable, the
     # same ordering the tribunal's case workspaces and the drop reviews use.
     # A refusal that is OURS rather than the company's keeps it (T-015).

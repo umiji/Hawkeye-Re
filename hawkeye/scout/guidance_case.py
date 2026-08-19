@@ -208,5 +208,10 @@ def attach(store, case: GuidanceCase,
     return store.revise_print(active.model_copy(update={
         "id": new_id("ern"),
         "recorded_at": now(),
-        "guidance": extraction.reading,
-        "guidance_reason": extraction.reason}))
+        "guidance_readings": list(extraction.readings),
+        "guidance_reason": extraction.reason,
+        # The periods the gate turned down while keeping others. Written even
+        # when it is empty, so a row that predates T-020 and a row where
+        # nothing was refused stay distinguishable from one where the list was
+        # never set.
+        "guidance_refusals": list(extraction.refusals)}))

@@ -311,14 +311,15 @@ def test_a_guidance_reply_from_the_wrong_sentence_keeps_its_case(
     store = _scan(tmp_path)
     case = guidance_case.list_cases()[0]
     reply = _reply_file(tmp_path, "wrong_sentence.json", {
-        "guided": True, "period": "2026-Q3", "eps_low": 0.08,
-        "eps_high": 0.08,
-        "quote": "current consensus estimate is earnings of $0.08 per share"})
+        "guided": True, "periods": [{
+            "period": "2026-Q3", "eps_low": 0.08, "eps_high": 0.08,
+            "quote": "current consensus estimate is earnings of "
+                     "$0.08 per share"}]})
 
     rc = cli.cmd_guidance_submit(_submit_args(case.id, reply))
 
     row = store.active_print(case.stock_id, "2026-Q2")
-    assert row.guidance is None
+    assert row.guidance_readings == []
     assert row.guidance_reason == "quoted_the_wrong_sentence"
     assert [c.id for c in guidance_case.list_cases()] == [case.id]
     assert rc != 0
@@ -330,14 +331,14 @@ def test_a_company_that_guided_nothing_still_clears_the_queue(
     store = _scan(tmp_path)
     case = guidance_case.list_cases()[0]
     reply = _reply_file(tmp_path, "unguided.json",
-                        {"guided": False, "quote": ""})
+                        {"guided": False, "periods": []})
 
     rc = cli.cmd_guidance_submit(_submit_args(case.id, reply))
 
     assert rc == 0
     assert guidance_case.list_cases() == []
     row = store.active_print(case.stock_id, "2026-Q2")
-    assert row.guidance is None
+    assert row.guidance_readings == []
     assert row.guidance_reason == "no_guidance_in_source"
 
 

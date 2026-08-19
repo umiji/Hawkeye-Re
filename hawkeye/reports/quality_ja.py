@@ -142,6 +142,10 @@ _FLAG = {
                          "実績か決められず記録していません",
     "no_period_date": "取得元が対象期間の末日を返さなかったため記録していません",
     "no_actual": "取得元が実績値を返さなかったため記録していません",
+    # T-020。読み手が同じ期を2回返したとき、2回目を落とした印。会社の事実
+    # ではなくこちら側の読み取りの不備なので、件数が増えるなら指示文を疑う。
+    "duplicate_period": "読み手が同じ期を2回報告したため、2回目を採用しません"
+                        "でした(同じ発表を二重に数えないため)",
     "on_eps": "EPSレンジの中央値で比較",
     "on_revenue": "売上レンジの中央値で比較(EPSレンジの開示が無いため)",
 }
@@ -190,7 +194,32 @@ def render_leg_ja(leg: LegVerdict) -> str:
     # 文章そのものであって、こちらの言い換えではないことが分かるように)。
     if leg.excerpt:
         lines.append(f'      原文: "{leg.excerpt}"')
+    lines += _periods_ja(leg)
     return "\n".join(lines)
+
+
+def _periods_ja(leg: LegVerdict) -> list[str]:
+    """会社が複数の期について見通しを出していたときに、その全部を並べる。
+
+    1期しか出していない会社では1行も足さない（従来どおりの表示）。複数期を
+    出していたのに1期しか見せないと、読み手には「この会社は1つしか言って
+    いない」と映る。2026-08-19 の AS がまさにそれで、翌四半期の下振れだけが
+    渡り、会社が自分で引き上げた通期の上振れは画面のどこにも出なかった。
+    点数は一番悪い期に従うが、判断材料としては全部が会社の発言である。
+    """
+    if len(leg.periods) < 2:
+        return []
+    lines = [f"    会社は今回の発表で{len(leg.periods)}つの期について見通しを"
+             f"示している(点数は一番悪い期に従う):"]
+    for p in leg.periods:
+        governing = "  ← 点数はこの期" if p.period == leg.period else ""
+        if p.surprise_pct is not None:
+            lines.append(f"      - {p.period}: {_STATUS[p.status]} "
+                         f"{p.surprise_pct:+.1f}%{governing}")
+        else:
+            why = "、".join(_flag_ja(f) for f in p.flags)
+            lines.append(f"      - {p.period}: 比較なし({why}){governing}")
+    return lines
 
 
 def render_quality_ja(quality: EarningsQuality) -> str:

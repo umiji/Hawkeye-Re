@@ -79,14 +79,29 @@ class GuidanceRequest:
 
 @dataclass(frozen=True)
 class GuidanceExtraction:
-    """A reading, or the named reason there is none. Never both, never neither."""
-    reading: Optional[GuidanceReading]
+    """Every reading the gate accepted, and the named reason for each it did not.
+
+    A TUPLE since T-020, because a release routinely carries two outlooks and
+    the single slot this replaced kept whichever the reader named first. The
+    refused periods are carried beside the accepted ones rather than dropped:
+    a partial reading that leaves no trace of what it dropped is the exact
+    defect this task exists to remove.
+
+    `reason` keeps its old meaning — the ONE reason a row has no guidance at
+    all — and is empty whenever at least one period was accepted. It is the
+    first refusal when every period was refused, so a single-period reply
+    still produces exactly the reason it always did.
+    """
+    readings: tuple[GuidanceReading, ...]
     reason: str
+    refusals: tuple[str, ...] = ()
 
 
 # --- what the agent is told -------------------------------------------------
 
-GUIDANCE_SYSTEM = """You read one earnings summary and report the FORWARD-LOOKING RANGE THE COMPANY ITSELF GAVE. Nothing else.
+GUIDANCE_SYSTEM = """You read one earnings summary and report EVERY FORWARD-LOOKING RANGE THE COMPANY ITSELF GAVE. Nothing else.
+
+A release routinely gives more than one: a range for the next quarter AND a range for the full year, often in the same sentence. Report ALL of them, one entry per period. Do not choose between them, do not decide which one matters, do not stop after the first. A period you leave out is a statement the company made that nobody downstream will ever see.
 
 The summary can contain three ranges that look alike. Only the first is yours:
 
@@ -94,7 +109,7 @@ The summary can contain three ranges that look alike. Only the first is yours:
 2. What the company PREVIOUSLY expected ("The company's previous guidance was ...") — never report this.
 3. What ANALYSTS expect ("The current consensus ... estimate is ...") — never report this. It is the figure your answer will be measured against, and reporting it produces a meaningless comparison of a number with itself.
 
-Rules:
+Rules, and every one of them applies to EACH period separately:
 
 - QUOTE the exact words you read the numbers from, copied character for character from the summary. A quote that cannot be found in the summary voids your whole answer. Do not paraphrase, do not tidy, do not translate.
 - Quote from the company's own sentence only. If your quote sits in the previous-guidance sentence or the consensus sentence, the answer is void.
@@ -102,10 +117,10 @@ Rules:
 - READ THE WORDS, not just the digits. "a loss of $1.00 per share to breakeven" is a low of -1.00 and a high of 0.00. "a loss of $0.03 per share" is -0.03. A range may be written with its top first; report the two numbers you read and do not reorder them.
 - If the range has no top ("more than $6.00", "at least $2.00 billion"), set open_ended to true. Do NOT invent the missing end.
 - If the company attached a CONDITION to the range ("excluding its barge business", "assuming no further acquisitions", "in constant currency"), copy that condition verbatim into qualifier. Copy it from the summary — an invented condition voids the answer.
-- period: "FY2026" for a full financial year, or "2026-Q3" for a single quarter. The user message names which quarter follows the one just reported; a quarterly range must be that quarter. If you cannot tell which period the company means, say so rather than guessing.
-- If the company gave no forward range at all, set guided to false and stop. That is a normal, common answer and is not a failure.
+- period: "FY2026" for a full financial year, or "2026-Q3" for a single quarter. The user message names which quarter follows the one just reported; a quarterly range must be that quarter. If you cannot tell which period the company means, say so rather than guessing. Report each period ONCE — if one sentence gives EPS and revenue for the same period, that is one entry carrying both, not two entries.
+- If the company gave no forward range at all, set guided to false and return an empty list of periods. That is a normal, common answer and is not a failure.
 
-You are not judging the company. You are not deciding whether this is good news. You are copying one range out of one sentence."""
+You are not judging the company. You are not deciding whether this is good news. You are copying the company's own ranges out of the sentences that state them."""
 
 
 def build_schema() -> dict:
@@ -114,24 +129,40 @@ def build_schema() -> dict:
     `additionalProperties: false` matters more than it looks: a field nobody
     reviewed is a field nobody parses, and it would arrive looking like
     information.
+
+    A LIST of periods since T-020, and the shape is what actually carries that
+    rule: asking in prose for "every period the company gave" beside a shape
+    with one slot for a period is a request the reply cannot honour, and the
+    reader would have gone on choosing one — which is precisely what it did.
     """
     number = {"type": ["number", "null"]}
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["guided", "quote"],
+        "required": ["guided", "periods"],
         "properties": {
             "guided": {"type": "boolean"},
-            "period": {"type": ["string", "null"]},
-            "eps_low": number,
-            "eps_high": number,
-            "revenue_low": number,
-            "revenue_high": number,
-            "revenue_unit": {"type": ["string", "null"],
-                             "enum": ["million", "billion", "dollars", None]},
-            "open_ended": {"type": ["boolean", "null"]},
-            "qualifier": {"type": ["string", "null"]},
-            "quote": {"type": "string"},
+            "periods": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["period", "quote"],
+                    "properties": {
+                        "period": {"type": ["string", "null"]},
+                        "eps_low": number,
+                        "eps_high": number,
+                        "revenue_low": number,
+                        "revenue_high": number,
+                        "revenue_unit": {
+                            "type": ["string", "null"],
+                            "enum": ["million", "billion", "dollars", None]},
+                        "open_ended": {"type": ["boolean", "null"]},
+                        "qualifier": {"type": ["string", "null"]},
+                        "quote": {"type": "string"},
+                    },
+                },
+            },
         },
     }
 
@@ -146,8 +177,9 @@ The quarter that FOLLOWS it: {next_quarter}
 {summary}
 --- end of summary ---
 
-Report the forward-looking range THIS COMPANY gave, quoting the words you
-read it from."""
+Report EVERY forward-looking range THIS COMPANY gave — one entry per period,
+the quarter and the full year alike — quoting the words you read each of them
+from."""
 
 
 def render_request(request: GuidanceRequest) -> str:
@@ -222,55 +254,97 @@ def _scaled(value: Optional[float], unit: Optional[str]) -> Optional[float]:
 
 def parse_reply(reply: dict, request: GuidanceRequest,
                 model: str = "") -> GuidanceExtraction:
-    """One agent reply, either as a reading or as a named refusal.
+    """One agent reply, as the readings it earned and the refusals it did not.
+
+    Each period is judged ALONE (T-020). A period whose quote cannot be found
+    is refused by itself and the periods beside it stand: voiding the whole
+    reply would discard readings that passed every check, and keeping the
+    others without recording the refusal would hide that a period was ever
+    offered — the two failures this task sits between.
+    """
+    if not reply.get("guided"):
+        return GuidanceExtraction((), "no_guidance_in_source")
+
+    entries = reply.get("periods") or []
+    if not isinstance(entries, list) or not entries:
+        return GuidanceExtraction((), "no_guidance_in_source")
+
+    readings: list[GuidanceReading] = []
+    refusals: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            refusals.append("period_unreadable")
+            continue
+        reading, refusal = _parse_period(entry, request, model, seen)
+        if reading is None:
+            refusals.append(refusal)
+            continue
+        seen.add(reading.period)
+        readings.append(reading)
+    if readings:
+        return GuidanceExtraction(tuple(readings), "", tuple(refusals))
+    # Nothing survived. The row still needs ONE reason to render, and it is
+    # the first refusal — so a reply carrying a single period produces exactly
+    # the reason it produced before this shape existed.
+    return GuidanceExtraction(
+        (), refusals[0] if refusals else "no_guidance_in_source",
+        tuple(refusals))
+
+
+def _parse_period(reply: dict, request: GuidanceRequest, model: str,
+                  seen: set[str]) -> tuple[Optional[GuidanceReading], str]:
+    """One period of one reply, as a reading or as the name of its refusal.
 
     Order matters here. The quote is checked BEFORE the numbers, because a
     reply whose quote is absent tells us nothing about its numbers either —
     reporting "the range looked odd" for an answer that was invented would
     name the wrong failure.
     """
-    if not reply.get("guided"):
-        return GuidanceExtraction(None, "no_guidance_in_source")
-
     quote = str(reply.get("quote") or "")
     sentence = _sentence_holding(quote, request.summary)
     if sentence is None:
-        return GuidanceExtraction(None, "quote_not_in_source")
+        return None, "quote_not_in_source"
     if any(marker in sentence.lower() for marker in _WRONG_SENTENCE):
-        return GuidanceExtraction(None, "quoted_the_wrong_sentence")
+        return None, "quoted_the_wrong_sentence"
 
     # A condition is evidence like the quote is, and gets the same treatment:
     # an invented one would read as a refusal downstream, which silently
     # deletes a real guidance beat and looks like nothing at all.
     qualifier = str(reply.get("qualifier") or "").strip()
     if qualifier and _flat(qualifier) not in _flat(request.summary):
-        return GuidanceExtraction(None, "quote_not_in_source")
+        return None, "quote_not_in_source"
 
     period = str(reply.get("period") or "").strip()
     if not _PERIOD.match(period):
-        return GuidanceExtraction(None, "period_unreadable")
+        return None, "period_unreadable"
     if not period.startswith("FY") and period != request.next_quarter:
-        return GuidanceExtraction(None, "period_not_next_quarter")
+        return None, "period_not_next_quarter"
+    # Two entries for one period would be counted twice by everything
+    # downstream — the score, the display, the tribunal's brief — and nothing
+    # there could tell they were the same statement read twice.
+    if period in seen:
+        return None, "duplicate_period"
 
     if reply.get("open_ended"):
-        return GuidanceExtraction(None, "open_ended_range")
+        return None, "open_ended_range"
 
     eps_low, eps_high = _pair(reply.get("eps_low"), reply.get("eps_high"))
     rev_low, rev_high = _pair(reply.get("revenue_low"),
                               reply.get("revenue_high"))
     unit = reply.get("revenue_unit") or "dollars"
     if rev_low is not None and unit not in _SCALE:
-        return GuidanceExtraction(None, "period_unreadable")
+        return None, "period_unreadable"
     if eps_low is None and rev_low is None:
-        return GuidanceExtraction(None, "no_number_in_source")
+        return None, "no_number_in_source"
 
-    return GuidanceExtraction(GuidanceReading(
+    return GuidanceReading(
         period=period,
         eps_low=eps_low, eps_high=eps_high,
         revenue_low=_scaled(rev_low, unit),
         revenue_high=_scaled(rev_high, unit),
         source_excerpt=quote.strip(), qualifier=qualifier,
-        extractor="agent", extractor_model=model), "")
+        extractor="agent", extractor_model=model), ""
 
 
 # --- naming the failure -----------------------------------------------------
@@ -291,6 +365,9 @@ _FAILURE_KIND = {
     "quoted_the_wrong_sentence": "reader_failed",
     "period_unreadable": "reader_failed",
     "period_not_next_quarter": "reader_failed",
+    # The reader named one period twice (T-020). Ours to watch, not the
+    # company's doing: the prompt asks for one entry per period.
+    "duplicate_period": "reader_failed",
     # The call never completed.
     "extraction_call_failed": "call_failed",
     # Not a failure at all: session mode wrote the sentence down and nobody

@@ -449,13 +449,22 @@ class StockStore:
                                     print_row.fiscal_quarter)
         try:
             if current is not None:
-                retired = current.model_copy(
-                    update={"status": RowStatus.SUPERSEDED})
+                # The STORED text, with one word changed — never this
+                # version's re-serialization of it. Retiring used to write
+                # back `current.model_dump_json()`, which is the same text
+                # only while the model never changes. T-020 added a field,
+                # and every row already on disk then failed the append-only
+                # trigger (it compares the payload either side of the update
+                # and allows only `status` to differ), so the whole revision
+                # path died on data nobody had touched — measured on the live
+                # ledger's 239 rows, 2026-08-19. Editing the stored JSON in
+                # SQL keeps a retired row byte-for-byte what was recorded,
+                # which is what an append-only table is for.
                 self._conn.execute(
                     "UPDATE earnings_prints SET status = ?, superseded_at = ?,"
-                    " payload = ? WHERE id = ?",
+                    " payload = json_set(payload, '$.status', ?) WHERE id = ?",
                     (RowStatus.SUPERSEDED.value, moment.isoformat(),
-                     retired.model_dump_json(), current.id))
+                     RowStatus.SUPERSEDED.value, current.id))
             new_id = self.record_print(print_row)
         except Exception:
             self._conn.rollback()

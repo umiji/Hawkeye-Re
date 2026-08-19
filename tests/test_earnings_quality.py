@@ -305,9 +305,9 @@ def test_missing_guidance_costs_nothing():
 def test_guidance_above_consensus_earns_a_small_bonus():
     base = a_print(eps_actual=1.20, eps_actual_rows=[1.20],
                    revenue_actual=1.05e9)
-    raised = base.model_copy(update={"guidance": GuidanceReading(
+    raised = base.model_copy(update={"guidance_readings": [GuidanceReading(
         period="2026-Q3", eps_low=2.10, eps_high=2.30,
-        source_excerpt="expects Q3 EPS of $2.10 to $2.30")})
+        source_excerpt="expects Q3 EPS of $2.10 to $2.30")]})
 
     without = assess_earnings(base, a_consensus(next_quarter_eps_avg=2.00),
                               CONFIG)
@@ -432,9 +432,9 @@ def test_a_refused_guidance_costs_no_points_and_no_penalty():
                     revenue_actual=1.05e9)
     consensus = a_consensus(full_year_revenue_avg=3.02e9,
                             full_year_period="FY2026")
-    refused = plain.model_copy(update={"guidance": GuidanceReading(
+    refused = plain.model_copy(update={"guidance_readings": [GuidanceReading(
         period="FY2026", revenue_low=2.60e9, revenue_high=2.70e9,
-        qualifier="excluding its barge business")})
+        qualifier="excluding its barge business")]})
 
     assert (assess_earnings(refused, consensus, CONFIG).score
             == assess_earnings(plain, consensus, CONFIG).score)
@@ -499,9 +499,9 @@ def test_one_leg_up_and_one_down_cancel_out():
                             next_quarter_revenue_avg=1.00e9)
     plain = assess_earnings(base, consensus, CONFIG)
     split = assess_earnings(
-        base.model_copy(update={"guidance": GuidanceReading(
+        base.model_copy(update={"guidance_readings": [GuidanceReading(
             period="2026-Q3", eps_low=2.10, eps_high=2.30,
-            revenue_low=0.90e9, revenue_high=0.94e9)}),
+            revenue_low=0.90e9, revenue_high=0.94e9)]}),
         consensus, CONFIG)
 
     assert split.guidance.status is LegStatus.INLINE     # neither side wins
@@ -517,9 +517,9 @@ def test_a_guidance_that_misses_on_both_legs_is_charged_for_it():
                             next_quarter_revenue_avg=1.00e9)
     plain = assess_earnings(base, consensus, CONFIG)
     lowered = assess_earnings(
-        base.model_copy(update={"guidance": GuidanceReading(
+        base.model_copy(update={"guidance_readings": [GuidanceReading(
             period="2026-Q3", eps_low=1.60, eps_high=1.70,
-            revenue_low=0.90e9, revenue_high=0.94e9)}),
+            revenue_low=0.90e9, revenue_high=0.94e9)]}),
         consensus, CONFIG)
 
     assert lowered.guidance.status is LegStatus.MISS
@@ -554,9 +554,9 @@ def test_an_outlook_we_declined_to_compare_is_not_charged_either():
                             next_quarter_revenue_avg=1.00e9)
     plain = assess_earnings(base, consensus, CONFIG)
     fenced = assess_earnings(
-        base.model_copy(update={"guidance": GuidanceReading(
+        base.model_copy(update={"guidance_readings": [GuidanceReading(
             period="2026-Q3", eps_low=1.60, eps_high=1.70,
-            qualifier="excluding its barge business")}),
+            qualifier="excluding its barge business")]}),
         consensus, CONFIG)
 
     assert fenced.guidance.status is LegStatus.ABSENT
@@ -669,7 +669,7 @@ def test_guidance_below_consensus_costs_what_beating_it_would_have_earned():
                   guidance=GuidanceReading(period="2026-Q3", eps_low=1.60,
                                            eps_high=1.80))
     without = assess_earnings(
-        cut.model_copy(update={"guidance": None}),
+        cut.model_copy(update={"guidance_readings": []}),
         a_consensus(next_quarter_eps_avg=2.00), CONFIG)
     lowered = assess_earnings(cut, a_consensus(next_quarter_eps_avg=2.00),
                               CONFIG)

@@ -455,13 +455,54 @@ class EarningsPrint(BaseModel):
 
     revenue_actual: Optional[float] = None
 
-    guidance: Optional[GuidanceReading] = None
+    # EVERY forward statement the release carried, one entry per period, in
+    # the order the reader reported them. A LIST since T-020: a release
+    # routinely holds two outlooks — the next quarter and the full year — and
+    # the single slot this replaced could keep one of them. Which one was kept
+    # was decided by whichever sentence the reader happened to choose, and the
+    # other was not recorded anywhere, so nothing downstream could tell a
+    # company that guided once from one that guided twice. AS guided the
+    # quarter 17.9% below consensus and the year 4.5% ABOVE it while RAISING
+    # the year from its own previous range; the quarter alone was kept, and it
+    # became the Adversary's leading attack and the Judge's reason to pass
+    # (2026-08-19, scan 3).
+    #
+    # A row written before T-020 carries a single `guidance` object instead.
+    # `_fold_legacy_guidance` reads those rows into this list, so the ledger
+    # written under the old shape stays readable; nothing writes that key any
+    # more.
+    guidance_readings: list[GuidanceReading] = Field(default_factory=list)
     # Why there is no guidance above, when there is none. Empty guidance has
     # three completely different causes — the company published no outlook,
     # the reader could not read the one it published, or the extraction call
     # never completed — and a row that records only the blank cannot tell them
     # apart afterwards (User decision, 2026-08-09).
     guidance_reason: str = ""
+    # The periods the gate REFUSED while accepting others, by name. Empty when
+    # everything the reader offered was accepted, and empty when nothing was —
+    # a total refusal is what `guidance_reason` above says. It exists because
+    # T-020's own prohibition demands it: a period nobody kept has to leave a
+    # trace, or a partial reading is indistinguishable from a complete one.
+    guidance_refusals: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_legacy_guidance(cls, data):
+        """A pre-T-020 row's single `guidance` object, read as a one-item list.
+
+        Also the shortest way to WRITE one reading in a test or a caller that
+        has exactly one: `guidance=<reading>` still means what it always did.
+        A value under both keys is a caller contradicting itself, and the
+        explicit list wins rather than the two being merged into a row nobody
+        wrote.
+        """
+        if not isinstance(data, dict) or "guidance" not in data:
+            return data
+        data = dict(data)
+        legacy = data.pop("guidance")
+        if legacy is not None and not data.get("guidance_readings"):
+            data["guidance_readings"] = [legacy]
+        return data
 
     # What the company itself said explains THIS quarter's result, in its own
     # words. Its sibling above is about the quarter that follows; this one is

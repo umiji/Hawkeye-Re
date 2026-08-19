@@ -410,15 +410,16 @@ def test_either_queue_may_be_submitted_first(tmp_path):
     from hawkeye.scout.guidance_agent import parse_reply as parse_guidance
     assert cause_case.attach(
         store, cause, parse_reply(GOOD_REPLY, cause.request())) is not None
-    assert guidance_case.attach(store, guidance, parse_guidance({
-        "guided": True, "period": "2026-Q3",
-        "eps_low": 0.90, "eps_high": 1.00,
-        "quote": "it expects third quarter earnings of $0.90 to $1.00 per share",
-    }, guidance.request())) is not None
+    assert guidance_case.attach(store, guidance, parse_guidance(
+        {"guided": True, "periods": [{
+            "period": "2026-Q3", "eps_low": 0.9, "eps_high": 1.0,
+            "quote": "it expects third quarter earnings of $0.90 to "
+                     "$1.00 per share"}]},
+        guidance.request())) is not None
 
     row = store.active_print(store.stock_by_ticker("AMZN").id, "2026-Q2")
     assert row.cause is not None          # the first reading survived
-    assert row.guidance is not None       # and the second landed beside it
+    assert row.guidance_readings       # and the second landed beside it
 
 
 def test_a_restated_actual_still_refuses_the_reading(tmp_path):

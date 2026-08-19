@@ -195,6 +195,11 @@ def _leg_to_dict(lv: LegVerdict) -> dict:
             "other_actual": lv.other_actual, "analysts": lv.analysts,
             "flags": list(lv.flags),
             "parts": [list(p) for p in lv.parts],
+            "period": lv.period,
+            # Nested one level and no further: an entry of `periods` is one
+            # period's own reading and never carries a `periods` of its own,
+            # so this recursion terminates by construction (T-020).
+            "periods": [_leg_to_dict(p) for p in lv.periods],
             "excerpt": lv.excerpt}
 
 
@@ -205,6 +210,12 @@ def _leg_from_dict(d: dict) -> LegVerdict:
                       other_actual=d["other_actual"], analysts=d["analysts"],
                       flags=tuple(d["flags"]),
                       parts=tuple(tuple(p) for p in d["parts"]),
+                      # Absent on a scan written before T-020: such a row
+                      # holds one period and reads back as one, rather than
+                      # refusing to load at all.
+                      period=d.get("period", ""),
+                      periods=tuple(_leg_from_dict(p)
+                                    for p in d.get("periods", ())),
                       excerpt=d["excerpt"])
 
 

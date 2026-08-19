@@ -42,6 +42,7 @@ from hawkeye.contracts.stocks import (
     CauseReading,
     ConsensusSnapshot,
     EarningsPrint,
+    GuidanceReading,
     PrintSource,
     SnapshotKind,
     next_fiscal_quarter,
@@ -107,6 +108,19 @@ class LegVerdict:
     # `surprise_pct` above stays the primary reading so the existing display
     # and the existing scoring of the other two legs are unchanged.
     parts: tuple[tuple[str, float], ...] = ()
+    # Guidance only. WHICH period this reading is about (`2026-Q3`, `FY2026`),
+    # stated rather than left to be parsed back out of `flags`. On the leg the
+    # scoring rests on it names the period that governed; on each entry of
+    # `periods` below it names that entry's own.
+    period: str = ""
+    # Every period the company guided, each judged on its own, since T-020. A
+    # release routinely carries two — the next quarter and the full year — and
+    # the leg above reports ONE of them: the worst (User decision,
+    # 2026-08-19), so publishing a flattering second period can never lift a
+    # shortfall. The others are not discarded, they are here, because the
+    # reader and the tribunal have to see everything the company said. Empty
+    # when nothing was guided, and a single entry when one period was.
+    periods: tuple["LegVerdict", ...] = ()
     # Source text this verdict rests on or refuses on, quoted verbatim. NOT a
     # sentence of ours — `flags` carries our reasoning and stays machine
     # readable. Today only the guidance leg fills it, with the condition the
@@ -355,14 +369,21 @@ def _yardsticks(period: str, print_row: EarningsPrint,
 def _guidance_leg(print_row: EarningsPrint,
                   consensus: Optional[ConsensusSnapshot],
                   config) -> LegVerdict:
-    """Guidance against the consensus for the SAME period, captured with it.
+    """Every period the company guided, judged separately; the worst governs.
 
     Absence is neutral by design and is the normal case: there is no
     structured source for guidance on any free tier, so penalising its
     absence would quietly penalise the data gap rather than the company.
+
+    Two periods in one release is ordinary — 5 of the 21 measured summaries
+    that state an outlook state both a quarter and a year (2026-08-19) — and
+    they can point opposite ways. AS guided the quarter 17.9% below consensus
+    and the year 4.5% above it. The rule (User decision, 2026-08-19) is that
+    the WORST period decides the score and nothing else does: a shortfall
+    cannot be diluted by publishing a second, flattering period, and no
+    arrangement of periods can be picked to score higher.
     """
-    guidance = print_row.guidance
-    if guidance is None:
+    if not print_row.guidance_readings:
         # WHY there is none, when the row knows. "The company published no
         # outlook", "the reader could not read the one it published" and "the
         # extraction call failed" are three different facts, and a leg that
@@ -371,6 +392,48 @@ def _guidance_leg(print_row: EarningsPrint,
         return LegVerdict(
             leg="guidance", status=LegStatus.ABSENT,
             flags=(print_row.guidance_reason or "guidance_not_published",))
+    judged = tuple(_guidance_period(g, print_row, consensus, config)
+                   for g in print_row.guidance_readings)
+    return _governing_period(judged)
+
+
+# How bad a period's reading is, worst first. The order IS the policy: a
+# period that came in below consensus outranks one that landed on it, which
+# outranks one that cleared it, and a period nothing could be compared against
+# outranks none of them — refusing to compare is not evidence of a shortfall
+# (invariant 6).
+_GUIDANCE_SEVERITY = {LegStatus.MISS: 0, LegStatus.INLINE: 1,
+                      LegStatus.BEAT: 2, LegStatus.ABSENT: 3,
+                      LegStatus.UNVERIFIED: 3}
+
+
+def _governing_period(judged: tuple[LegVerdict, ...]) -> LegVerdict:
+    """The one period the score is taken from, carrying all of them.
+
+    Ties are broken by the most negative comparison the period contains, so
+    two periods that both missed are represented by the worse of the two and
+    the choice never depends on the order the reader listed them in.
+
+    When no period could be compared at all the first is returned, which
+    keeps a single unreadable period reporting exactly what it always did.
+    """
+    def rank(lv: LegVerdict) -> tuple[int, float]:
+        worst_part = min((pct for _, pct in lv.parts), default=0.0)
+        return _GUIDANCE_SEVERITY.get(lv.status, 3), worst_part
+
+    governing = min(judged, key=rank)
+    return replace(governing, periods=judged)
+
+
+def _guidance_period(guidance: GuidanceReading, print_row: EarningsPrint,
+                     consensus: Optional[ConsensusSnapshot],
+                     config) -> LegVerdict:
+    """ONE of the company's forward statements, against its own yardstick.
+
+    Every refusal here is about this period alone. The period beside it may
+    well be comparable, and taking both down because one was fenced with a
+    condition would discard a reading that passed every check.
+    """
     # A range the company fenced with a condition is not measured against a
     # consensus set without one. ACA guided "2026 revenue of $2.60 to $2.70
     # billion, EXCLUDING its barge business" while the analysts' figure for
@@ -385,12 +448,14 @@ def _guidance_leg(print_row: EarningsPrint,
     # guidance leg is neither scored nor penalised).
     if guidance.qualifier:
         return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
+                          period=guidance.period,
                           flags=("guidance_scope_qualified",),
                           excerpt=guidance.qualifier)
     eps_bar, revenue_bar, refusal = _yardsticks(guidance.period, print_row,
                                                 consensus)
     if refusal:
         return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
+                          period=guidance.period,
                           flags=(refusal, f"guided_{guidance.period}"))
     # EPS first, revenue second. Plenty of companies guide only on sales —
     # Amazon gives net sales and operating income and never an EPS range —
@@ -413,7 +478,7 @@ def _guidance_leg(print_row: EarningsPrint,
               or abs(yardstick) >= config.scout_min_abs_eps_estimate]
     if not usable:
         return LegVerdict(
-            leg="guidance", status=LegStatus.ABSENT,
+            leg="guidance", status=LegStatus.ABSENT, period=guidance.period,
             flags=(("eps_yardstick_too_small",) if too_small
                   else ("no_forward_consensus_to_compare",)))
     # EVERY leg the company guided and this system holds a bar for, not just
@@ -424,6 +489,7 @@ def _guidance_leg(print_row: EarningsPrint,
                   if _pct(value, yardstick) is not None)
     if not parts:
         return LegVerdict(leg="guidance", status=LegStatus.ABSENT,
+                          period=guidance.period,
                           flags=("no_forward_consensus_to_compare",))
     above = sum(1 for _, pct in parts if pct > 0)
     below = sum(1 for _, pct in parts if pct < 0)
@@ -440,6 +506,7 @@ def _guidance_leg(print_row: EarningsPrint,
     too_small_flag = ("eps_yardstick_too_small",) if too_small else ()
     return LegVerdict(leg="guidance", status=status, surprise_pct=parts[0][1],
                       actual=midpoint, estimate=yardstick, parts=parts,
+                      period=guidance.period, excerpt=guidance.source_excerpt,
                       flags=tuple(f"on_{unit}" for unit, _ in parts)
                       + period_flag + too_small_flag)
 
@@ -559,7 +626,33 @@ def _leg_line_en(leg: LegVerdict) -> str:
     # holding a single `LegVerdict` still finds it on the leg.
     if leg.excerpt and leg.leg == "guidance":
         head += f' — the company\'s own condition: "{leg.excerpt}"'
-    return head
+    return head + _other_periods_en(leg)
+
+
+def _other_periods_en(leg: LegVerdict) -> str:
+    """The periods the company also guided, when it guided more than one.
+
+    Not decoration. On 2026-08-19 the three roles argued AS having been shown
+    the quarter it guided BELOW consensus and not the year it guided ABOVE —
+    the Adversary led with the first, and the Judge passed. Both statements
+    are the company's; the score follows the worse one, and the argument has
+    to be made against all of them.
+    """
+    if len(leg.periods) < 2:
+        return ""
+    said = []
+    for p in leg.periods:
+        if p.surprise_pct is not None:
+            said.append(f"{p.period or 'unstated period'} "
+                        f"{_EN_STATUS[p.status]} consensus "
+                        f"{p.surprise_pct:+.1f}%")
+        else:
+            said.append(f"{p.period or 'unstated period'} not compared "
+                        f"[{', '.join(p.flags)}]")
+    return (f" — the company guided {len(leg.periods)} periods in this "
+            f"release: {'; '.join(said)}. The score follows the WORST of "
+            f"them ({leg.period or 'the one compared'}); the others are "
+            f"stated here because they are equally the company's own words.")
 
 
 def describe_quality_en(quality: "EarningsQuality") -> str:
@@ -613,7 +706,7 @@ def print_from_event(event: EarningsEvent, stock_id: str,
         eps_actual=feed_actual,
         eps_actual_rows=calendar_actuals,
         revenue_actual=event.revenue_actual,
-        guidance=event.guidance)
+        guidance_readings=([event.guidance] if event.guidance else []))
 
 
 def reconstructed_consensus(event: EarningsEvent, stock_id: str,
@@ -818,10 +911,11 @@ def assess_earnings(print_row: EarningsPrint,
                  else None),
         whisper_beat_pct=(round(whisper_beat, 4)
                           if whisper_beat is not None else None),
-        guidance_extractor=(print_row.guidance.extractor
-                            if print_row.guidance else ""),
-        guidance_extractor_model=(print_row.guidance.extractor_model
-                                  if print_row.guidance else ""),
+        guidance_extractor=(print_row.guidance_readings[0].extractor
+                            if print_row.guidance_readings else ""),
+        guidance_extractor_model=(
+            print_row.guidance_readings[0].extractor_model
+            if print_row.guidance_readings else ""),
         cause=print_row.cause, cause_reason=print_row.cause_reason,
-        guidance_disclosed=print_row.guidance is not None,
+        guidance_disclosed=bool(print_row.guidance_readings),
         guidance_reason=print_row.guidance_reason)
