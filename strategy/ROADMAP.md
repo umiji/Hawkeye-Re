@@ -94,9 +94,19 @@ Each item starts only when the ledger shows the weakness it fixes:
 - Overall Brier ≤ 0.20 with a monotone calibration table
 - Max drawdown within modeled bounds; zero unlogged rule overrides
 
-Note: the 50%/year target itself is **not** a phase gate. A calibrated
-positive-expectancy process below 50% justifies continued investment; a
-lucky 50% does not.
+Note on why 50%/year is not itself a phase gate — this demotes the *gate*,
+not the *goal*. The goal is unchanged and is the point of the project
+(`strategy/INVESTMENT_DOCTRINE.md` §2). It is a poor gate for one reason: at
+100 closed trades an annualized rate still cannot be separated from luck, so
+gating on it would pass a lucky book and fail an unlucky good one. The gates
+above are the earliest readable evidence that the process will earn, not a
+replacement for earning.
+
+So: a calibrated positive-expectancy process below 50% justifies continued
+investment **and an explicit plan to close the gap** — the shortfall is then
+a sizing problem (trade count, winners cut early, risk per trade; see
+`strategy/STRATEGY_BACKLOG.ja.md`), and passing Phase 3 without that plan is
+not passing. A lucky 50% justifies nothing.
 
 ## Phase 4 — Long-horizon book
 

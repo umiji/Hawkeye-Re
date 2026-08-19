@@ -3,7 +3,24 @@
 ## What this is
 
 Adversarial-verification investment decision system (catalyst-driven US
-equities MVP). The core hypothesis and non-negotiables live in
+equities MVP).
+
+**The goal is a 50% annualized return.** Not a validated hypothesis, not a
+calibrated audit trail — money. Everything in this repo (the tribunal, the
+immutable ledger, the Brier scoring, the skill-vs-luck quadrant) is
+machinery for reaching that number or for finding out why it is not being
+reached. A system that produces perfect records and no return has failed.
+
+This matters when you read the strategy docs, because several passages there
+say what to conclude if the target is *missed* ("a calibrated process below
+50% still justifies continued investment", "the ledger is an asset even
+short of 50%"). Those are instructions for diagnosing a shortfall, not
+statements of purpose. Reading them as the aim inverts means and ends — it
+happened on 2026-08-19 and produced a project summary claiming the point was
+not to pick winners. When you weigh a design choice, weigh it by what it
+does to returns.
+
+The core hypothesis and non-negotiables live in
 `strategy/INVESTMENT_DOCTRINE.md` and `strategy/VERIFICATION_PROTOCOL.md` — read them
 before changing behavior. The user-facing language is Japanese; system code,
 docs, prompts, and commit messages are English.

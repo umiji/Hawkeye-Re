@@ -1,7 +1,11 @@
 # Verification Protocol
 
-The adversarial process specification. This is the project's core IP: the
-hypothesis is that this protocol, run mechanically, beats a human committee.
+The adversarial process specification — the machinery the project's return
+target is bet on. The goal is 50% annualized (`strategy/INVESTMENT_DOCTRINE.md`
+§2); the hypothesis here is that this protocol, run mechanically, picks
+better trades than a human committee and therefore earns that return. The
+protocol is the project's core IP because of what it is supposed to pay out,
+not for its own sake.
 
 ## Roles
 
@@ -98,8 +102,22 @@ The quadrant logic:
 | **thesis right (accuracy ≥ 0.6)** | skill_win ✅ | unlucky_loss (acceptable) |
 | **thesis wrong** | lucky_win ⚠️ process alarm | deserved_loss ⚠️ mandatory postmortem |
 
-The system's success metric is the growth of the skill_win share and the
-convergence of stated probabilities to observed frequencies — P&L follows.
+**Two tiers of metric, and they are not interchangeable.**
+
+- **The success metric is return** — 50% annualized
+  (`strategy/INVESTMENT_DOCTRINE.md` §2). Nothing below substitutes for it.
+- **Calibration and the skill_win share are leading indicators**, used
+  because return cannot be measured yet: at a few dozen closed trades, an
+  annual rate cannot be told apart from luck, while Brier scores and the
+  quadrant mix are readable at that sample size and move earlier. They are
+  how a broken process is caught before a year of returns is spent proving
+  it — not what the project is trying to produce.
+
+The two can diverge, and the divergence is the signal. A calibrated book
+that does not earn is a *sizing* problem (too few trades, winners cut early,
+too little risk per trade) and points at
+`strategy/STRATEGY_BACKLOG.ja.md`. A book that earns while badly calibrated
+is running on luck and will give it back at scale.
 
 ## Known limitations (MVP honesty)
 

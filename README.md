@@ -3,20 +3,31 @@
 Adversarial-verification investment decision system for catalyst-driven US
 equities (multi-week holding period MVP).
 
-## Core hypothesis
+## The goal
+
+**Make money: 50% annualized return.** That is the point of this project. A
+system that produces an immaculate audit trail and no return has failed.
+
+Honest math: 50%/year is ~3.4%/month compounded. With up to 8 concurrent
+positions and ~4-week holds, the book needs roughly +1.7% per position-month
+net — achievable only with strict asymmetry (reward/risk ≥ 2), ruthless kill
+criteria, and zero tolerance for thesis drift. Those numbers are enforced in
+code, not aspired to. See strategy/INVESTMENT_DOCTRINE.md.
+
+## How the goal is supposed to be reached
 
 A mechanical process that (a) pre-registers every falsifiable claim before
 money moves, (b) subjects every idea to a structured adversarial attack, and
-(c) scores itself against reality afterwards, will make higher-quality
+(c) scores itself against reality afterwards, should make higher-quality
 investment decisions than a human team — because it cannot fall in love with
-a position. This project exists to test that hypothesis; the audit trail it
-accumulates is a first-class deliverable, win or lose.
+a position. Better decisions are the mechanism; the return is the result
+being bought with them.
 
-Target: 50% annualized return. Honest math: that is ~3.4%/month compounded.
-With up to 8 concurrent positions and ~4-week holds, the book needs roughly
-+1.7% per position-month net — achievable only with strict asymmetry
-(reward/risk ≥ 2), ruthless kill criteria, and zero tolerance for thesis
-drift. The doctrine encodes exactly that. See strategy/INVESTMENT_DOCTRINE.md.
+The audit trail exists to serve that: it is what makes the process
+*improvable*, by separating the calls that worked from the ones that merely
+paid off. It is instrumentation, not the deliverable. If the ledger ever
+shows the process is not converting into return, the answer is to fix the
+process or stop — not to admire the records.
 
 ## How a decision is made
 

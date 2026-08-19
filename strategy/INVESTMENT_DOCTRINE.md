@@ -23,10 +23,17 @@ A realistic profile that achieves it:
 - losses truncated by pre-registered stops; winners not cut early by mood
   (exits happen on target, kill, or time stop — not vibes)
 
-This is ambitious. The honest posture is: run the process with full
-discipline, measure relentlessly, and let the ledger say whether the edge is
-real. A year that misses 50% but produces a clean, calibrated audit trail is
-a successful experiment; the reverse is not.
+This is ambitious, and ambition is not a plan: the honest posture is to run
+the process with full discipline, measure relentlessly, and let the ledger
+say whether the edge is real — then act on what it says.
+
+What the ledger is for: a shortfall has two very different causes, and only
+the record separates them. If the process is calibrated and positive-
+expectancy but lands under 50%, the gap is *size* — too few trades, winners
+cut too early, too little risk per trade — and those are fixable parameters
+(see `strategy/STRATEGY_BACKLOG.ja.md`). If the process is not calibrated,
+the edge is not real and no amount of sizing rescues it. Both readings
+demand a change. Neither makes a return-less year a success.
 
 ## 3. Where the edge is supposed to come from
 
@@ -64,7 +71,12 @@ never silently passed.
   override), price target reached (take profit or formally re-underwrite),
   time stop, or mandatory review before the next earnings.
 
-## 6. Anti-bias mechanisms (the actual product)
+## 6. Anti-bias mechanisms (how the returns are protected)
+
+These are not the product — the return is. They exist because every failure
+mode below has a measured cost in money: a position held past its stop, a
+thesis rewritten after the fact, a lucky win mistaken for a repeatable edge
+and then sized up.
 
 | Human failure mode | Mechanical counter |
 |---|---|
