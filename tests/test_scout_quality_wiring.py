@@ -15,6 +15,7 @@ from hawkeye.contracts.stocks import (
     SnapshotKind,
     Stock,
 )
+from hawkeye.contracts.models import GuidanceState
 from hawkeye.ledger.stocks import StockStore
 from hawkeye.marketdata.base import StaticProvider
 from hawkeye.scout.earnings import EarningsEvent, parse_calendar, screen_events
@@ -662,3 +663,73 @@ def test_a_release_read_and_wholly_refused_is_not_zero_everywhere(tmp_path):
     row, _result, _candidates = _cause_scan(tmp_path, built)
     assert row.cause_blocks_refused == 2
     assert row.cause_reason == "extractor_invented_every_block"
+
+
+# --- T-014: the figures and the outlook state reach the user's record --------
+#
+# The scan report is built from the dropped-candidate records, not from the
+# scan in memory, so a figure the ranking used and did not record is a figure
+# the user is never shown. These assert the hop the report depends on.
+
+def _t014_scan(tmp_path, *, with_feed: bool):
+    from hawkeye.scout.scout import build_screened_candidates
+
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    result = run_scout(
+        FakeCalendar(_entries(event_day)), _provider(), _config(),
+        today=today, stock_store=store,
+        numbers_source=(_feed(event_day, "The company said so.")
+                        if with_feed else None))
+    return build_screened_candidates(result, scan_id=1)
+
+
+def test_the_record_carries_the_figures_the_percentages_came_from(tmp_path):
+    record = _t014_scan(tmp_path, with_feed=True)[0]
+
+    assert (record.eps_actual, record.eps_estimate) == (1.20, 1.00)
+    assert (record.revenue_actual, record.revenue_estimate) == (1.05e9, 1.0e9)
+    # And the same pair the percentage was computed from, not a second reading.
+    assert record.eps_surprise_pct == 20.0
+
+
+def test_an_outlook_nobody_read_yet_is_recorded_as_unreadable(tmp_path):
+    """The feed answered and the reading was staged for the AI step, which has
+    not run. That is our queue, not the company saying nothing."""
+    record = _t014_scan(tmp_path, with_feed=True)[0]
+
+    assert record.guidance_state is GuidanceState.UNREADABLE
+    assert record.guidance_reason == "pending_extraction"
+
+
+def test_a_name_the_feed_was_never_asked_about_is_not_called_silent(tmp_path):
+    record = _t014_scan(tmp_path, with_feed=False)[0]
+
+    assert record.guidance_state is GuidanceState.NOT_ATTEMPTED
+    assert record.guidance_reason == "feed_not_asked"
+
+
+def test_a_company_that_published_no_outlook_is_recorded_as_such(tmp_path):
+    from hawkeye.scout.scout import build_screened_candidates
+
+    today = date.today()
+    event_day = today - timedelta(days=3)
+    store = StockStore(str(tmp_path / "hawkeye.db"))
+    result = run_scout(FakeCalendar(_entries(event_day)), _provider(),
+                       _config(), today=today, stock_store=store,
+                       numbers_source=_feed(event_day, "No outlook here."))
+    _read_staged_guidance(store, {"guidance_found": False,
+                                  "reason": "no_guidance_in_source"})
+    rerank_after_guidance(store, result, _config())
+    record = build_screened_candidates(result, scan_id=1)[0]
+
+    assert record.guidance_state is GuidanceState.NOT_PUBLISHED
+
+
+def test_a_name_nobody_enriched_is_not_recorded_as_publishing_nothing():
+    """The enrichment budget stopped short of it, so no reading happened.
+    Calling that 開示なし would put our own budget on the company's record."""
+    from hawkeye.scout.quality import guidance_state
+
+    assert guidance_state(None) is GuidanceState.NOT_ATTEMPTED

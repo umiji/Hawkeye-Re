@@ -235,6 +235,27 @@ class ScreenedCandidateStage(str, Enum):
     RANKING_CUTOFF = "ranking_cutoff"    # gate-passed, but outside this run's tribunal slot count
 
 
+class GuidanceState(str, Enum):
+    """Whether the company's own outlook for next quarter was obtained (T-014).
+
+    Four states and not a boolean, because "no guidance" has three completely
+    different causes and only one of them is about the company: it published
+    none (routine, and no penalty), it published one this system could not
+    read (our defect or a failed call), or nobody asked at all because the
+    name ranked below the retrieval budget. Collapsed into 開示なし, the
+    second and third disappear exactly where the user would have noticed them.
+
+    UNKNOWN is for rows written before this field existed, and for a funnel
+    run without a stock store — the state was never determined, which is a
+    different fact from any of the four (invariant 1: old records load).
+    """
+    UNKNOWN = ""
+    DISCLOSED = "disclosed"            # the company guided, and we read it
+    NOT_PUBLISHED = "not_published"    # the company published no outlook
+    UNREADABLE = "unreadable"          # it published one; we could not read it
+    NOT_ATTEMPTED = "not_attempted"    # never asked (below the request budget)
+
+
 class ScoreBreakdown(BaseModel):
     """The ranking score split into the five things that can earn it.
 
@@ -275,6 +296,25 @@ class ScreenedCandidate(BaseModel):
     eps_surprise_trusted: bool = True
     revenue_surprise_trusted: bool = True
     conflicting_estimates: bool = False
+    # The figures the percentages above were computed FROM, as the ranking saw
+    # them: one vendor's actual over that same vendor's consensus (T-014). A
+    # percentage alone cannot be argued with — PARK's +675% is $0.31 against a
+    # $0.04 consensus, i.e. a near-zero denominator rather than a monster
+    # quarter, and the user asked to approve the shortlist has no way to tell
+    # the two apart from the ratio. Stored rather than re-derived at report
+    # time: the print row can be revised afterwards, and a figure that no
+    # longer matches the one the ranking used would be worse than none.
+    # Optional so rows written before this field still load (invariant 1) —
+    # the report prints "-" there rather than inventing a number.
+    eps_actual: Optional[float] = None
+    eps_estimate: Optional[float] = None
+    revenue_actual: Optional[float] = None
+    revenue_estimate: Optional[float] = None
+    # Whether the company's outlook was obtained, and the named reason when it
+    # was not (T-014). Both are needed: the state is what the table can show
+    # in one cell, the reason is what the failures section says in words.
+    guidance_state: GuidanceState = GuidanceState.UNKNOWN
+    guidance_reason: str = ""
     # Which vendor supplied BOTH figures the surprise above was computed from
     # — "calendar" (the Finnhub earnings calendar) or "whispers"
     # (EarningsWhispers) — and what the calendar had read when the feed
