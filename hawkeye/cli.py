@@ -1168,6 +1168,25 @@ def cmd_screened_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _scan_csv_name(scan: dict) -> str:
+    """What a scan's full-inventory CSV is called by default.
+
+    Named for the DAY THE SCAN RAN, not for today: the file describes that
+    scan, and `hawkeye report scan --scan-id 3` re-run weeks later would
+    otherwise produce a file claiming to be this morning's. The scan number
+    alone — what the name used to be — is a running count, so `scan-2.csv`
+    could be yesterday's or last month's and there was no way to tell without
+    opening it. The full-word ending says what the file is for, now that
+    `var/reports/` holds tribunal reports too (T-019).
+
+    The number is padded to two digits so a day's files sort in the order the
+    scans ran; a hundredth scan simply widens rather than being cut.
+    """
+    day = datetime.fromisoformat(scan["ts"]).date()
+    return (f"{day.isoformat()}-{int(scan['id']):02d}"
+            f"-hawkeye-earnings-research.csv")
+
+
 def cmd_report_scan(args: argparse.Namespace) -> int:
     """The scan report the USER reads, before any case is opened (task 9).
 
@@ -1188,7 +1207,7 @@ def cmd_report_scan(args: argparse.Namespace) -> int:
     # the user can open. A flag they have to remember is a file that is
     # missing on the day it matters.
     path = (pathlib.Path(args.csv) if args.csv
-            else reports_dir() / f"scan-{scan['id']}.csv")
+            else reports_dir() / _scan_csv_name(scan))
     path.parent.mkdir(parents=True, exist_ok=True)
     # A BOM, for the same reason the check sheet carries one: Excel on
     # Japanese Windows reads a plain UTF-8 CSV as cp932 and turns every header
@@ -1972,7 +1991,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="how many names the tribunal will take (default 3)")
     rps.add_argument("--csv", default=None,
                      help="where to write the all-names CSV "
-                          "(default: var/reports/scan-<id>.csv)")
+                          "(default: var/reports/"
+                          "<YYYY-MM-DD>-<走査番号>-hawkeye-earnings-research.csv)")
     rps.set_defaults(func=cmd_report_scan)
 
     sd = sub.add_parser("screened",
