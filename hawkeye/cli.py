@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import sys
 from datetime import date, datetime, timezone
 
@@ -315,15 +316,49 @@ def _judged_earnings(args: argparse.Namespace):
         stock_store=_stock_store(), directory=EdgarDirectory())
 
 
+# What a ticker may contribute to a filename. Tickers reach us as whatever
+# the earnings calendar and the earnings feed wrote, uppercased and trimmed
+# and checked no further, and a class share is written `BRK.A` by one vendor
+# and `BF/B` by another. Windows refuses \ / : * ? " < > | in a name outright,
+# so an unfiltered ticker can make the save raise and cost the round the only
+# document it leaves behind. Substituting keeps the document (User decision
+# 2026-08-20); the dot is kept because it is legal and it is part of the name.
+_UNSAFE_IN_FILENAME = re.compile(r"[^A-Z0-9._]", re.IGNORECASE)
+
+
+def _ticker_slug(ticker: str) -> str:
+    """The ticker in a form a filesystem will accept, unchanged where it can."""
+    return _UNSAFE_IN_FILENAME.sub("-", ticker.strip().upper())
+
+
 def _write_tribunal_report(rec: Recommendation) -> pathlib.Path:
     """Save the rendered report to disk so a completed round leaves a
-    document behind, not just terminal output that scrolls away."""
+    document behind, not just terminal output that scrolls away.
+
+    The name carries the ticker beside the second, and an existing file is
+    never opened for writing. Both halves answer one defect: two rounds
+    finishing inside the same second resolved to one path, and the later save
+    erased the earlier round's only document in silence — RNW's report was
+    lost to PONY's on 2026-08-19, and nothing on screen said so (T-017).
+    """
     out_dir = reports_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = to_jst(datetime.now(timezone.utc)).strftime("%y%m%d-%H%M%S")
-    path = out_dir / f"{stamp}-tribunal-report.md"
-    path.write_text(render_recommendation_ja(rec), encoding="utf-8")
-    return path
+    base = f"{stamp}-{_ticker_slug(rec.ticker)}-tribunal-report"
+    text = render_recommendation_ja(rec)
+    attempt = 1
+    while True:
+        suffix = "" if attempt == 1 else f"-{attempt}"
+        path = out_dir / f"{base}{suffix}.md"
+        try:
+            # "x" refuses a name already taken instead of truncating it, and
+            # it decides that in the same step as the write — a check made
+            # first would leave a gap for the other round to write into.
+            with path.open("x", encoding="utf-8") as handle:
+                handle.write(text)
+            return path
+        except FileExistsError:
+            attempt += 1
 
 
 def _print_stored_print_mismatch(mismatch: StoredPrintMismatch) -> None:

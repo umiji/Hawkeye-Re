@@ -253,10 +253,12 @@ JSON yourself beyond stripping accidental markdown fences.
 After the judge's submission the CLI prints the final Japanese report
 (BUY提案 or 見送り) — it has already applied rule enforcement and the risk
 officer, and recorded everything to the ledger. The same report is also
-saved as `var/reports/<yymmdd-HHMMSS>-tribunal-report.md` (printed path
-follows as "レポート保存先: ..."); this also happens for a gate-only
-rejection in step 2 (before the tribunal ever runs), where the report is
-just the gate-failure rationale instead of a verdict.
+saved as `var/reports/<yymmdd-HHMMSS>-<TICKER>-tribunal-report.md` (printed
+path follows as "レポート保存先: ..."). The ticker is in the name so two rounds
+finishing in the same second cannot land on one file, and a name already taken
+gets `-2` appended rather than being overwritten (T-017). This also happens for
+a gate-only rejection in step 2 (before the tribunal ever runs), where the
+report is just the gate-failure rationale instead of a verdict.
 
 ### 4. User decision
 
