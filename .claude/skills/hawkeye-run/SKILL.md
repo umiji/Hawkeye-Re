@@ -184,8 +184,9 @@ hawkeye report scan
 ```
 
 It prints the report and always writes the full table to
-`var/reports/scan-<id>.csv` — tell the user that path, since the screen omits
-the names the earnings feed was never asked about and the file does not.
+`var/reports/<YYYY-MM-DD>-<走査番号>-hawkeye-earnings-research.csv`, dated by the
+day the scan ran (T-019) — tell the user that path, since the screen omits the
+names the earnings feed was never asked about and the file does not.
 
 **Paste its entire output into the conversation for the user to read**, then
 stop and ask whether to proceed. Do not summarise it, do not reorder it, and
