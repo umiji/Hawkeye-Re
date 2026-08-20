@@ -368,6 +368,14 @@ class ScreenedCandidate(BaseModel):
     # later: "which NAMES are we persistently unable to read, and is the
     # reason a property of the company or of one bad afternoon?"
     numbers_reason: str = ""
+    # WHY the analysts' full-year / next-quarter yardsticks are missing, when
+    # the earnings feed stated a consensus sentence that could not be used
+    # (T-021). Separate from `numbers_reason` above, which is about the
+    # SURPRISE figures — the same response routinely supplies those and
+    # refuses these. Empty on a record written before this field existed, and
+    # on one where the yardstick was read (invariant 1).
+    full_year_consensus_reason: str = ""
+    next_quarter_consensus_reason: str = ""
     # How the company's own earnings release was cut into the excerpt the
     # tribunal reads (T-013), as four counts and no text. `repaired` means
     # the block and the release differed only in spacing, punctuation or

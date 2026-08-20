@@ -175,7 +175,12 @@ def _forward_legs(record: WhispersRecord) -> dict:
             "full_year_period": consensus.full_year_period,
             "next_quarter_eps_estimate": consensus.next_quarter_eps,
             "next_quarter_revenue_estimate": consensus.next_quarter_revenue,
-            "next_quarter_period": consensus.next_quarter_period}
+            "next_quarter_period": consensus.next_quarter_period,
+            # Named, not dropped. These used to end here, which is how a
+            # refused yardstick became indistinguishable from a company that
+            # never stated one (invariant 6, T-021).
+            "full_year_consensus_reason": consensus.reason,
+            "next_quarter_consensus_reason": consensus.next_quarter_reason}
 
 
 def _substituted(event: EarningsEvent,
